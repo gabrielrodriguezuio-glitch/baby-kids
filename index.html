@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="es-AR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Control Tienda</title>
+<!-- Con esto el teléfono puede instalarla: aparece con su ícono y se abre
+     sin la barra del navegador arriba. -->
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#0B0D12" />
+<link rel="icon" type="image/png" href="icono-192.png" />
+<link rel="apple-touch-icon" href="icono-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Control Tienda" />
+<script>
+  // Registra el trabajador que hace que Chrome ofrezca instalar la app
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function () {
+      // Ruta relativa: en GitHub Pages la app vive dentro de una carpeta, no en
+      // la raíz del dominio.
+      navigator.serviceWorker.register("./sw.js", { scope: "./" }).catch(function () {});
+    });
+  }
+</script>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.2.0",
+    "react-dom": "https://esm.sh/react-dom@18.2.0",
+    "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+    "lucide-react": "https://esm.sh/lucide-react@0.383.0?external=react",
+    "pdfjs-dist": "https://esm.sh/pdfjs-dist@4.4.168",
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2.45.0"
+  }
+}
+</script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  #root { min-height: 100vh; }
+  #boot-error { display:none; font-family: sans-serif; padding: 24px; color: #B24C4C; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="boot-error"></div>
+
+<script>
+  // --- Polyfill de window.storage usando localStorage del navegador ---
+  // Reproduce la API get/set/delete/list que usan los artifacts de Claude,
+  // así la app funciona igual pero guardando los datos localmente en Chrome.
+  (function () {
+    var PREFIX = "control-tienda::";
+
+    // Algunos navegadores bloquean el almacenamiento (modo privado, Safari con
+    // archivos locales). En ese caso se usa memoria: la app funciona igual
+    // durante la sesión, pero avisamos que los datos no se van a guardar.
+    var almacen = null;
+    try {
+      window.localStorage.setItem(PREFIX + "__test", "1");
+      window.localStorage.removeItem(PREFIX + "__test");
+      almacen = window.localStorage;
+    } catch (e) {
+      var memoria = {};
+      almacen = {
+        getItem: function (k) { return Object.prototype.hasOwnProperty.call(memoria, k) ? memoria[k] : null; },
+        setItem: function (k, v) { memoria[k] = String(v); },
+        removeItem: function (k) { delete memoria[k]; },
+        key: function (i) { return Object.keys(memoria)[i]; },
+        get length() { return Object.keys(memoria).length; }
+      };
+      window.addEventListener("DOMContentLoaded", function () {
+        var aviso = document.createElement("div");
+        aviso.textContent = "Este navegador no permite guardar datos en el dispositivo. Podés probar la app, pero lo que cargues se pierde al cerrar la pestaña.";
+        aviso.style.cssText = "position:fixed;left:0;right:0;top:0;z-index:9999;background:#B3261E;color:#fff;font:500 13px/1.5 system-ui,sans-serif;padding:11px 18px;text-align:center";
+        document.body.appendChild(aviso);
+        setTimeout(function () { aviso.remove(); }, 9000);
+      });
+    }
+
+    window.storage = {
+      get: function (key, shared) {
+        return Promise.resolve().then(function () {
+          var raw = almacen.getItem(PREFIX + key);
+          if (raw === null) throw new Error("Key not found: " + key);
+          return { key: key, value: raw, shared: !!shared };
+        });
+      },
+      set: function (key, value, shared) {
+        return Promise.resolve().then(function () {
+          almacen.setItem(PREFIX + key, value);
+          return { key: key, value: value, shared: !!shared };
+        });
+      },
+      delete: function (key, shared) {
+        return Promise.resolve().then(function () {
+          almacen.removeItem(PREFIX + key);
+          return { key: key, deleted: true, shared: !!shared };
+        });
+      },
+      list: function (prefix, shared) {
+        return Promise.resolve().then(function () {
+          var todas = [];
+          for (var i = 0; i < almacen.length; i++) todas.push(almacen.key(i));
+          var keys = todas
+            .filter(function (k) { return k && k.indexOf(PREFIX) === 0; })
+            .map(function (k) { return k.slice(PREFIX.length); })
+            .filter(function (k) { return !prefix || k.indexOf(prefix) === 0; });
+          return { keys: keys, prefix: prefix, shared: !!shared };
+        });
+      }
+    };
+
+    window.addEventListener("error", function (e) {
+      var el = document.getElementById("boot-error");
+      el.style.display = "block";
+      el.textContent = "Ocurrió un error cargando la app:\n\n" + (e.error ? (e.error.stack || e.error.message) : e.message);
+    });
+  })();
+</script>
+
+<script type="module">
+import React, { useState, useEffect, useMemo } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+// ===== Conexión con la base de datos =====
+// La clave "anon" está pensada para vivir dentro de la app: sola no da acceso
+// a nada. Quien manda son las reglas de la base, que exigen haber entrado con
+// mail y contraseña y miran el rol de cada uno.
+// Marca de versión: sirve para saber de un vistazo si el dispositivo está
+// viendo la última, sin tener que buscar qué función existe y cuál no.
+const VERSION_APP = "9.440";
+
+const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
+const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
+
+const nube = createClient(NUBE_URL, NUBE_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true }
+});
+import { createPortal } from "react-dom";
+import { Tag, Package, ShoppingBag, Users, Wallet, Plus, Trash2, X, AlertTriangle, Search, Pencil, TrendingUp, TrendingDown, Minus, CreditCard, Banknote, ArrowRightLeft, Check, ShoppingCart, Share2, UserCog, BarChart3, MessageCircle, ArrowDownCircle, ArrowUpCircle, Truck, QrCode, ScanBarcode, Receipt, DollarSign, ChevronDown, ChevronLeft, ChevronRight, Lock, Unlock, Calculator, SlidersHorizontal, LayoutGrid, Archive, MoreHorizontal, Sparkles, Clock3, Boxes, Tags, Sun, Moon, Crown, UserPlus, Mail } from "lucide-react";
+const STORAGE_KEY = "control-tienda-ropa-v1";
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const todayISO = () => (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+const money = (n) => new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(n || 0);
+const fecha = (iso) => (/* @__PURE__ */ new Date(iso + "T00:00:00")).toLocaleDateString("es-AR", { day: "2-digit", month: "short" });
+// Fecha numérica completa: 31/8/2021
+const fechaNumerica = (iso) => (/* @__PURE__ */ new Date(iso + "T00:00:00")).toLocaleDateString("es-AR", { day: "numeric", month: "numeric", year: "numeric" });
+const mesLabel = (iso) => {
+  const d = /* @__PURE__ */ new Date(iso + "T00:00:00");
+  return d.toLocaleDateString("es-AR", { month: "short", year: "2-digit" });
+};
+
+// ===== Caja por usuario =====
+// Cada persona abre y cierra su propia caja. El efectivo de una no se mezcla
+// con el de otra, y al cerrar cada uno responde por lo suyo.
+const CAJA_VACIA = { abierta: false, montoInicial: 0, abiertaEn: null, movimientos: [] };
+
+const usuarioActualId = (data) => {
+  const lista = data.usuarios || [];
+  // Sólo el que entró con su cuenta. Antes, si no se encontraba, caía en el
+  // primero de la lista: como la lista podía venir en otro orden, la clave de
+  // la caja cambiaba y parecía que la caja se había reiniciado.
+  const u = lista.find((x) => x.esVos);
+  if (u) return u.id;
+  const suplente = lista.find((x) => x.activo !== false) || lista[0];
+  return suplente ? suplente.id : "sin-usuario";
+};
+const nombreUsuario = (data, id) => {
+  const u = (data.usuarios || []).find((x) => x.id === id);
+  return u ? u.nombre : "Sin usuario";
+};
+// Cada negocio tiene su propio efectivo, y dentro de cada uno, cada persona
+// lleva su caja. La clave junta las dos cosas.
+const claveCaja = (negocioId, usuarioId) => negocioId + "|" + usuarioId;
+const cajaDe = (data, usuarioId, negocioId) =>
+  (data.cajas || {})[claveCaja(negocioId || negocioActivo(data).id, usuarioId)] || CAJA_VACIA;
+const miCaja = (data) => cajaDe(data, usuarioActualId(data), negocioActivo(data).id);
+const guardarCaja = (data, usuarioId, caja, negocioId) => ({
+  ...data,
+  cajas: { ...(data.cajas || {}), [claveCaja(negocioId || negocioActivo(data).id, usuarioId)]: caja }
+});
+// Cajas abiertas por otras personas en el mismo negocio
+// Quién abrió la caja. Las abiertas antes de guardar el dato caen al usuario
+// bajo cuya clave están guardadas.
+const abrioLaCaja = (data, caja, usuarioId) => {
+  if (caja && caja.abiertaPor) return caja.abiertaPor;
+  return usuarioId ? nombreUsuario(data, usuarioId) : "";
+};
+
+const cajasAbiertasDeOtros = (data) => {
+  const mio = usuarioActualId(data);
+  const negId = negocioActivo(data).id;
+  return Object.keys(data.cajas || {})
+    .filter((k) => {
+      const [neg, usr] = k.split("|");
+      return neg === negId && usr !== mio && (data.cajas[k] || {}).abierta;
+    })
+    .map((k) => {
+      const usuarioId = k.split("|")[1];
+      return { usuarioId, nombre: nombreUsuario(data, usuarioId), caja: data.cajas[k] };
+    });
+};
+// Cajas abiertas en los demás negocios, para saber si quedó alguna sin cerrar
+const cajasAbiertasEnOtrosNegocios = (data) => {
+  const negId = negocioActivo(data).id;
+  return Object.keys(data.cajas || {})
+    .filter((k) => k.split("|")[0] !== negId && (data.cajas[k] || {}).abierta)
+    .map((k) => {
+      const [neg, usr] = k.split("|");
+      const n = listaNegocios(data).find((x) => x.id === neg);
+      return { negocioId: neg, negocioNombre: n ? n.nombre : "Otro negocio", nombre: nombreUsuario(data, usr), caja: data.cajas[k] };
+    })
+    .filter((x) => listaNegocios(data).some((n) => n.id === x.negocioId));
+};
+
+// La caja única de las versiones anteriores pasa a ser la del usuario actual
+const migrarCajas = (data) => {
+  const mio = usuarioActualId(data);
+  const principal = listaNegocios(data)[0].id;
+  const cajas = {};
+
+  // Las claves sin negocio son de versiones anteriores: van al principal
+  Object.keys(data.cajas || {}).forEach((k) => {
+    cajas[k.indexOf("|") >= 0 ? k : claveCaja(principal, k)] = data.cajas[k];
+  });
+
+  // Y la caja única, más vieja todavía, al usuario actual en el principal
+  const vieja = data.caja;
+  const clave = claveCaja(principal, mio);
+  if (vieja && (vieja.abierta || (vieja.movimientos || []).length) && !cajas[clave]) cajas[clave] = vieja;
+
+  const cierres = (data.cajasCerradas || []).map((c) => ({
+    ...c,
+    usuarioId: c.usuarioId || mio,
+    usuarioNombre: c.usuarioNombre || nombreUsuario(data, c.usuarioId || mio),
+    negocioId: c.negocioId || principal
+  }));
+
+  const salida = { ...data, cajas, cajasCerradas: cierres };
+  delete salida.caja;
+  return salida;
+};
+
+const efectivoEnCaja = (caja) => {
+  if (!caja) return 0;
+  const movs = caja.movimientos || [];
+  const entra = movs.filter((m) => m.tipo === "ingreso" || m.tipo === "venta").reduce((s, m) => s + m.monto, 0);
+  const sale = movs.filter((m) => m.tipo === "retiro" || m.tipo === "devolucion").reduce((s, m) => s + m.monto, 0);
+  return (caja.montoInicial || 0) + entra - sale;
+};
+
+// ===== Detección de pantalla chica =====
+function useIsMobile(bp = 700) {
+  const [mobile, setMobile] = useState(typeof window !== "undefined" && window.innerWidth <= bp);
+  useEffect(() => {
+    const onResize = () => setMobile(window.innerWidth <= bp);
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("orientationchange", onResize);
+    };
+  }, [bp]);
+  return mobile;
+}
+
+// ===== Respaldo y restauración =====
+const BACKUP_VERSION = 1;
+const stamp = () => {
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}`;
+};
+// ===== MEJORA 1: recordatorio de respaldo =====
+// Los datos viven sólo en este navegador: si se borra la caché o se pierde el
+// equipo, no hay vuelta atrás. Se guarda la fecha del último respaldo para
+// poder avisar cuando pasó demasiado tiempo.
+const CLAVE_RESPALDO = "ct-ultimo-respaldo";
+const marcarRespaldo = () => {
+  try { localStorage.setItem(CLAVE_RESPALDO, todayISO()); } catch (e) {}
+};
+// ===== MEJORA 4: cuánto espacio queda =====
+// El navegador da unos 5 MB. Las fotos de comprobantes son lo que más pesa.
+// Conviene avisar antes de que un guardado falle, no después.
+const espacioUsado = () => {
+  try {
+    let bytes = 0;
+    for (const k in localStorage) {
+      if (Object.prototype.hasOwnProperty.call(localStorage, k)) bytes += (localStorage[k] || "").length;
+    }
+    return { mb: bytes / 1048576, pct: Math.min(100, Math.round((bytes / 5242880) * 100)) };
+  } catch (e) { return null; }
+};
+
+const diasSinRespaldo = () => {
+  try {
+    const f = localStorage.getItem(CLAVE_RESPALDO);
+    if (!f) return null;
+    return Math.max(0, Math.round((new Date(todayISO()) - new Date(f)) / 86400000));
+  } catch (e) { return null; }
+};
+
+const exportarRespaldo = (data) => {
+  const paquete = {
+    _app: "control-tienda",
+    _backupVersion: BACKUP_VERSION,
+    _exportadoEn: new Date().toISOString(),
+    data
+  };
+  const blob = new Blob([JSON.stringify(paquete, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const negocio = (data.negocio && data.negocio.nombre ? data.negocio.nombre : "mi-tienda")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "mi-tienda";
+  a.href = url;
+  a.download = `respaldo_${negocio}_${stamp()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  marcarRespaldo();
+};
+const leerRespaldo = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onerror = () => reject(new Error("No se pudo leer el archivo."));
+  reader.onload = () => {
+    try {
+      const parsed = JSON.parse(String(reader.result));
+      const contenido = parsed && parsed.data ? parsed.data : parsed;
+      if (!contenido || typeof contenido !== "object" || !Array.isArray(contenido.productos)) {
+        return reject(new Error("El archivo no parece un respaldo de Control Tienda."));
+      }
+      resolve({ ...EMPTY, ...contenido });
+    } catch (e) {
+      reject(new Error("El archivo está dañado o no es un respaldo válido."));
+    }
+  };
+  reader.readAsText(file);
+});
+const resumenRespaldo = (d) => [
+  `${(d.productos || []).length} productos`,
+  `${(d.ventas || []).length} ventas`,
+  `${(d.clientes || []).length} clientes`,
+  `${(d.compras || []).length} compras`
+].join(" · ");
+
+
+
+// ===== Varios negocios bajo la misma cuenta =====
+const COLORES_NEGOCIO = ["#6366F1", "#34D399", "#FBBF24", "#F472B6", "#22D3EE", "#F87171"];
+
+// Devuelve siempre al menos un negocio: el principal, aunque no se haya creado la lista
+// Los negocios a los que puede entrar quien está usando la app. El dueño ve
+// todos; el resto, sólo aquellos en los que está registrado.
+const negociosDelUsuario = (data) => {
+  const todos = listaNegocios(data);
+  const u = (data.usuarios || []).find((x) => x.esVos);
+  if (!u || u.rol === "Propietario") return todos;
+  const suyos = u.negocios || [];
+  if (!suyos.length) return todos;   // sin asignar todavía: no se lo encierra
+  const filtrados = todos.filter((n) => suyos.indexOf(n.id) >= 0);
+  return filtrados.length ? filtrados : todos;
+};
+
+const listaNegocios = (data) => {
+  const guardados = data.negocios || [];
+  if (guardados.length) return guardados;
+  const nombre = (data.negocio && data.negocio.nombre) || "Mi Tienda";
+  return [{ id: "principal", nombre, color: COLORES_NEGOCIO[0], principal: true }];
+};
+// Código corto y estable, derivado del identificador del negocio
+const codigoNegocio = (n) => {
+  const base = String((n && (n.id + "|" + n.nombre)) || "");
+  let h = 0;
+  for (let i = 0; i < base.length; i++) h = (h * 31 + base.charCodeAt(i)) >>> 0;
+  return "#" + h.toString(16).slice(0, 4).toUpperCase().padStart(4, "0");
+};
+
+const negocioActivo = (data) => {
+  // Sólo entre los que esta persona tiene habilitados: si quedó apuntando a
+  // uno que no le corresponde, cae en el primero de los suyos.
+  const lista = negociosDelUsuario(data);
+  return lista.find((n) => n.id === data.negocioActivoId) || lista[0];
+};
+
+// Datos del producto para un negocio puntual
+const enNegocio = (producto, negocioId) => (producto.porNegocio || {})[negocioId] || null;
+const publicadoEn = (producto, negocioId, principalId) => {
+  const d = enNegocio(producto, negocioId);
+  if (d) return d.activo !== false;
+  return negocioId === principalId;
+};
+const precioEn = (producto, negocio, principalId) => {
+  const d = enNegocio(producto, negocio.id);
+  if (d && d.precio != null && d.precio !== "") return Number(d.precio);
+  return publicadoEn(producto, negocio.id, principalId) ? producto.precioVenta : null;
+};
+const codigoEn = (producto, negocio, principalId) => {
+  const d = enNegocio(producto, negocio.id);
+  if (d && d.codigo) return d.codigo;
+  return publicadoEn(producto, negocio.id, principalId) ? (producto.codigoBarras || "") : "";
+};
+
+// ===== Stock propio de cada negocio =====
+// Cada negocio guarda sus unidades y, si el producto viene en talles, su
+// propio desglose. El campo `stock` del producto es la suma de todos.
+const stockNegocio = (producto, negocioId) => {
+  const d = enNegocio(producto, negocioId);
+  return d && d.stock != null && d.stock !== "" ? Number(d.stock) : 0;
+};
+// Una variante es una combinación de talle y color. El color puede estar
+// vacío: un producto puede venir solo por talle, como siempre.
+// "2026-08-30" -> "08/26". Sirve para ver de un vistazo qué prenda está vieja
+// sin tener que consultar el sistema.
+const mesCorto = (iso) => {
+  if (!iso) return "";
+  const partes = String(iso).slice(0, 10).split("-");
+  if (partes.length < 2) return "";
+  return partes[1] + "/" + partes[0].slice(2);
+};
+
+// Lo que un cliente debe: las ventas fiadas y los cargos, menos los pagos.
+// Vive acá porque lo usan la ficha del cliente y el punto de venta.
+const saldoDeCliente = (data, clienteId) => {
+  if (!clienteId) return 0;
+  const ventas = (data.ventas || [])
+    .filter((v) => v.clienteId === clienteId && !esDevolucion(v) && v.metodoPago === "cuenta_corriente")
+    .reduce((a, v) => a + (v.total || 0), 0);
+  const movs = (data.movimientosCC || []).filter((m) => m.clienteId === clienteId);
+  const cargos = movs.filter((m) => m.tipo === "cargo").reduce((a, m) => a + (m.monto || 0), 0);
+  const pagos = movs.filter((m) => m.tipo !== "cargo").reduce((a, m) => a + (m.monto || 0), 0);
+  return Math.max(0, ventas + cargos - pagos);
+};
+
+const claveVariante = (v) => String(v.talle || "") + "|" + String(v.color || "");
+// De la clave "38|Negro" al texto "Talle 38 · Negro"
+const textoDeClave = (clave) => {
+  const partes = String(clave || "").split("|");
+  return etiquetaVariante({ talle: partes[0], color: partes[1] });
+};
+const etiquetaVariante = (v) => [v.talle && "Talle " + v.talle, v.color].filter(Boolean).join(" · ");
+// Detalle de una línea del ticket con sus rótulos: "Talle 38 · Color Negro".
+// Sin los rótulos, un talle "6" y un color "6" se confunden al 
