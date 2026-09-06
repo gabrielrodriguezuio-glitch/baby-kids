@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.475";
+const VERSION_APP = "9.477";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -718,6 +718,9 @@ const PUEDE = {
   // nombre de quien cerró, así que el control se mantiene.
   cerrarCaja: ["Propietario", "Administrador", "Vendedor", "Encargado de stock"],
   hacerDevoluciones: ["Propietario", "Administrador", "Vendedor"],
+  // Mirar el arqueo de los demás es control, no operación: por defecto sólo
+  // el dueño y los administradores.
+  verCajasDelEquipo: ["Propietario", "Administrador"],
   gestionarUsuarios: ["Propietario"]
 };
 
@@ -744,6 +747,7 @@ const PERMISOS_EXPLICADOS = [
   ["verCostos", "Ver los costos", "Cuánto costó cada producto."],
   ["editarPrecios", "Cambiar precios", "Editar el precio de venta de los productos."],
   ["borrarProductos", "Borrar productos", "Eliminar productos del catálogo."],
+  ["verCajasDelEquipo", "Ver las cajas del equipo", "Los cierres pasados y las cajas abiertas de los demás."],
   ["gestionarUsuarios", "Manejar el equipo", "Crear, editar y dar de baja integrantes."]
 ];
 
@@ -15213,8 +15217,10 @@ function HistorialCajaModal({ data, caja, cierres, onVolver, onClose }) {
       "div",
       { style: { display: "flex", gap: 4, padding: 5, marginBottom: 16, background: "var(--surface-2)", border: "none", borderRadius: 10 } },
       boton("turno", "Mi turno"),
-      boton("cierres", "Cierres"),
-      (otras.length > 0 || enOtrosNegocios.length > 0) && boton("equipo", "Otras cajas (" + (otras.length + enOtrosNegocios.length) + ")")
+      // Los cierres pasados y las cajas de los demás quedan detrás del permiso
+      puede(data, "verCajasDelEquipo") && boton("cierres", "Cierres"),
+      puede(data, "verCajasDelEquipo") && (otras.length > 0 || enOtrosNegocios.length > 0) &&
+        boton("equipo", "Otras cajas (" + (otras.length + enOtrosNegocios.length) + ")")
     ),
 
     pestana === "equipo"
