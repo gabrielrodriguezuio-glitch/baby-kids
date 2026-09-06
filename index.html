@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.468";
+const VERSION_APP = "9.470";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -4606,6 +4606,9 @@ async function traerDeLaNube(quienEntro) {
     // a nombre de quien la hizo.
     usuarios: (usuarios.data || []).map((u) => ({
       id: u.id, authId: u.auth_id, nombre: u.nombre, rol: u.rol,
+      // Estos dos no viven en la base pero el formulario los espera: sin
+      // ellos, editar un integrante rompía la app.
+      usuario: "", email: "",
       telefono: u.telefono || "", activo: u.activo !== false,
       // A qué locales pertenece. Vacío significa todos.
       negocios: u.negocios || [],
@@ -16742,18 +16745,26 @@ function CampoClave({ valor, onCambiar, placeholder }) {
 }
 
 function UsuarioModal({ data, inicial, onGuardar, onClose }) {
-  const [f, setF] = useState(inicial || { nombre: "", usuario: "", email: "", clave: "", rol: ROLES[1], activo: true, invitar: false });
+  const vacio = { nombre: "", usuario: "", email: "", clave: "", rol: ROLES[1], activo: true, invitar: false, negocios: [] };
+  // Se completa con los valores por defecto: un integrante traído de la nube
+  // puede no tener todos los campos que el formulario usa.
+  const [f, setF] = useState(inicial ? { ...vacio, ...inicial } : vacio);
   const [error, setError] = useState("");
   const set = (k, v) => setF({ ...f, [k]: v });
   const editando = !!(inicial && inicial.id);
 
   const guardar = () => {
-    if (!f.nombre.trim()) return setError("Ingresá el nombre del integrante.");
-    if (f.invitar && !f.email.trim()) return setError("Para invitar hace falta un email.");
-    if (f.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim())) return setError("Revisá el email: no parece válido.");
+    // Los usuarios que vienen de la nube no traen todos los campos, así que
+    // se usa una cadena vacía como respaldo: sin esto la app se rompía al
+    // guardar un integrante creado desde el panel de la base.
+    const nombre = String(f.nombre || "");
+    const email = String(f.email || "");
+    if (!nombre.trim()) return setError("Ingresá el nombre del integrante.");
+    if (f.invitar && !email.trim()) return setError("Para invitar hace falta un email.");
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return setError("Revisá el email: no parece válido.");
     if (!f.invitar && f.clave && String(f.clave).length < 6) return setError("La contraseña necesita al menos 6 caracteres.");
     setError("");
-    onGuardar({ ...f, usuario: f.usuario.trim() || handleDesde(f.nombre) });
+    onGuardar({ ...f, usuario: String(f.usuario || "").trim() || handleDesde(nombre) });
   };
 
   return React.createElement(
