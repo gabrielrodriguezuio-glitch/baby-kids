@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.470";
+const VERSION_APP = "9.475";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -735,10 +735,26 @@ const esJefe = (data) => {
   return u.rol === "Propietario" || u.rol === "Administrador";
 };
 
+// Qué puede hacer cada permiso, en palabras del negocio. Se usa para armar
+// los roles propios sin que haya que adivinar qué significa cada uno.
+const PERMISOS_EXPLICADOS = [
+  ["cerrarCaja", "Cerrar su caja", "Hacer el arqueo y cerrar el turno."],
+  ["hacerDevoluciones", "Hacer devoluciones", "Devolver mercadería y anular ventas."],
+  ["verGanancia", "Ver la ganancia", "Cuánto se gana en cada venta y en los informes."],
+  ["verCostos", "Ver los costos", "Cuánto costó cada producto."],
+  ["editarPrecios", "Cambiar precios", "Editar el precio de venta de los productos."],
+  ["borrarProductos", "Borrar productos", "Eliminar productos del catálogo."],
+  ["gestionarUsuarios", "Manejar el equipo", "Crear, editar y dar de baja integrantes."]
+];
+
 const puede = (data, accion) => {
   const u = usuarioSesion(data);
   // Sin usuarios cargados no hay a quién limitar: la app funciona completa
   if (!u) return true;
+  // Los roles propios traen su propia lista de permisos: sin esto quedaban
+  // sin ninguno, y por ejemplo no podían cerrar su caja.
+  const propio = rolesPropios(data).find((r) => r.nombre === u.rol);
+  if (propio) return (propio.permisos || []).indexOf(accion) >= 0;
   const permitidos = PUEDE[accion];
   return !permitidos || permitidos.indexOf(u.rol || "Propietario") >= 0;
 };
@@ -16633,6 +16649,50 @@ function RolesModal({ data, persist, onClose }) {
               );
             })
           ),
+          // Qué puede hacer, además de a qué pantallas entra. Sin esto un rol
+          // propio quedaba sin permisos y no podía ni cerrar su caja.
+          React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", margin: "18px 0 9px" } },
+            "Qué puede hacer:"),
+          React.createElement(
+            "div",
+            { style: { display: "flex", flexDirection: "column", gap: 7 } },
+            PERMISOS_EXPLICADOS.map(([id, titulo, detalle]) => {
+              const on = (editando.permisos || []).indexOf(id) >= 0;
+              return React.createElement(
+                "button",
+                {
+                  key: id,
+                  onClick: () => setEditando({
+                    ...editando,
+                    permisos: on
+                      ? (editando.permisos || []).filter((x) => x !== id)
+                      : [...(editando.permisos || []), id]
+                  }),
+                  style: {
+                    display: "flex", alignItems: "flex-start", gap: 11, cursor: "pointer",
+                    padding: "11px 13px", borderRadius: 10, textAlign: "left", width: "100%",
+                    border: "1.5px solid " + (on ? "var(--denim)" : "var(--line)"),
+                    background: on ? "var(--denim-soft)" : "var(--surface-2)",
+                    color: "var(--ink)", fontFamily: "'Inter', sans-serif"
+                  }
+                },
+                React.createElement("span", {
+                  style: {
+                    width: 18, height: 18, borderRadius: 5, flexShrink: 0, marginTop: 1,
+                    border: "2px solid " + (on ? "var(--denim)" : "var(--line)"),
+                    background: on ? "var(--denim)" : "transparent",
+                    display: "flex", alignItems: "center", justifyContent: "center"
+                  }
+                }, on && React.createElement(Check, { size: 11, color: "var(--on-accent)", strokeWidth: 3.5 })),
+                React.createElement(
+                  "span",
+                  { style: { flex: 1, minWidth: 0 } },
+                  React.createElement("span", { style: { display: "block", fontSize: 13, fontWeight: on ? 650 : 500 } }, titulo),
+                  React.createElement("span", { style: { display: "block", fontSize: 11.5, color: "var(--muted)", marginTop: 2, lineHeight: 1.4 } }, detalle)
+                )
+              );
+            })
+          ),
           error && React.createElement("p", { style: { color: "var(--rose)", fontSize: 12.5, marginTop: 12 } }, error),
           React.createElement(
             "div",
@@ -16687,7 +16747,9 @@ function RolesModal({ data, persist, onClose }) {
           ),
           error && React.createElement("p", { style: { color: "var(--rose)", fontSize: 12.5, marginTop: 12 } }, error),
           React.createElement(Button, {
-            onClick: () => { setEditando({ nombre: "", tabs: [] }); setError(""); },
+            // Arranca pudiendo cerrar su caja y hacer devoluciones: es lo
+            // mínimo para atender, y si no se quiere se destilda.
+            onClick: () => { setEditando({ nombre: "", tabs: [], permisos: ["cerrarCaja", "hacerDevoluciones"] }); setError(""); },
             style: { width: "100%", justifyContent: "center", marginTop: 16, padding: "13px 0" }
           }, React.createElement(Plus, { size: 16 }), " Crear un rol nuevo")
         )
