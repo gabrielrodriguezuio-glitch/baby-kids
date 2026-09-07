@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.490";
+const VERSION_APP = "9.492";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -4578,6 +4578,13 @@ const cajasLocales = () => {
 // bajen 11.000 filas y ver la venta del otro casi al instante.
 async function traerParcial(tablas, quienEntro) {
   if (!tablas || !tablas.size) return null;
+
+  // La comprobación va PRIMERO: antes estaba al final y ya se había armado
+  // una respuesta incompleta, así que los cierres de caja nunca llegaban.
+  const conocidas = ["variantes", "productos", "ventas", "venta_items", "clientes",
+                     "movimientos_cc", "cajas_abiertas", "caja_cierres"];
+  for (const t of tablas) if (conocidas.indexOf(t) < 0) return null;
+
   const salida = {};
 
   // El stock: una venta lo toca siempre, y hay que rearmar los productos
@@ -4618,6 +4625,20 @@ async function traerParcial(tablas, quienEntro) {
     }));
   }
 
+  if (tablas.has("caja_cierres")) {
+    const { data: cs } = await nube.from("caja_cierres")
+      .select("*").order("cerrada_en", { ascending: false }).limit(500);
+    salida.cajasCerradas = (cs || []).map((c) => ({
+      id: c.id, usuarioNombre: c.usuario || "", negocioId: c.negocio_id || "",
+      montoInicial: Number(c.monto_inicial) || 0,
+      efectivoEsperado: Number(c.efectivo_esperado) || 0,
+      efectivoContado: Number(c.monto_contado) || 0,
+      diferencia: Number(c.diferencia) || 0,
+      movimientos: c.movimientos || [],
+      abiertaEn: c.abierta_en || null, cerradaEn: c.cerrada_en || null
+    }));
+  }
+
   if (tablas.has("cajas_abiertas")) {
     const { data: cs } = await nube.from("cajas_abiertas").select("*");
     salida.cajas = (cs || []).reduce((acc, c) => {
@@ -4629,11 +4650,6 @@ async function traerParcial(tablas, quienEntro) {
       return acc;
     }, { ...cajasLocales() });
   }
-
-  // Lo que no está contemplado obliga a traer todo, para no quedarse corto
-  const conocidas = ["variantes", "productos", "ventas", "venta_items", "clientes",
-                     "movimientos_cc", "cajas_abiertas"];
-  for (const t of tablas) if (conocidas.indexOf(t) < 0) return null;
 
   return salida;
 }
