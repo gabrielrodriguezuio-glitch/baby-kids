@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.492";
+const VERSION_APP = "9.495";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -145,6 +145,19 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 // después de las 21:00 en Argentina la app creía que ya era el día siguiente:
 // las ventas de la noche quedaban con fecha equivocada y no aparecían en el
 // cierre ni en los informes del día.
+// El día de una marca de tiempo, según el reloj de acá. Cortar los primeros
+// diez caracteres da el día en horario de Greenwich, que después de las 21:00
+// en Argentina ya es el siguiente.
+const diaLocal = (marca) => {
+  if (!marca) return "";
+  // Supabase devuelve la zona como "+00" y algunos navegadores no la entienden:
+  // se completa a "+00:00" antes de convertir.
+  const texto = String(marca).replace(/([+-]\d{2})$/, "$1:00");
+  const d = new Date(texto);
+  if (isNaN(d.getTime())) return texto.slice(0, 10);
+  return isoLocal(d);
+};
+
 // Pasa una fecha al formato aaaa-mm-dd usando el reloj de acá
 const isoLocal = (d) =>
   new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
@@ -15708,7 +15721,7 @@ function CierresCajaCard({ cierres }) {
   for (const c of cierres) {
     const diffColor = c.diferencia === 0 ? "var(--sage)" : "var(--rose)";
     const diffTexto = (c.diferencia > 0 ? "+" : "") + money(c.diferencia);
-    const celdaFecha = React.createElement("td", { style: { color: "var(--muted)" } }, fecha(c.cerradaEn.slice(0, 10)) + " \xB7 " + horaCorta(c.cerradaEn));
+    const celdaFecha = React.createElement("td", { style: { color: "var(--muted)" } }, fecha(diaLocal(c.cerradaEn)) + " \xB7 " + horaCorta(c.cerradaEn));
     const celdaInicial = React.createElement("td", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(c.montoInicial));
     const celdaEsperado = React.createElement("td", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(c.efectivoEsperado));
     const celdaContado = React.createElement("td", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(c.efectivoContado));
@@ -25853,7 +25866,10 @@ function CajaReportes({ data, rango }) {
   const [menu, setMenu] = useState(null);
   const [detalle, setDetalle] = useState(null);
   const ventas = data.ventas.filter((v) => rango.enRango(v.fecha));
-  const enPeriodo = (data.cajasCerradas || []).filter((c) => rango.enRango((c.cerradaEn || "").slice(0, 10)));
+  // La fecha se toma del reloj de acá: el servidor guarda en horario de
+  // Greenwich, así que un cierre de las 23:00 quedaba con la fecha del día
+  // siguiente y no aparecía en el historial.
+  const enPeriodo = (data.cajasCerradas || []).filter((c) => rango.enRango(diaLocal(c.cerradaEn)));
   // Quiénes cerraron caja en el período: sólo se ofrecen esos
   const usuarios = [...new Set(enPeriodo.map((c) => c.usuarioNombre).filter(Boolean))];
   const cierres = quien ? enPeriodo.filter((c) => c.usuarioNombre === quien) : enPeriodo;
@@ -26087,8 +26103,8 @@ function DetalleCierreModal({ cierre, onClose, data }) {
       const cuando = momentoDeVenta(v);
       if (cuando == null) {
         // Sin hora usable se compara sólo por día: mejor mostrarla que perderla
-        return v.fecha === (cierre.abiertaEn || "").slice(0, 10) ||
-               v.fecha === (cierre.cerradaEn || "").slice(0, 10);
+        return v.fecha === diaLocal(cierre.abiertaEn) ||
+               v.fecha === diaLocal(cierre.cerradaEn);
       }
       return cuando >= desde - 60000 && cuando <= hasta + 60000;
     });
