@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.612";
+const VERSION_APP = "9.615";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1688,6 +1688,7 @@ function ControlTienda() {
     // El velo cierra el menú al tocar cualquier lugar fuera de él
     !isMobile && !railOculto && /* @__PURE__ */ React.createElement("div", {
       onClick: alternarRail,
+      className: "ct-velo-abre",
       style: { position: "fixed", inset: 0, zIndex: 55, background: "rgba(0,0,0,.35)" }
     }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement(Header, { data, persist, mobile: isMobile, tab, editandoProducto, onAbrirMenu: alternarRail, rangoReportes, filtrosReportes, setFiltrosReportes, rangoNegocios, filtroNegocios, setFiltroNegocios, onExportarNegocios: () => setSenalExportar(Date.now()), onNuevaTarea: () => setSenalNuevaTarea(Date.now()), onAgregarParada: () => setSenalReparto({ tipo: "agregar", n: Date.now() }), onCerrarVuelta: () => setSenalReparto({ tipo: "cerrar", n: Date.now() }), onVerReposicion: () => setSenalReparto({ tipo: "reposicion", n: Date.now() }), onNuevoProducto: () => setSenalNuevo((n) => n + 1), onNuevoMovimiento: () => setSenalMovimiento((n) => n + 1), onNuevoUsuario: () => setSenalUsuario((n) => n + 1), onVerInvitaciones: () => setSenalInvitaciones((n) => n + 1), onVerRoles: () => setSenalRoles((n) => n + 1), onNuevoCliente: () => setSenalNuevoCliente((n) => n + 1), onImportarClientes: () => setSenalImportarClientes((n) => n + 1), onBorrarClientes: () => setSenalBorrarClientes((n) => n + 1), onOpcionCatalogo: (accion) => setOpcionCatalogo({ accion, n: Date.now() }) }), /* @__PURE__ */ React.createElement("div", { className: "ct-main ct-limite", style: { padding: isMobile ? "0 12px 96px" : "0 28px 48px" } }, tab === "pos" && /* @__PURE__ */ React.createElement(PuntoDeVenta, { data, persist, cobroPendiente, onCobroTomado: () => setCobroPendiente(null), onIrACambios: () => setTab("cambios") }), tab === "caja" && /* @__PURE__ */ React.createElement(CajaView, { data, persist }), tab === "cambios" && /* @__PURE__ */ React.createElement(CambiosView, { data, persist, onCerrar: () => setTab("pos"), onCobrar: (c) => { setCobroPendiente(c); setTab("pos"); } }), tab === "inventario" && /* @__PURE__ */ React.createElement(Inventario, { data, persist, senalNuevo, opcionElegida: opcionCatalogo, salto , onEditando: setEditandoProducto }), tab === "stock" && /* @__PURE__ */ React.createElement(InventarioStock, { data, persist }), tab === "ronda" && /* @__PURE__ */ React.createElement(RondaSemanalView, { data, persist, onIrAReparto: () => setTab("reparto") }), tab === "reparto" && /* @__PURE__ */ React.createElement(RepartoView, { data, persist, senalReparto }), tab === "tareas" && /* @__PURE__ */ React.createElement(TareasView, { data, persist, senalNuevaTarea }), tab === "clientes" && /* @__PURE__ */ React.createElement(Clientes, { data, persist, senalNuevoCliente, senalImportarClientes, senalBorrarClientes, salto }), tab === "catalogo" && /* @__PURE__ */ React.createElement(CatalogoOnline, { data, persist }), tab === "usuarios" && /* @__PURE__ */ React.createElement(UsuariosView, { data, persist, senalUsuario, senalInvitaciones, senalRoles }), (tab === "negocios" || tab === "reportes") && /* @__PURE__ */ React.createElement(NegociosInicio, { data, persist, setTab, filtroNegocio: filtroNegocios, rango: rangoNegocios, senalExportar, filtros: filtrosReportes }), tab === "negocios-productos" && /* @__PURE__ */ React.createElement(NegociosProductos, { data, persist, setTab, senalNuevo }), tab === "transferencias" && /* @__PURE__ */ React.createElement(TransferenciasView, { data, persist }), tab === "actividad" && /* @__PURE__ */ React.createElement(ActividadView, { data, persist, senalMovimiento }), tab === "configuracion" && /* @__PURE__ */ React.createElement(ConfiguracionView, { data, persist, tema, setTema }), tab === "soporte" && /* @__PURE__ */ React.createElement(SoporteView, { data })))), isMobile && /* @__PURE__ */ React.createElement(Sidebar, { tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile: true, data, usuario, onAbrirCaja: () => setVerCaja(true), onCambiarUsuario: () => setCambiarUsuario(true) }), verCaja && /* @__PURE__ */ React.createElement(CajaRapida, { data, persist, onClose: () => setVerCaja(false) }),  buscando && /* @__PURE__ */ React.createElement(BuscadorGeneral, {
     data,
@@ -1993,6 +1994,16 @@ function Wrapper({ children, mobile, tema = "oscuro" }) {
         }
         /* Las tarjetas entran de a poco al abrir una pantalla */
         @keyframes ct-entrar { from { opacity: 0; transform: translateY(10px) } to { opacity: 1; transform: none } }
+        /* El menú entra deslizándose desde el borde izquierdo, y el velo se
+           funde detrás: sin esto aparecía de golpe. */
+        @keyframes ct-rail-in { from { transform: translateX(-100%) } to { transform: none } }
+        @keyframes ct-velo-in { from { opacity: 0 } to { opacity: 1 } }
+        .ct-rail-abre { animation: ct-rail-in .22s cubic-bezier(.22,.9,.3,1) both; }
+        .ct-velo-abre { animation: ct-velo-in .22s ease both; }
+        /* Quien prefiere menos movimiento no ve el deslizamiento */
+        @media (prefers-reduced-motion: reduce) {
+          .ct-rail-abre, .ct-velo-abre { animation: none; }
+        }
         .ct-card { animation: ct-entrar .34s cubic-bezier(.22,.61,.36,1) backwards; }
         /* El escalonado sólo entre bloques de la pantalla: dentro de una
            grilla las tarjetas deben entrar juntas, no una tras otra. */
@@ -2289,30 +2300,6 @@ function Header({ data, persist, mobile, tab, editandoProducto, onAbrirMenu, ran
     React.createElement(
       "div",
       { style: { minWidth: 0 } },
-      // Abre el menú y a la vez dice dónde estás parado y con qué rol. Antes
-      // había que abrir el menú para saberlo.
-      !mobile && onAbrirMenu && React.createElement(
-        "button",
-        {
-          onClick: onAbrirMenu,
-          title: "Abrir el menú",
-          style: {
-            display: "inline-flex", alignItems: "center", gap: 10,
-            background: "var(--surface-2)", border: "1.5px solid var(--line)",
-            borderRadius: 10, padding: "8px 14px 8px 11px", cursor: "pointer",
-            color: "var(--ink)", marginBottom: 12, fontFamily: "'Inter', sans-serif"
-          }
-        },
-        React.createElement(Menu, { size: 17, color: "var(--muted)" }),
-        React.createElement(
-          "span",
-          { style: { textAlign: "left", lineHeight: 1.25 } },
-          React.createElement("span", { style: { display: "block", fontSize: 13, fontWeight: 650 } },
-            negocioActivo(data).nombre),
-          React.createElement("span", { style: { display: "block", fontSize: 11, color: "var(--muted)", marginTop: 1 } },
-            (usuarioSesion(data) || {}).rol || "Propietario")
-        )
-      ),
       !editandoProducto && React.createElement("h1", {
         style: {
           fontFamily: "'Inter Tight', sans-serif",
@@ -2331,6 +2318,17 @@ function Header({ data, persist, mobile, tab, editandoProducto, onAbrirMenu, ran
     React.createElement(
       "div",
       { style: { display: "flex", alignItems: "center", gap: 8, flexShrink: 0, marginLeft: "auto" } },
+      // El menú se abre desde acá, a la derecha con el resto de las acciones
+      !mobile && onAbrirMenu && React.createElement("button", {
+        onClick: onAbrirMenu,
+        title: "Abrir el menú",
+        style: {
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          width: 40, height: 40, flexShrink: 0,
+          background: "var(--surface-2)", border: "1.5px solid var(--line)",
+          borderRadius: 10, cursor: "pointer", color: "var(--ink)"
+        }
+      }, React.createElement(Menu, { size: 18 })),
       tab === "inventario" && !editandoProducto && React.createElement(
         "div",
         { style: { position: "relative" } },
@@ -2971,6 +2969,7 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
   return React.createElement(
     "div",
     {
+      className: "ct-rail-abre",
       style: {
         width: anchoRail,
         flexShrink: 0,
@@ -11054,12 +11053,9 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
               // En celular se reparten el ancho para igualar al buscador.
               // En celular van apilados y del ancho completo, igual que el
               // buscador: los cuatro miden lo mismo.
-              // En pantalla grande crecen con el espacio que deja el buscador,
-              // en vez de quedar apretados en 60px.
-              flex: isMobilePos ? "1 0 100%" : "1 1 120px",
+              flex: isMobilePos ? "1 0 100%" : "0 0 auto",
               width: isMobilePos ? "100%" : "auto",
-              minWidth: isMobilePos ? "100%" : 100,
-              maxWidth: isMobilePos ? "100%" : 190,
+              minWidth: isMobilePos ? "100%" : 60,
               height: 56, minHeight: 56,
               flexShrink: 0, borderRadius: RADIO.control, cursor: "pointer",
               boxSizing: "border-box",
