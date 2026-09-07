@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.497";
+const VERSION_APP = "9.500";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1022,6 +1022,48 @@ const precioConLista = (producto, lista) => {
   return Math.max(0, Math.round(ajustado));
 };
 // La foto principal es la primera de la galería
+// ===== Las fotos como archivos =====
+// Antes cada foto viajaba dentro del producto, convertida a texto: al abrir la
+// app se bajaban las 1173 aunque no se mirara ninguna. Ahora se suben al
+// almacenamiento y en la base queda sólo la dirección, así el navegador baja
+// cada una recién cuando aparece en pantalla.
+const esFotoGuardada = (v) => typeof v === "string" && v.indexOf("data:") !== 0;
+
+async function subirFoto(dataUrl, nombreBase) {
+  // Ya es una dirección: no hay nada que subir
+  if (esFotoGuardada(dataUrl)) return dataUrl;
+  const coma = dataUrl.indexOf(",");
+  const cabecera = dataUrl.slice(0, coma);
+  const tipo = (cabecera.match(/data:([^;]+)/) || [])[1] || "image/jpeg";
+  const ext = tipo.indexOf("png") >= 0 ? "png" : tipo.indexOf("webp") >= 0 ? "webp" : "jpg";
+
+  // El texto vuelve a ser un archivo
+  const binario = atob(dataUrl.slice(coma + 1));
+  const bytes = new Uint8Array(binario.length);
+  for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i);
+  const archivo = new Blob([bytes], { type: tipo });
+
+  const limpio = String(nombreBase || "foto").toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "foto";
+  const ruta = limpio + "-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7) + "." + ext;
+
+  const { error } = await nube.storage.from("fotos").upload(ruta, archivo, {
+    contentType: tipo, cacheControl: "31536000", upsert: false
+  });
+  if (error) throw new Error(error.message);
+  return nube.storage.from("fotos").getPublicUrl(ruta).data.publicUrl;
+}
+
+// Sube las que hagan falta y devuelve la lista de direcciones
+async function subirFotosDe(producto) {
+  const fotos = imagenesDe(producto);
+  if (!fotos.length || fotos.every(esFotoGuardada)) return null;
+  const salida = [];
+  for (const f of fotos) salida.push(await subirFoto(f, producto.nombre));
+  return salida;
+}
+
 const imagenesDe = (p) => {
   if (p && p.imagenes && p.imagenes.length) return p.imagenes;
   return p && p.imagen ? [p.imagen] : [];
@@ -1487,6 +1529,11 @@ function ControlTienda() {
             } else if (c.tipo === "cliente") {
               salida = { ...salida, clientes: salida.clientes.map((x) =>
                 x.id === c.viejo ? { ...x, id: c.nuevo } : x) };
+            } else if (c.tipo === "fotos") {
+              // Se reemplaza la imagen pesada por su dirección, así no vuelve
+              // a subirse en el próximo guardado.
+              salida = { ...salida, productos: salida.productos.map((p) =>
+                p.id === c.id ? { ...p, imagenes: c.imagenes, imagen: c.imagenes[0] || "" } : p) };
             } else if (c.tipo === "venta") {
               salida = { ...salida, ventas: salida.ventas.map((v) =>
                 v.id === c.viejo ? { ...v, id: c.nuevo } : v) };
@@ -2629,7 +2676,7 @@ function NegocioModal({ negocio, onGuardar, onClose }) {
 function AvatarNegocio({ negocio, size = 36, radio = 9 }) {
   const base = { width: size, height: size, borderRadius: radio, flexShrink: 0, objectFit: "cover" };
   if (negocio && negocio.logo) {
-    return React.createElement("img", { src: negocio.logo, alt: negocio.nombre, style: { ...base, border: "none" } });
+    return React.createElement("img", { loading: "lazy", decoding: "async", src: negocio.logo, alt: negocio.nombre, style: { ...base, border: "none" } });
   }
   return React.createElement(
     "span",
@@ -3841,7 +3888,7 @@ function VisorComprobante({ src, onClose }) {
         padding: 16, cursor: "zoom-out"
       }
     },
-    React.createElement("img", {
+    React.createElement("img", { loading: "lazy", decoding: "async",
       src,
       alt: "Comprobante",
       // El clic en la imagen no cierra: así se puede acercar sin querer salir
@@ -4286,6 +4333,25 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
   // terminar. En tandas, 675 productos son 7 llamadas en vez de 675.
   const prods = queCambio(antes.productos, despues.productos);
   const TANDA = 100;
+
+  // Las fotos nuevas se suben como archivos antes de guardar el producto: en
+  // la base queda la dirección, no la imagen entera.
+  const subirLasFotos = async (lista) => {
+    for (let i = 0; i < lista.length; i++) {
+      try {
+        const urls = await subirFotosDe(lista[i]);
+        if (urls) {
+          lista[i] = { ...lista[i], imagenes: urls, imagen: urls[0] || "" };
+          cambios.push({ tipo: "fotos", id: lista[i].id, imagenes: urls });
+        }
+      } catch (e) {
+        console.error("No se pudo subir una foto", e);
+        if (avisarProblema) avisarProblema("Una foto no se pudo subir: " + String((e && e.message) || e));
+      }
+    }
+  };
+  await subirLasFotos(prods.nuevos);
+  await subirLasFotos(prods.editados);
 
   for (let i = 0; i < prods.nuevos.length; i += TANDA) {
     const grupo = prods.nuevos.slice(i, i + TANDA);
@@ -4953,7 +5019,7 @@ function ListaComprobantes({ ventas, lista, onCambiar }) {
           }
         },
         c.imagen
-          ? React.createElement("img", {
+          ? React.createElement("img", { loading: "lazy", decoding: "async",
               src: c.imagen, alt: "",
               onClick: () => setAmpliado(c.imagen),
               title: "Ver en grande",
@@ -5026,8 +5092,13 @@ function ProductoThumb({ producto, size = 44 }) {
     return React.createElement(
       React.Fragment,
       null,
-      React.createElement("img", {
+      React.createElement("img", { loading: "lazy", decoding: "async",
         src: foto, alt: producto.nombre,
+        // El navegador baja la foto recién cuando entra en pantalla: con mil
+        // productos en la lista, eso es la diferencia entre bajar diez
+        // imágenes y bajarlas todas.
+        loading: "lazy",
+        decoding: "async",
         onClick: (e) => { e.stopPropagation(); setAmpliada(true); },
         title: "Ver la foto en grande",
         style: { ...base, cursor: "zoom-in" }
@@ -5080,7 +5151,7 @@ function VisorFotosProducto({ producto, fotos, onClose }) {
         padding: 16, cursor: "zoom-out"
       }
     },
-    React.createElement("img", {
+    React.createElement("img", { loading: "lazy", decoding: "async",
       src: fotos[i],
       alt: producto.nombre,
       onClick: (e) => e.stopPropagation(),
@@ -9821,7 +9892,7 @@ function ProductoForm({ initial, onSave, onCancel, categorias, proveedores, list
             ? React.createElement(
                 "div",
                 { style: { position: "relative" } },
-                React.createElement("img", {
+                React.createElement("img", { loading: "lazy", decoding: "async",
                   src: f.imagenes[0], alt: "",
                   style: { width: 150, height: 150, objectFit: "cover", borderRadius: 12, border: "none", display: "block" }
                 }),
@@ -11609,7 +11680,7 @@ function ConsultarPrecioModal({ data, listaActual, onClose }) {
         "div",
         { style: { display: "flex", gap: 14, alignItems: "flex-start" } },
         p.imagen
-          ? React.createElement("img", { src: p.imagen, alt: p.nombre, style: { width: 84, height: 84, objectFit: "cover", borderRadius: 9, border: "1px solid " + posColors.inputBorder, flexShrink: 0 } })
+          ? React.createElement("img", { loading: "lazy", decoding: "async", src: p.imagen, alt: p.nombre, style: { width: 84, height: 84, objectFit: "cover", borderRadius: 9, border: "1px solid " + posColors.inputBorder, flexShrink: 0 } })
           : React.createElement(
               "div",
               { style: { width: 84, height: 84, borderRadius: 9, border: "1px solid " + posColors.inputBorder, background: posColors.input, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } },
@@ -11709,7 +11780,7 @@ function ConsultarPrecioModal({ data, listaActual, onClose }) {
       }
     },
     p.imagen
-      ? React.createElement("img", { src: p.imagen, alt: "", style: { width: 38, height: 38, borderRadius: 8, objectFit: "cover", flexShrink: 0 } })
+      ? React.createElement("img", { loading: "lazy", decoding: "async", src: p.imagen, alt: "", style: { width: 38, height: 38, borderRadius: 8, objectFit: "cover", flexShrink: 0 } })
       : React.createElement("span", { style: { width: 38, height: 38, borderRadius: 8, background: posColors.card, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } },
           React.createElement(Package, { size: 18, color: posColors.muted })),
     React.createElement(
@@ -16206,7 +16277,7 @@ function CampoImagen({ label, ayuda, valor, onCambiar, alto = 96, ancho = "100%"
           }
         },
         valor
-          ? React.createElement("img", { src: valor, alt: label, style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } })
+          ? React.createElement("img", { loading: "lazy", decoding: "async", src: valor, alt: label, style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } })
           : React.createElement("span", { style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 5, color: "var(--muted)", fontSize: 11.5 } },
               React.createElement(ArrowUpCircle, { size: 17 }), "Subir")
       ),
@@ -16637,7 +16708,7 @@ function CatalogoOnline({ data, persist }) {
             "div",
             { style: { display: "flex", alignItems: "center", gap: 10, background: "#075E54", padding: "10px 13px" } },
             cfg.logo
-              ? React.createElement("img", { src: cfg.logo, alt: "", style: { width: 32, height: 32, borderRadius: "50%", objectFit: "cover" } })
+              ? React.createElement("img", { loading: "lazy", decoding: "async", src: cfg.logo, alt: "", style: { width: 32, height: 32, borderRadius: "50%", objectFit: "cover" } })
               : React.createElement("span", { style: { width: 32, height: 32, borderRadius: "50%", background: "rgba(255,255,255,0.25)" } }),
             React.createElement(
               "span",
@@ -16682,7 +16753,7 @@ function CatalogoOnline({ data, persist }) {
         "div",
         { style: { aspectRatio: "16 / 6", minHeight: 120, background: cfg.portada ? "transparent" : "var(--surface-2)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" } },
         cfg.portada
-          ? React.createElement("img", { src: cfg.portada, alt: "", style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } })
+          ? React.createElement("img", { loading: "lazy", decoding: "async", src: cfg.portada, alt: "", style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } })
           : React.createElement("span", { style: { fontSize: 12, color: "var(--muted)" } }, "Sin imagen de portada")
       ),
 
@@ -16691,7 +16762,7 @@ function CatalogoOnline({ data, persist }) {
         "div",
         { style: { display: "flex", alignItems: "center", gap: 13, padding: "16px 18px 12px" } },
         cfg.logo
-          ? React.createElement("img", { src: cfg.logo, alt: "", style: { width: 62, height: 62, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--line)", flexShrink: 0 } })
+          ? React.createElement("img", { loading: "lazy", decoding: "async", src: cfg.logo, alt: "", style: { width: 62, height: 62, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--line)", flexShrink: 0 } })
           : React.createElement("span", { style: { width: 62, height: 62, borderRadius: "50%", background: "var(--surface-2)", border: "2px solid var(--line)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--muted)", fontSize: 20, fontWeight: 700, flexShrink: 0 } }, negocioNombre[0]),
         React.createElement(
           "div",
@@ -16778,7 +16849,7 @@ function CatalogoOnline({ data, persist }) {
                     "div",
                     { style: { position: "relative", aspectRatio: "1 / 1", borderRadius: 10, overflow: "hidden", background: "var(--surface-2)", border: "none" } },
                     p.imagen
-                      ? React.createElement("img", { src: p.imagen, alt: p.nombre, style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } })
+                      ? React.createElement("img", { loading: "lazy", decoding: "async", src: p.imagen, alt: p.nombre, style: { width: "100%", height: "100%", objectFit: "cover", display: "block" } })
                       : React.createElement("div", { style: { width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 10, textAlign: "center", fontSize: 11, color: "var(--muted)", textTransform: "uppercase" } }, p.nombre),
                     !sinStock && React.createElement("span", { style: { position: "absolute", right: 7, bottom: 7, width: 27, height: 27, borderRadius: "50%", background: acento, display: "flex", alignItems: "center", justifyContent: "center" } },
                       React.createElement(Plus, { size: 15, color: "#fff", strokeWidth: 2.6 }))
@@ -19874,7 +19945,7 @@ function RemitoTransferencia({ data, transferencia, negocios, onClose }) {
             "td",
             { style: { paddingLeft: 16 } },
             l.imagen
-              ? React.createElement("img", {
+              ? React.createElement("img", { loading: "lazy", decoding: "async",
                   src: l.imagen, alt: "",
                   style: { width: 44, height: 44, objectFit: "cover", borderRadius: 8, border: "none", display: "block" }
                 })
@@ -21084,6 +21155,87 @@ function TransferenciasView({ data, persist }) {
 // Vaciar el negocio para arrancar de cero. Se conserva el equipo, el plan y
 // toda la configuración; se va lo operativo. Como no hay vuelta atrás, pide
 // escribir una palabra y ofrece bajar un respaldo antes.
+// Pasa las fotos que ya están guardadas dentro de la base al almacenamiento.
+// Se hace de a poco y se puede cortar: cada producto migrado queda listo.
+function MigrarFotosModal({ data, persist, onClose }) {
+  const [estado, setEstado] = useState("listo");
+  const [hechos, setHechos] = useState(0);
+  const [fallados, setFallados] = useState(0);
+  const cortar = React.useRef(false);
+
+  const pendientes = (data.productos || []).filter((p) =>
+    imagenesDe(p).some((f) => !esFotoGuardada(f)));
+
+  const migrar = async () => {
+    setEstado("trabajando");
+    cortar.current = false;
+    let ok = 0, mal = 0;
+    let productos = data.productos;
+
+    for (const p of pendientes) {
+      if (cortar.current) break;
+      try {
+        const urls = await subirFotosDe(p);
+        if (urls) {
+          productos = productos.map((x) => x.id === p.id
+            ? { ...x, imagenes: urls, imagen: urls[0] || "" } : x);
+          ok++;
+          setHechos(ok);
+          // Se guarda cada diez, para no perder todo si algo se corta
+          if (ok % 10 === 0) persist({ ...data, productos });
+        }
+      } catch (e) {
+        mal++;
+        setFallados(mal);
+      }
+    }
+    persist({ ...data, productos });
+    setEstado("terminado");
+  };
+
+  return React.createElement(
+    ModalOverlay,
+    { width: 460 },
+    React.createElement(ModalHeader, { icon: Package, title: "Mover las fotos", onClose }),
+    React.createElement("p", { style: { fontSize: 13.5, color: "var(--muted)", lineHeight: 1.6, marginTop: -6 } },
+      "Las fotos que cargaste antes están guardadas dentro de la base, así que se bajan todas al abrir la app. Moverlas hace que cada una se baje recién cuando aparece en pantalla."),
+
+    React.createElement(
+      "div",
+      { style: { background: "var(--surface-2)", borderRadius: 10, padding: "14px 16px", margin: "16px 0" } },
+      React.createElement("div", { style: { fontFamily: "'Inter Tight', sans-serif", fontSize: 26, fontWeight: 700 } },
+        pendientes.length),
+      React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: 2 } },
+        pendientes.length === 1 ? "producto con fotos por mover" : "productos con fotos por mover")
+    ),
+
+    estado === "trabajando" && React.createElement(
+      "div",
+      { style: { fontSize: 13, marginBottom: 14 } },
+      React.createElement("div", null, "Moviendo\u2026 ", React.createElement("strong", null, hechos), " de ", pendientes.length),
+      fallados > 0 && React.createElement("div", { style: { color: "var(--rose)", marginTop: 4 } },
+        fallados, " no se pudieron mover")
+    ),
+
+    estado === "terminado" && React.createElement(
+      "div",
+      { style: { fontSize: 13, marginBottom: 14, color: "var(--sage)", fontWeight: 600 } },
+      "Listo: ", hechos, " movidos",
+      fallados > 0 ? " · " + fallados + " con problemas" : ""
+    ),
+
+    React.createElement(
+      "div",
+      { style: { display: "flex", justifyContent: "flex-end", gap: 10 } },
+      estado === "trabajando"
+        ? React.createElement(Button, { tone: "ghost", onClick: () => { cortar.current = true; }, style: { padding: "12px 20px" } }, "Detener")
+        : React.createElement(Button, { tone: "ghost", onClick: onClose, style: { padding: "12px 20px" } }, "Cerrar"),
+      estado !== "trabajando" && pendientes.length > 0 && React.createElement(
+        Button, { onClick: migrar, style: { padding: "12px 22px" } }, "Mover las fotos")
+    )
+  );
+}
+
 function RestablecerModal({ data, persist, onClose }) {
   const [texto, setTexto] = useState("");
   const [respaldado, setRespaldado] = useState(false);
@@ -21169,6 +21321,7 @@ function RestablecerModal({ data, persist, onClose }) {
 
 function ConfiguracionView({ data, persist, tema, setTema }) {
   const [restablecer, setRestablecer] = useState(false);
+  const [migrarFotos, setMigrarFotos] = useState(false);
   const [importarVentas, setImportarVentas] = useState(false);
   const [migrar, setMigrar] = useState(false);
   const [sonido, setSonido] = useState(() => {
@@ -21289,6 +21442,23 @@ function ConfiguracionView({ data, persist, tema, setTema }) {
     ),
     importarVentas && React.createElement(ImportarVentasModal, {
       data, persist, onClose: () => setImportarVentas(false)
+    }),
+
+    // Mover las fotos: hace que la app abra mucho más rápido
+    puede(data, "gestionarUsuarios") && React.createElement(
+      BloqueCatalogo,
+      {
+        icono: Package,
+        titulo: "Mover las fotos al almacenamiento",
+        ayuda: "Las fotos cargadas antes viajan dentro de los datos, así que se bajan todas al abrir la app. Moviéndolas, cada una se baja recién cuando aparece en pantalla.",
+        extra: React.createElement(Button, {
+          onClick: () => setMigrarFotos(true),
+          style: { padding: "11px 20px" }
+        }, "Mover las fotos")
+      }
+    ),
+    migrarFotos && React.createElement(MigrarFotosModal, {
+      data, persist, onClose: () => setMigrarFotos(false)
     }),
 
     // Zona de riesgo: va al final y separada, para no tocarla sin querer
@@ -25007,7 +25177,7 @@ function VentasReportes({ data, rango, persist }) {
         fechaHoraLabel(verComprobante.fecha), " \u00B7 ", money(verComprobante.total),
         verComprobante.clienteNombre ? " \u00B7 " + verComprobante.clienteNombre : ""
       ),
-      React.createElement("img", {
+      React.createElement("img", { loading: "lazy", decoding: "async",
         src: verComprobante.comprobante, alt: "Comprobante",
         style: { width: "100%", borderRadius: 10, border: "none", display: "block" }
       }),
@@ -25684,7 +25854,7 @@ function ComprobantesReportes({ data, rango }) {
                   }
                 },
                 c.imagen
-                  ? React.createElement("img", {
+                  ? React.createElement("img", { loading: "lazy", decoding: "async",
                       src: c.imagen, alt: "",
                       onClick: () => setAmpliado(c.imagen),
                       title: "Ver en grande",
@@ -26304,7 +26474,7 @@ function DetalleCierreModal({ cierre, onClose, data }) {
           "div",
           { key: c.clave, style: { display: "flex", alignItems: "center", gap: 11, background: "var(--surface-2)", borderRadius: 10, padding: "9px 11px" } },
           c.imagen
-            ? React.createElement("img", {
+            ? React.createElement("img", { loading: "lazy", decoding: "async",
                 src: c.imagen, alt: "",
                 onClick: () => setAmpliado(c.imagen),
                 title: "Ver en grande",
