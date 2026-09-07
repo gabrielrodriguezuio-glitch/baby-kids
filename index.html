@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.687";
+const VERSION_APP = "9.692";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -10696,16 +10696,17 @@ function ElegirTalleModal({ producto, precio, negocioId, onElegir, onClose }) {
               "button",
               {
                 key: clave,
-                onClick: () => !sin && setElegido(clave),
-                onDoubleClick: () => !sin && onElegir(clave),
-                disabled: sin,
+                // Se puede elegir aunque figure sin stock: la prenda puede
+                // estar en la mano y el conteo mal. Queda en negativo y avisado.
+                onClick: () => setElegido(clave),
+                onDoubleClick: () => onElegir(clave),
                 style: {
                   display: "flex", alignItems: "center", gap: 14, width: "100%", textAlign: "left",
                   padding: "13px 15px", borderRadius: 10,
-                  border: "1px solid " + (activo ? posColors.accent : posColors.inputBorder),
+                  border: "1px solid " + (activo ? posColors.accent : (sin ? "color-mix(in srgb, var(--mustard) 45%, transparent)" : posColors.inputBorder)),
                   background: activo ? "var(--denim-soft)" : posColors.input,
-                  cursor: sin ? "not-allowed" : "pointer",
-                  opacity: sin ? 0.45 : 1,
+                  cursor: "pointer",
+                  opacity: sin ? 0.7 : 1,
                   fontFamily: "'Inter', sans-serif"
                 }
               },
@@ -10962,8 +10963,9 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     setCart(
       cart.map((it) => {
         if (itemKey(it) !== itemKey(item)) return it;
-        const max = it.stockDisp === Infinity ? Infinity : it.stockDisp;
-        return { ...it, cantidad: Math.min(max, Math.max(0, it.cantidad + delta)) };
+        // Sin tope: el conteo puede estar mal y la prenda estar en la mano.
+        // Queda el aviso naranja para revisarlo después.
+        return { ...it, cantidad: Math.max(0, it.cantidad + delta) };
       }).filter((it) => it.cantidad > 0)
     );
   };
@@ -10993,7 +10995,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
       color: partes[1] || "",
       nombre: prod.nombre + " · " + textoDeClave(nuevoTalle),
       nombreBase: prod.nombre,
-      cantidad: Math.min(disponible, it.cantidad),
+      cantidad: it.cantidad,
       stockDisp: disponible
     }));
   };
@@ -11456,10 +11458,10 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
               React.createElement(
                 "span",
                 { style: { textAlign: "right", whiteSpace: "nowrap" } },
-                React.createElement("span", { style: { display: "block", fontFamily: "'IBM Plex Mono', monospace", fontSize: 14.5, fontWeight: 600, color: hay > 0 ? posColors.text : posColors.danger } },
-                  hay > 0 ? money(precioConLista(prod, listaActual)) : "sin stock"),
+                React.createElement("span", { style: { display: "block", fontFamily: "'IBM Plex Mono', monospace", fontSize: 14.5, fontWeight: 600, color: posColors.text } },
+                  money(precioConLista(prod, listaActual))),
                 // El mayorista al lado: es lo que se cobra pagando en efectivo
-                hay > 0 && listaMayorista && precioConLista(prod, listaMayorista) < precioConLista(prod, listaActual) &&
+                listaMayorista && precioConLista(prod, listaMayorista) < precioConLista(prod, listaActual) &&
                   React.createElement("span", { style: { display: "block", fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "var(--sage)", marginTop: 1 } },
                     "may. " + money(precioConLista(prod, listaMayorista)))
               )
@@ -26472,9 +26474,17 @@ function VentasReportes({ data, rango, persist }) {
   // sincronización se agrega al final, y sin esto quedaba abajo de todo.
   // La hora viene como "02:30 p. m.", así que compararla como texto ponía las
   // de la mañana antes que las de la tarde. Se convierte a un número primero.
+  // Las más nuevas primero. Si a una le falta la hora se usa su fecha, que
+  // antes contaba como cero y la mandaba al fondo de la tabla.
+  const cuando = (v) => {
+    const m = momentoDeVenta(v);
+    if (m != null) return m;
+    const d = new Date((v.fecha || "1970-01-01") + "T00:00:00");
+    return isNaN(d.getTime()) ? 0 : d.getTime();
+  };
   const todas = data.ventas
     .filter((v) => rango.enRango(v.fecha))
-    .sort((a, b) => (momentoDeVenta(b) || 0) - (momentoDeVenta(a) || 0));
+    .sort((a, b) => cuando(b) - cuando(a));
   const [escaneandoVenta, setEscaneandoVenta] = useState(false);
   const q = busqueda.trim().toLowerCase();
   // Cada palabra tiene que aparecer en algún lado de la venta, así se puede
