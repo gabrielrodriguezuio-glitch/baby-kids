@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.630";
+const VERSION_APP = "9.635";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -160,10 +160,18 @@ const diaLocal = (marca) => {
   return isoLocal(d);
 };
 
+
 // Pasa una fecha al formato aaaa-mm-dd usando el reloj de acá
 const isoLocal = (d) =>
   new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 const todayISO = () => isoLocal(/* @__PURE__ */ new Date());
+
+// La fecha de hace N meses, para no traer el historial entero cada vez
+const haceMeses = (n) => {
+  const d = new Date();
+  d.setMonth(d.getMonth() - n);
+  return isoLocal(d);
+};
 const money = (n) => new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(n || 0);
 const fecha = (iso) => (/* @__PURE__ */ new Date(iso + "T00:00:00")).toLocaleDateString("es-AR", { day: "2-digit", month: "short" });
 // Fecha numérica completa: 31/8/2021
@@ -4869,10 +4877,11 @@ async function traerDeLaNube(quienEntro) {
       traerTodo("productos", "nombre"),
       traerTodo("variantes"),
       traerTodo("clientes", "nombre"),
-      // Las ventas de los últimos tres meses: para atrás se consultan por
-      // informe, no hace falta tenerlas todas cargadas todo el tiempo.
-      traerTodo("ventas"),
-      traerTodo("venta_items"),
+      // Los últimos seis meses: alcanza para el trabajo diario, los informes
+      // y los cambios. Sin este corte, al año serían 50.000 filas al abrir la
+      // app y cada arranque se haría más lento que el anterior.
+      nube.from("ventas").select("*").gte("fecha", haceMeses(6)).order("fecha", { ascending: false }),
+      nube.from("venta_items").select("*").gte("creado_en", haceMeses(6)),
       traerTodo("movimientos_cc"),
       nube.from("ajustes").select("datos").eq("id", 1).maybeSingle(),
       nube.from("usuarios").select("*").order("creado_en"),
