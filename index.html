@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.575";
+const VERSION_APP = "9.580";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1328,6 +1328,8 @@ function ControlTienda() {
 
   const [editandoProducto, setEditandoProducto] = useState(false);
   const [verCaja, setVerCaja] = useState(false);
+  // Lo que quedó por cobrar de un cambio, para cargarlo en el carrito
+  const [cobroPendiente, setCobroPendiente] = useState(null);
   const [senalNuevaTarea, setSenalNuevaTarea] = useState(0);
   const [senalReparto, setSenalReparto] = useState(null);
   // El rango de Reportes vive acá para que los controles entren en el encabezado
@@ -1697,7 +1699,7 @@ function ControlTienda() {
         borderRadius: "0 10px 10px 0", color: "var(--muted)",
         display: "flex", alignItems: "center", justifyContent: "center"
       }
-    }, /* @__PURE__ */ React.createElement(ChevronRight, { size: 16 })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, marginLeft: (!isMobile && !railOculto) ? (window.innerWidth < 1050 ? 188 : 226) : 0 } }, /* @__PURE__ */ React.createElement(Header, { data, persist, mobile: isMobile, tab, editandoProducto, rangoReportes, filtrosReportes, setFiltrosReportes, rangoNegocios, filtroNegocios, setFiltroNegocios, onExportarNegocios: () => setSenalExportar(Date.now()), onNuevaTarea: () => setSenalNuevaTarea(Date.now()), onAgregarParada: () => setSenalReparto({ tipo: "agregar", n: Date.now() }), onCerrarVuelta: () => setSenalReparto({ tipo: "cerrar", n: Date.now() }), onVerReposicion: () => setSenalReparto({ tipo: "reposicion", n: Date.now() }), onNuevoProducto: () => setSenalNuevo((n) => n + 1), onNuevoMovimiento: () => setSenalMovimiento((n) => n + 1), onNuevoUsuario: () => setSenalUsuario((n) => n + 1), onVerInvitaciones: () => setSenalInvitaciones((n) => n + 1), onVerRoles: () => setSenalRoles((n) => n + 1), onNuevoCliente: () => setSenalNuevoCliente((n) => n + 1), onImportarClientes: () => setSenalImportarClientes((n) => n + 1), onBorrarClientes: () => setSenalBorrarClientes((n) => n + 1), onOpcionCatalogo: (accion) => setOpcionCatalogo({ accion, n: Date.now() }) }), /* @__PURE__ */ React.createElement("div", { className: "ct-main ct-limite", style: { padding: isMobile ? "0 12px 96px" : "0 28px 48px" } }, tab === "pos" && /* @__PURE__ */ React.createElement(PuntoDeVenta, { data, persist }), tab === "caja" && /* @__PURE__ */ React.createElement(CajaView, { data, persist }), tab === "cambios" && /* @__PURE__ */ React.createElement(CambiosView, { data, persist, onCerrar: () => setTab("pos") }), tab === "inventario" && /* @__PURE__ */ React.createElement(Inventario, { data, persist, senalNuevo, opcionElegida: opcionCatalogo, salto , onEditando: setEditandoProducto }), tab === "stock" && /* @__PURE__ */ React.createElement(InventarioStock, { data, persist }), tab === "ronda" && /* @__PURE__ */ React.createElement(RondaSemanalView, { data, persist, onIrAReparto: () => setTab("reparto") }), tab === "reparto" && /* @__PURE__ */ React.createElement(RepartoView, { data, persist, senalReparto }), tab === "tareas" && /* @__PURE__ */ React.createElement(TareasView, { data, persist, senalNuevaTarea }), tab === "clientes" && /* @__PURE__ */ React.createElement(Clientes, { data, persist, senalNuevoCliente, senalImportarClientes, senalBorrarClientes, salto }), tab === "catalogo" && /* @__PURE__ */ React.createElement(CatalogoOnline, { data, persist }), tab === "usuarios" && /* @__PURE__ */ React.createElement(UsuariosView, { data, persist, senalUsuario, senalInvitaciones, senalRoles }), (tab === "negocios" || tab === "reportes") && /* @__PURE__ */ React.createElement(NegociosInicio, { data, persist, setTab, filtroNegocio: filtroNegocios, rango: rangoNegocios, senalExportar, filtros: filtrosReportes }), tab === "negocios-productos" && /* @__PURE__ */ React.createElement(NegociosProductos, { data, persist, setTab, senalNuevo }), tab === "transferencias" && /* @__PURE__ */ React.createElement(TransferenciasView, { data, persist }), tab === "actividad" && /* @__PURE__ */ React.createElement(ActividadView, { data, persist, senalMovimiento }), tab === "configuracion" && /* @__PURE__ */ React.createElement(ConfiguracionView, { data, persist, tema, setTema }), tab === "soporte" && /* @__PURE__ */ React.createElement(SoporteView, { data })))), isMobile && /* @__PURE__ */ React.createElement(Sidebar, { tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile: true, data, usuario, onAbrirCaja: () => setVerCaja(true), onCambiarUsuario: () => setCambiarUsuario(true) }), verCaja && /* @__PURE__ */ React.createElement(CajaRapida, { data, persist, onClose: () => setVerCaja(false) }),  buscando && /* @__PURE__ */ React.createElement(BuscadorGeneral, {
+    }, /* @__PURE__ */ React.createElement(ChevronRight, { size: 16 })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, marginLeft: (!isMobile && !railOculto) ? (window.innerWidth < 1050 ? 188 : 226) : 0 } }, /* @__PURE__ */ React.createElement(Header, { data, persist, mobile: isMobile, tab, editandoProducto, rangoReportes, filtrosReportes, setFiltrosReportes, rangoNegocios, filtroNegocios, setFiltroNegocios, onExportarNegocios: () => setSenalExportar(Date.now()), onNuevaTarea: () => setSenalNuevaTarea(Date.now()), onAgregarParada: () => setSenalReparto({ tipo: "agregar", n: Date.now() }), onCerrarVuelta: () => setSenalReparto({ tipo: "cerrar", n: Date.now() }), onVerReposicion: () => setSenalReparto({ tipo: "reposicion", n: Date.now() }), onNuevoProducto: () => setSenalNuevo((n) => n + 1), onNuevoMovimiento: () => setSenalMovimiento((n) => n + 1), onNuevoUsuario: () => setSenalUsuario((n) => n + 1), onVerInvitaciones: () => setSenalInvitaciones((n) => n + 1), onVerRoles: () => setSenalRoles((n) => n + 1), onNuevoCliente: () => setSenalNuevoCliente((n) => n + 1), onImportarClientes: () => setSenalImportarClientes((n) => n + 1), onBorrarClientes: () => setSenalBorrarClientes((n) => n + 1), onOpcionCatalogo: (accion) => setOpcionCatalogo({ accion, n: Date.now() }) }), /* @__PURE__ */ React.createElement("div", { className: "ct-main ct-limite", style: { padding: isMobile ? "0 12px 96px" : "0 28px 48px" } }, tab === "pos" && /* @__PURE__ */ React.createElement(PuntoDeVenta, { data, persist, cobroPendiente, onCobroTomado: () => setCobroPendiente(null) }), tab === "caja" && /* @__PURE__ */ React.createElement(CajaView, { data, persist }), tab === "cambios" && /* @__PURE__ */ React.createElement(CambiosView, { data, persist, onCerrar: () => setTab("pos"), onCobrar: (c) => { setCobroPendiente(c); setTab("pos"); } }), tab === "inventario" && /* @__PURE__ */ React.createElement(Inventario, { data, persist, senalNuevo, opcionElegida: opcionCatalogo, salto , onEditando: setEditandoProducto }), tab === "stock" && /* @__PURE__ */ React.createElement(InventarioStock, { data, persist }), tab === "ronda" && /* @__PURE__ */ React.createElement(RondaSemanalView, { data, persist, onIrAReparto: () => setTab("reparto") }), tab === "reparto" && /* @__PURE__ */ React.createElement(RepartoView, { data, persist, senalReparto }), tab === "tareas" && /* @__PURE__ */ React.createElement(TareasView, { data, persist, senalNuevaTarea }), tab === "clientes" && /* @__PURE__ */ React.createElement(Clientes, { data, persist, senalNuevoCliente, senalImportarClientes, senalBorrarClientes, salto }), tab === "catalogo" && /* @__PURE__ */ React.createElement(CatalogoOnline, { data, persist }), tab === "usuarios" && /* @__PURE__ */ React.createElement(UsuariosView, { data, persist, senalUsuario, senalInvitaciones, senalRoles }), (tab === "negocios" || tab === "reportes") && /* @__PURE__ */ React.createElement(NegociosInicio, { data, persist, setTab, filtroNegocio: filtroNegocios, rango: rangoNegocios, senalExportar, filtros: filtrosReportes }), tab === "negocios-productos" && /* @__PURE__ */ React.createElement(NegociosProductos, { data, persist, setTab, senalNuevo }), tab === "transferencias" && /* @__PURE__ */ React.createElement(TransferenciasView, { data, persist }), tab === "actividad" && /* @__PURE__ */ React.createElement(ActividadView, { data, persist, senalMovimiento }), tab === "configuracion" && /* @__PURE__ */ React.createElement(ConfiguracionView, { data, persist, tema, setTema }), tab === "soporte" && /* @__PURE__ */ React.createElement(SoporteView, { data })))), isMobile && /* @__PURE__ */ React.createElement(Sidebar, { tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile: true, data, usuario, onAbrirCaja: () => setVerCaja(true), onCambiarUsuario: () => setCambiarUsuario(true) }), verCaja && /* @__PURE__ */ React.createElement(CajaRapida, { data, persist, onClose: () => setVerCaja(false) }),  buscando && /* @__PURE__ */ React.createElement(BuscadorGeneral, {
     data,
     negocioId: negocioActivo(data).id,
     onIr: (r) => {
@@ -10704,7 +10706,7 @@ const nuevoCarrito = (n, listaId) => ({
   extras: { ...EXTRAS_VACIOS }
 });
 
-function PuntoDeVenta({ data, persist }) {
+function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado }) {
   const isMobilePos = useIsMobile();
   // Todo el punto de venta trabaja sobre el stock del negocio activo
   const negocioId = negocioActivo(data).id;
@@ -10840,6 +10842,20 @@ function PuntoDeVenta({ data, persist }) {
   const addMontoManual = (nombre, monto) => {
     setCart([...cart, { productoId: null, manualId: uid(), nombre, precioUnit: monto, costo: 0, cantidad: 1, stockDisp: Infinity }]);
   };
+
+  // Viene de un cambio con diferencia a pagar: entra al carrito para que el
+  // cobro quede con su medio de pago y sume a la caja.
+  useEffect(() => {
+    if (!cobroPendiente) return;
+    setCart((actual) => [...actual, {
+      productoId: null, manualId: uid(),
+      nombre: cobroPendiente.concepto,
+      precioUnit: cobroPendiente.monto, costo: 0, cantidad: 1, stockDisp: Infinity
+    }]);
+    if (cobroPendiente.clienteId) setClienteId(cobroPendiente.clienteId);
+    avisar("Diferencia del cambio en el carrito: cobrala como siempre", { tono: "info" });
+    if (onCobroTomado) onCobroTomado();
+  }, [cobroPendiente]);
 
   // Cobrar la deuda junto con la compra: entra como una línea más del carrito
   const clienteDelCarrito = (data.clientes || []).find((c) => c.id === clienteId) || null;
@@ -21201,8 +21217,67 @@ function NotaCreditoModal({ data, nota, onClose }) {
     return { estilos, cuerpo, titulo: "Nota de crédito " + nota.numero };
   };
 
-  const imprimir = () => {
-    const d = armarDocumento();
+  // Versión rollo: la misma nota pero angosta, para la impresora del
+  // mostrador. Es lo que se le entrega al cliente en la mano.
+  const armarTicket = () => {
+    const esc = escaparHTML;
+    const estilos =
+      "@page{size:80mm auto;margin:0}" +
+      "body{width:72mm;margin:0 auto;padding:4mm 0;font-family:'IBM Plex Mono',monospace;font-size:9.5pt;line-height:1.45;color:#000}" +
+      "h1{font-size:13pt;text-align:center;margin:0 0 1mm;letter-spacing:.02em}" +
+      ".neg{text-align:center;font-size:9pt;margin-bottom:3mm}" +
+      ".sep{border-top:1px dashed #000;margin:3mm 0}" +
+      ".valor{text-align:center;border:1.5px solid #000;padding:3mm;margin:3mm 0}" +
+      ".valor .rot{font-size:8pt;letter-spacing:.1em}" +
+      ".valor .n{font-size:19pt;font-weight:700;margin-top:1mm}" +
+      ".fila{display:flex;justify-content:space-between;gap:3mm;margin-bottom:1mm}" +
+      ".fila span:last-child{text-align:right}" +
+      ".item{margin-bottom:2mm}" +
+      ".item .det{font-size:8.5pt;padding-left:4mm}" +
+      ".pie{font-size:8pt;text-align:center;margin-top:4mm;line-height:1.5}" +
+      ".firma{margin-top:9mm;border-top:1px solid #000;padding-top:1mm;font-size:8pt;text-align:center}";
+
+    const linea = (a, b) => "<div class='fila'><span>" + a + "</span><span>" + b + "</span></div>";
+
+    const cuerpo =
+      "<h1>NOTA DE CRÉDITO</h1>" +
+      "<div class='neg'>" + esc(neg.nombre || "Modas Ángeles") +
+      ((data.negocio && data.negocio.direccion) ? "<br>" + esc(data.negocio.direccion) : "") +
+      ((data.negocio && data.negocio.telefono) ? "<br>" + esc(data.negocio.telefono) : "") + "</div>" +
+
+      "<div class='sep'></div>" +
+      linea("Nro", "<strong>" + esc(nota.numero) + "</strong>") +
+      linea("Fecha", fecha(nota.fecha) + (nota.hora ? " " + esc(nota.hora) : "")) +
+      linea("Cliente", esc(nota.clienteNombre || "Consumidor final")) +
+      linea("Compró el", nota.ventaFecha ? fecha(nota.ventaFecha) : "\u2014") +
+      linea("La emitió", esc(nota.usuario || "\u2014")) +
+
+      "<div class='valor'><div class='rot'>VALE POR</div>" +
+      "<div class='n'>" + money(nota.monto) + "</div></div>" +
+
+      "<div class='sep'></div>" +
+      "<div style='font-size:8.5pt;letter-spacing:.08em;margin-bottom:2mm'>LO QUE DEJÓ</div>" +
+      (nota.items || []).map((it) =>
+        "<div class='item'>" + it.cantidad + " x " + esc(it.nombre) +
+        "<div class='det'>" +
+        [it.talla && ("Talle " + esc(it.talla)), it.color && esc(it.color)].filter(Boolean).join(" \u00B7 ") +
+        (it.talla || it.color ? " \u00B7 " : "") + money((it.precioUnit || 0) * it.cantidad) +
+        "</div></div>").join("") +
+
+      (nota.motivo ? "<div class='sep'></div><div style='font-size:8.5pt'>Motivo: " + esc(nota.motivo) + "</div>" : "") +
+
+      "<div class='sep'></div>" +
+      "<div class='pie'>Presentá esta nota en cualquiera de nuestros locales.<br>" +
+      "No se cambia por dinero. Si la compra supera el valor,<br>se abona la diferencia.<br>" +
+      "Esta nota no vence.</div>" +
+
+      "<div class='firma'>Firma y aclaración</div>";
+
+    return { estilos, cuerpo, titulo: "Nota " + nota.numero };
+  };
+
+  const imprimir = (comoTicket) => {
+    const d = comoTicket ? armarTicket() : armarDocumento();
     if (!abrirImpresion(d.titulo, d.estilos, d.cuerpo)) {
       window.alert("El navegador bloqueó la ventana de impresión. Permitila y volvé a intentar.");
     }
@@ -21263,11 +21338,14 @@ function NotaCreditoModal({ data, nota, onClose }) {
     React.createElement(
       "div",
       { className: "ct-pie-fijo", style: { display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" } },
-      React.createElement(Button, { tone: "ghost", onClick: imprimir, style: { padding: "12px 18px" } },
-        React.createElement(Receipt, { size: 15 }), " Imprimir"),
-      React.createElement(Button, { onClick: compartirPDF, disabled: !!estadoPDF, style: { padding: "12px 20px" } },
-        React.createElement(ArrowDownCircle, { size: 15 }), " ", estadoPDF || "Enviar PDF"),
-      React.createElement(Button, { tone: "ghost", onClick: onClose, style: { padding: "12px 18px" } }, "Listo")
+      // El ticket es lo que se entrega en el mostrador; la hoja A4 queda para
+      // archivar o mandar por WhatsApp.
+      React.createElement(Button, { onClick: () => imprimir(true), style: { padding: "12px 18px" } },
+        React.createElement(Receipt, { size: 15 }), " Imprimir ticket"),
+      React.createElement(Button, { tone: "ghost", onClick: () => imprimir(false), style: { padding: "12px 16px" } }, "Hoja A4"),
+      React.createElement(Button, { tone: "ghost", onClick: compartirPDF, disabled: !!estadoPDF, style: { padding: "12px 16px" } },
+        React.createElement(ArrowDownCircle, { size: 15 }), " ", estadoPDF || "PDF"),
+      React.createElement(Button, { tone: "ghost", onClick: onClose, style: { padding: "12px 16px" } }, "Listo")
     )
   );
 }
@@ -21375,7 +21453,7 @@ function NotasCreditoModal({ data, persist, onClose }) {
 }
 
 // Resolver el cambio: llevarse otra cosa o quedarse con una nota de crédito.
-function ResolverCambioModal({ data, persist, venta, itemsDevueltos, valorDevuelto, negocioId, onListo, onVolver }) {
+function ResolverCambioModal({ data, persist, venta, itemsDevueltos, valorDevuelto, negocioId, onListo, onVolver, onCobrar }) {
   const [query, setQuery] = useState("");
   const [escaneando, setEscaneando] = useState(false);
   const [lleva, setLleva] = useState([]);   // lo que se lleva a cambio
@@ -21503,8 +21581,19 @@ function ResolverCambioModal({ data, persist, venta, itemsDevueltos, valorDevuel
       { deshacer: () => persist(anterior) });
 
     // Si quedó saldo, se muestra la nota para entregarla
-    if (notaSaldo) setNotaHecha(notaSaldo);
-    else onListo();
+    if (notaSaldo) { setNotaHecha(notaSaldo); return; }
+
+    // Si tiene que pagar, va al punto de venta con la diferencia cargada: así
+    // el cobro queda registrado con su medio de pago y entra a la caja.
+    if (diferencia > 0 && onCobrar) {
+      onCobrar({
+        concepto: "Diferencia del cambio " + cambio.numero,
+        monto: diferencia,
+        clienteId: venta.clienteId || ""
+      });
+      return;
+    }
+    onListo();
   };
 
   const hacerNota = () => {
@@ -21883,7 +21972,7 @@ function HistorialCambios({ data }) {
 // ===== Cambios de prendas =====
 // El cliente trae algo y se lleva otra cosa. Si no encuentra nada que le
 // sirva, se le da una nota de crédito para volver cuando entre mercadería.
-function CambiosView({ data, persist, onCerrar }) {
+function CambiosView({ data, persist, onCerrar, onCobrar }) {
   const [vista, setVista] = useState("nuevo");  // nuevo · historial
   const [paso, setPaso] = useState("buscar");   // buscar · elegir · resolver
   const [query, setQuery] = useState("");
@@ -22080,7 +22169,8 @@ function CambiosView({ data, persist, onCerrar }) {
     vista === "nuevo" && paso === "resolver" && venta && React.createElement(ResolverCambioModal, {
       data, persist, venta, itemsDevueltos, valorDevuelto, negocioId: negId,
       onListo: () => { setPaso("buscar"); setVenta(null); setDevuelve({}); setQuery(""); },
-      onVolver: () => setPaso("elegir")
+      onVolver: () => setPaso("elegir"),
+      onCobrar
     }),
 
     verNotas && React.createElement(NotasCreditoModal, {
