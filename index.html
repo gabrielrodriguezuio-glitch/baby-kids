@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.585";
+const VERSION_APP = "9.588";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -2733,7 +2733,6 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
   const grupos = [
     { titulo: "Operaci\u00F3n", items: [
       { id: "pos", label: "Punto de Venta", labelCorto: "Vender", icon: CreditCard },
-      { id: "cambios", label: "Cambios", labelCorto: "Cambios", icon: ArrowRightLeft },
       { id: "reparto", label: "Reparto", labelCorto: "Reparto", icon: Truck, badge: paradasHoy }
     ] },
     { titulo: "Cat\u00E1logo", items: [
@@ -11260,13 +11259,21 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
             },
               style: { flex: 1, minWidth: 0, height: "100%", background: "transparent", border: "none", outline: "none", color: posColors.text, fontSize: isMobilePos ? 16 : 15, padding: 0 }
             }),
-            // El escáner adentro del buscador: son la misma acción, encontrar
-            // un producto. Separados, competían por el mismo espacio.
+            // El escáner al costado del campo, separado por una línea: se
+            // escribe o se escanea, las dos cosas a mano. Es el mismo bloque
+            // que en transferencias.
+            React.createElement("span", {
+              style: { width: 1, height: 26, background: "color-mix(in srgb, var(--denim) 30%, transparent)", flexShrink: 0 }
+            }),
             React.createElement("button", {
               onClick: () => setEscaneando(true),
               title: "Escanear con la cámara",
-              style: { background: "none", border: "none", cursor: "pointer", color: "var(--denim-light)", padding: "0 0 0 6px", display: "flex", alignItems: "center", flexShrink: 0 }
-            }, React.createElement(ScanBarcode, { size: 19 }))
+              style: {
+                background: "none", border: "none", cursor: "pointer",
+                color: "var(--denim-light)", padding: "0 2px 0 4px",
+                display: "flex", alignItems: "center", flexShrink: 0
+              }
+            }, React.createElement(ScanBarcode, { size: 20 }))
           ),
           // Sólo el ícono: con la pistola casi no se usan, y con texto le
           // comían la mitad del ancho al buscador, que es lo que más se toca.
@@ -22033,8 +22040,6 @@ function CambiosView({ data, persist, onCerrar, onCobrar }) {
     React.createElement(
       "div",
       { style: { display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" } },
-      React.createElement(Button, { tone: "ghost", onClick: onCerrar, style: { padding: "10px 16px" } },
-        React.createElement(ChevronRight, { size: 15, style: { transform: "rotate(180deg)" } }), " Volver"),
       React.createElement(
         "div",
         { style: { flex: 1, minWidth: 0 } },
