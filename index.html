@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.685";
+const VERSION_APP = "9.687";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -17609,7 +17609,7 @@ function CampoClave({ valor, onCambiar, placeholder }) {
 }
 
 function UsuarioModal({ data, inicial, onGuardar, onClose }) {
-  const vacio = { nombre: "", usuario: "", email: "", clave: "", rol: ROLES[1], activo: true, invitar: false, negocios: [] };
+  const vacio = { nombre: "", email: "", rol: ROLES[1], activo: true, invitar: false, negocios: [] };
   // Se completa con los valores por defecto: un integrante traído de la nube
   // puede no tener todos los campos que el formulario usa.
   const [f, setF] = useState(inicial ? { ...vacio, ...inicial } : vacio);
@@ -17626,9 +17626,8 @@ function UsuarioModal({ data, inicial, onGuardar, onClose }) {
     if (!nombre.trim()) return setError("Ingresá el nombre del integrante.");
     if (f.invitar && !email.trim()) return setError("Para invitar hace falta un email.");
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return setError("Revisá el email: no parece válido.");
-    if (!f.invitar && f.clave && String(f.clave).length < 6) return setError("La contraseña necesita al menos 6 caracteres.");
     setError("");
-    onGuardar({ ...f, usuario: String(f.usuario || "").trim() || handleDesde(nombre) });
+    onGuardar({ ...f });
   };
 
   return React.createElement(
@@ -17640,8 +17639,6 @@ function UsuarioModal({ data, inicial, onGuardar, onClose }) {
       { style: { display: "flex", flexDirection: "column", gap: 13 } },
       React.createElement(Field, { label: "Nombre" },
         React.createElement("input", { autoFocus: true, style: inputStyle, value: f.nombre, onChange: (e) => set("nombre", e.target.value), placeholder: "Cristina" })),
-      React.createElement(Field, { label: "Nombre de usuario" },
-        React.createElement("input", { style: inputStyle, value: f.usuario, onChange: (e) => set("usuario", e.target.value), placeholder: handleDesde(f.nombre) || "@cristina" })),
       // Se completa solo al enlazar la cuenta, pero se puede escribir a mano
       React.createElement(Field, { label: "Email" },
         React.createElement("input", {
@@ -17650,12 +17647,7 @@ function UsuarioModal({ data, inicial, onGuardar, onClose }) {
           placeholder: "cristina@gmail.com"
         }),
         React.createElement("p", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 5, lineHeight: 1.5 } },
-          "Se completa solo si tiene cuenta de acceso. También se puede escribir a mano.")),
-      !f.invitar && React.createElement(Field, {
-        label: editando ? "Contraseña nueva (opcional)" : "Contraseña",
-        ayuda: editando ? "Dejala vacía para no cambiarla" : null
-      },
-        React.createElement(CampoClave, { valor: f.clave || "", onCambiar: (v) => set("clave", v) })),
+          "La cuenta y la contraseña se crean en Supabase \u2192 Authentication. Acá se completa solo al enlazarla.")),
 
       // A qué locales entra. Se muestra siempre: antes desaparecía al elegir
       // Propietario y lo tildado se perdía sin aviso.
