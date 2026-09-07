@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.615";
+const VERSION_APP = "9.619";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -2992,7 +2992,7 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
       }
     },
 
-    // El negocio activo, sin poder cambiarlo desde acá
+    // Quién entró y con qué rol
     React.createElement(
       "div",
       { style: { display: "flex", gap: 7, alignItems: "stretch" } },
@@ -3005,13 +3005,19 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
             borderRadius: 10, padding: "11px 12px"
           }
         },
+        // Quién está usando la app, con su inicial. El negocio se ve en el
+        // encabezado de cada pantalla; acá lo que importa es con qué cuenta
+        // se está trabajando.
+        React.createElement("span", {
+          style: { width: 34, height: 34, borderRadius: 999, flexShrink: 0, background: "var(--denim)", color: "var(--on-accent)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700 }
+        }, (nombreUsuario || "?").charAt(0).toUpperCase()),
         React.createElement(
           "span",
           { style: { flex: 1, minWidth: 0 } },
           React.createElement("span", {
-            style: { display: "block", fontSize: 14.5, fontWeight: 650, color: "var(--ink)", letterSpacing: -0.02, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-            title: negocioSel.nombre
-          }, negocioSel.nombre),
+            style: { display: "block", fontSize: 14, fontWeight: 650, color: "var(--ink)", letterSpacing: -0.02, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+            title: nombreUsuario || ""
+          }, nombreUsuario || "Sin usuario"),
           React.createElement("span", { style: { display: "block", fontSize: 11.5, color: "var(--muted)", marginTop: 2 } }, rol)
         )
       ),
@@ -3080,32 +3086,7 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
         style: { display: "block", width: "100%", background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 11, marginTop: 8, fontFamily: "'Inter', sans-serif" }
       }, "Ver diagnóstico · v" + VERSION_APP),
       verDiag && React.createElement(DiagnosticoCaja, { data, onClose: () => setVerDiag(false) })
-    ),
-
-    // Quién está usando la app. No se puede cambiar acá: cada persona entra
-    // con su mail y contraseña, así que dejar un selector permitiría a un
-    // empleado pasarse a la cuenta del dueño con un toque.
-    nombreUsuario && React.createElement(
-      "div",
-      {
-        style: {
-          display: "flex", alignItems: "center", gap: 10, width: "100%",
-          background: "var(--surface)", border: "none", borderRadius: 10,
-          padding: "10px 12px", textAlign: "left",
-          fontFamily: "'Inter', sans-serif"
-        }
-      },
-      React.createElement("span", {
-        style: { width: 30, height: 30, borderRadius: 999, background: "var(--denim)", color: "var(--on-accent)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 12.5, fontWeight: 700 }
-      }, nombreUsuario.charAt(0).toUpperCase()),
-      React.createElement(
-        "span",
-        { style: { flex: 1, minWidth: 0 } },
-        React.createElement("span", { style: { display: "block", fontSize: 12.5, fontWeight: 650, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, nombreUsuario),
-        React.createElement("span", { style: { display: "block", fontSize: 11, color: "var(--muted)", marginTop: 1 } }, rol)
-      )
     )
-
   );
 }
 
@@ -10992,10 +10973,9 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
             // romper la alineación de la fila.
             // En celular ocupa el ancho completo y los tres botones quedan
             // debajo repartidos: así el bloque entero mide lo mismo.
-            { className: "ct-buscador", style: { flex: isMobilePos ? "1 0 100%" : 1, minWidth: isMobilePos ? "100%" : 190,
-              // Con un tope, los botones de al lado quedan más holgados: el
-              // buscador ya es cómodo con 460px y no necesita más.
-              maxWidth: isMobilePos ? "100%" : 460, display: "flex", alignItems: "center", gap: 12, background: "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "1.5px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: RADIO.control, padding: isMobilePos ? "0 18px" : "0 17px", height: 56, minHeight: 56, boxSizing: "border-box", transition: "border-color .12s ease, box-shadow .12s ease" } },
+            // Sin tope de ancho: con el menú fuera del camino hay lugar de
+            // sobra y el buscador es lo que más se usa en el mostrador.
+            { className: "ct-buscador", style: { flex: isMobilePos ? "1 0 100%" : 1, minWidth: isMobilePos ? "100%" : 190, display: "flex", alignItems: "center", gap: 12, background: "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "1.5px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: RADIO.control, padding: isMobilePos ? "0 18px" : "0 17px", height: 56, minHeight: 56, boxSizing: "border-box", transition: "border-color .12s ease, box-shadow .12s ease" } },
             React.createElement(Search, { size: 18, color: "var(--denim-light)" }),
             React.createElement("input", {
               autoFocus: true,
@@ -22198,46 +22178,33 @@ function TransferenciasView({ data, persist }) {
       { style: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16, alignItems: "center" } },
       // Los dos filtros juntos en un mismo recuadro: son la misma decisión
       // (qué transferencias mirar) y separados parecían dos cosas distintas.
-      // Todo en una sola barra: los dos filtros, Pedidos y el + de nueva
-      // transferencia. Separados parecían controles de cosas distintas.
-      React.createElement(
-        "div",
-        { style: { display: "flex", alignItems: "stretch", background: "var(--surface-2)", border: "1.5px solid var(--line)", borderRadius: 10, overflow: "hidden" } },
-        React.createElement("select", {
-          value: filtroEstado,
-          onChange: (e) => setFiltroEstado(e.target.value),
-          style: { background: "none", border: "none", outline: "none", color: "var(--ink)", fontSize: 13, fontWeight: 600, padding: "10px 12px", cursor: "pointer", fontFamily: "'Inter', sans-serif" }
-        },
-          React.createElement("option", { value: "" }, "Todos los estados"),
-          Object.keys(ESTADOS_TRANSFER).map((k) =>
-            React.createElement("option", { key: k, value: k }, ESTADOS_TRANSFER[k].label))),
-        React.createElement("span", { style: { width: 1, alignSelf: "stretch", background: "var(--line)", flexShrink: 0 } }),
-        React.createElement("select", {
-          value: filtroNegocio,
-          onChange: (e) => setFiltroNegocio(e.target.value),
-          style: { background: "none", border: "none", outline: "none", color: "var(--ink)", fontSize: 13, fontWeight: 600, padding: "10px 12px", cursor: "pointer", fontFamily: "'Inter', sans-serif" }
-        },
-          React.createElement("option", { value: "" }, "Todos los negocios"),
-          negocios.map((n) => React.createElement("option", { key: n.id, value: n.id }, n.nombre))),
+      // Cada control por separado: con el menú fuera del camino sobra ancho y
+      // no hace falta apretarlos en una sola barra.
+      React.createElement("select", {
+        value: filtroEstado,
+        onChange: (e) => setFiltroEstado(e.target.value),
+        style: { background: "var(--surface-2)", border: "1.5px solid var(--line)", borderRadius: 10, outline: "none", color: "var(--ink)", fontSize: 13, fontWeight: 600, padding: "10px 14px", cursor: "pointer", fontFamily: "'Inter', sans-serif" }
+      },
+        React.createElement("option", { value: "" }, "Todos los estados"),
+        Object.keys(ESTADOS_TRANSFER).map((k) =>
+          React.createElement("option", { key: k, value: k }, ESTADOS_TRANSFER[k].label))),
 
-        React.createElement("span", { style: { width: 1, alignSelf: "stretch", background: "var(--line)", flexShrink: 0 } }),
-        React.createElement("button", {
-          onClick: () => setModo("pedidos"),
-          title: "Pedidos de clientes",
-          style: { display: "inline-flex", alignItems: "center", gap: 7, background: "none", border: "none", cursor: "pointer", color: "var(--ink)", fontSize: 13, fontWeight: 600, padding: "10px 14px", fontFamily: "'Inter', sans-serif", flexShrink: 0 }
-        },
-          React.createElement(ShoppingBag, { size: 15, color: "var(--muted)" }), "Pedidos",
-          pedidosPendientes > 0 && React.createElement("span", {
-            style: { background: "var(--mustard)", color: "#0B0D12", borderRadius: 999, fontSize: 10.5, fontWeight: 700, padding: "1px 6px" }
-          }, pedidosPendientes)),
+      React.createElement("select", {
+        value: filtroNegocio,
+        onChange: (e) => setFiltroNegocio(e.target.value),
+        style: { background: "var(--surface-2)", border: "1.5px solid var(--line)", borderRadius: 10, outline: "none", color: "var(--ink)", fontSize: 13, fontWeight: 600, padding: "10px 14px", cursor: "pointer", fontFamily: "'Inter', sans-serif" }
+      },
+        React.createElement("option", { value: "" }, "Todos los negocios"),
+        negocios.map((n) => React.createElement("option", { key: n.id, value: n.id }, n.nombre))),
 
-        // Nueva transferencia: sólo el símbolo, dentro de la misma barra
-        React.createElement("button", {
-          onClick: () => setNueva(true),
-          title: "Nueva transferencia",
-          style: { display: "inline-flex", alignItems: "center", justifyContent: "center", background: "var(--denim)", color: "var(--on-accent)", border: "none", cursor: "pointer", padding: "0 16px", flexShrink: 0 }
-        }, React.createElement(Plus, { size: 18, strokeWidth: 2.2 }))
-      )
+      React.createElement(Button, { tone: "ghost", onClick: () => setModo("pedidos"), style: { marginLeft: "auto", padding: "11px 16px" } },
+        React.createElement(ShoppingBag, { size: 15 }), " Pedidos",
+        pedidosPendientes > 0 && React.createElement("span", {
+          style: { background: "var(--mustard)", color: "#0B0D12", borderRadius: 999, fontSize: 10.5, fontWeight: 700, padding: "1px 6px", marginLeft: 4 }
+        }, pedidosPendientes)),
+
+      React.createElement(Button, { onClick: () => setNueva(true), title: "Nueva transferencia", style: { padding: "11px 16px" } },
+        React.createElement(Plus, { size: 17, strokeWidth: 2.2 }))
     ),
 
     React.createElement(
