@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.482";
+const VERSION_APP = "9.485";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -10679,6 +10679,9 @@ function PuntoDeVenta({ data, persist }) {
 
     const venta = {
       id: uid(),
+      // En qué local se hizo: sin esto los informes por negocio y el detalle
+      // del cierre no encontraban ninguna venta.
+      negocioId: negocioActivo(data).id,
       fecha: todayISO(),
       horaTexto: (/* @__PURE__ */ new Date()).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }),
       items: items.map(({ productoId, nombre, talla, color, cantidad, precioUnit, costo }) => ({ productoId, nombre, talla, color, cantidad, precioUnit, costo })),
@@ -25980,7 +25983,9 @@ function DetalleCierreModal({ cierre, onClose, data }) {
     const hasta = cierre.cerradaEn ? new Date(cierre.cerradaEn).getTime() : Date.now();
     return (data.ventas || []).filter((v) => {
       if (esDevolucion(v)) return false;
-      if (cierre.negocioId && (v.negocioId || "") !== cierre.negocioId) return false;
+      // Las ventas viejas no guardaban el local: si no lo tienen se aceptan,
+      // porque si no el cierre quedaría sin detalle.
+      if (cierre.negocioId && v.negocioId && v.negocioId !== cierre.negocioId) return false;
       const cuando = momentoDeVenta(v);
       if (cuando == null) {
         // Sin hora usable se compara sólo por día: mejor mostrarla que perderla
@@ -26064,6 +26069,20 @@ function DetalleCierreModal({ cierre, onClose, data }) {
         dif === 0 ? "Cerró justo" : dif > 0 ? "Sobró plata" : "Faltó plata"),
       React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 17, fontWeight: 700, color: dif === 0 ? "var(--sage)" : "var(--rose)" } },
         (dif > 0 ? "+" : "") + money(dif))
+    ),
+
+    // Si no se encontró ninguna venta se dice por qué, en vez de mostrar el
+    // cierre incompleto y que parezca que no se vendió nada.
+    delTurno.length === 0 && React.createElement(
+      "div",
+      { style: { marginTop: 18, background: "var(--surface-2)", borderRadius: 10, padding: "12px 14px", fontSize: 12.5, lineHeight: 1.55, color: "var(--muted)" } },
+      !data
+        ? "No se pudo revisar el detalle de este turno."
+        : !cierre.abiertaEn
+          ? "Este cierre no guardó la hora de apertura, así que no se puede saber qué ventas fueron de este turno."
+          : "No hubo ventas entre " + hora24(cierre.abiertaEn) + " y " +
+            (cierre.cerradaEn ? hora24(cierre.cerradaEn) : "el cierre") +
+            " en este local."
     ),
 
     // Todo lo cobrado en el turno, no sólo el efectivo
