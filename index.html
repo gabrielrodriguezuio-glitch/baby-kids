@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.681";
+const VERSION_APP = "9.683";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -5449,6 +5449,70 @@ function BuscadorProducto({ valor, onCambiar, onEnter, onEscanear, placeholder, 
         padding: "8px 0 8px 12px", marginLeft: 4, boxSizing: "content-box"
       }
     }, React.createElement(ScanBarcode, { size: 17 }))
+  );
+}
+
+// Se dibuja de nuevo sólo si cambió el producto o el tamaño: en una lista de
+// cien filas, evitar cien redibujados por tecla se nota.
+// Los productos de una venta, al apuntar la celda. Con "3 productos" en la
+// tabla no se sabe qué se vendió, y abrir el detalle por cada una es lento.
+function CeldaProductos({ venta, resumen }) {
+  const [ver, setVer] = useState(false);
+  const items = venta.items || [];
+
+  useEffect(() => {
+    if (!ver) return;
+    const cerrar = () => setVer(false);
+    document.addEventListener("click", cerrar);
+    return () => document.removeEventListener("click", cerrar);
+  }, [ver]);
+
+  if (!items.length) return resumen;
+
+  return React.createElement(
+    "span",
+    {
+      onMouseEnter: () => setVer(true),
+      onMouseLeave: () => setVer(false),
+      onClick: (e) => { e.stopPropagation(); setVer(!ver); },
+      style: { position: "relative", display: "inline-block", cursor: "pointer" }
+    },
+    resumen,
+    ver && React.createElement(
+      "span",
+      {
+        onClick: (e) => e.stopPropagation(),
+        style: {
+          position: "absolute", zIndex: 40, left: 0, top: "calc(100% + 6px)",
+          minWidth: 230, maxWidth: 320, maxHeight: 260, overflowY: "auto",
+          display: "block", background: "var(--surface-2)",
+          border: "1.5px solid var(--line)", borderRadius: 12,
+          padding: "10px 12px", boxShadow: "var(--sombra-alta)",
+          textAlign: "left", cursor: "default", whiteSpace: "normal"
+        }
+      },
+      React.createElement("span", {
+        style: { display: "block", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.07, color: "var(--muted)", fontWeight: 700, marginBottom: 8 }
+      }, items.length === 1 ? "Producto" : items.length + " productos"),
+      items.map((it, k) => React.createElement(
+        "span",
+        { key: k, style: { display: "flex", alignItems: "center", gap: 9, fontSize: 12.5, padding: "5px 0", borderBottom: k < items.length - 1 ? "1px solid color-mix(in srgb, var(--line) 50%, transparent)" : "none" } },
+        React.createElement("span", {
+          style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: "var(--denim-light)", minWidth: 24 }
+        }, it.cantidad + "\u00D7"),
+        React.createElement(
+          "span",
+          { style: { flex: 1, minWidth: 0 } },
+          React.createElement("span", { style: { display: "block" } }, it.nombre),
+          (it.talla || it.color) && React.createElement("span", {
+            style: { display: "block", fontSize: 11.5, color: "var(--muted)", marginTop: 1 }
+          }, [it.talla && ("Talle " + it.talla), it.color].filter(Boolean).join(" \u00B7 "))
+        ),
+        React.createElement("span", {
+          style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "var(--muted)", flexShrink: 0 }
+        }, money((it.precioUnit || 0) * it.cantidad))
+      ))
+    )
   );
 }
 
@@ -26650,7 +26714,8 @@ function VentasReportes({ data, rango, persist }) {
                   v.horaTexto && React.createElement("div", { style: { fontSize: 11, opacity: 0.75 } }, v.horaTexto)),
                 React.createElement("td", { style: { color: "var(--muted)" } }, v.usuarioNombre || "\u2014"),
                 React.createElement("td", null, v.clienteNombre || "Consumidor final"),
-                React.createElement("td", { style: { maxWidth: 260 } }, resumenItems(v.items)),
+                React.createElement("td", { style: { maxWidth: 260 } },
+                    React.createElement(CeldaProductos, { venta: v, resumen: resumenItems(v.items) })),
                 React.createElement("td", null,
                   React.createElement(
                     "span",
