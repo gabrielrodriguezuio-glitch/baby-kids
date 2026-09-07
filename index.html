@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.500";
+const VERSION_APP = "9.505";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -745,6 +745,8 @@ const PUEDE = {
 };
 
 // Quién está usando la app ahora
+// Quién entró con su cuenta. Ya no hay selector de usuario: cada persona usa
+// su mail y contraseña, así que esto es lo único que define quién es.
 const usuarioSesion = (data) => {
   const lista = data.usuarios || [];
   return lista.find((x) => x.esVos) || lista.find((x) => x.activo !== false) || lista[0] || null;
@@ -1660,7 +1662,7 @@ function ControlTienda() {
         borderRadius: "0 10px 10px 0", color: "var(--muted)",
         display: "flex", alignItems: "center", justifyContent: "center"
       }
-    }, /* @__PURE__ */ React.createElement(ChevronRight, { size: 16 })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, marginLeft: (!isMobile && !railOculto) ? (window.innerWidth < 1050 ? 188 : 226) : 0 } }, /* @__PURE__ */ React.createElement(Header, { data, persist, mobile: isMobile, tab, editandoProducto, rangoReportes, filtrosReportes, setFiltrosReportes, rangoNegocios, filtroNegocios, setFiltroNegocios, onExportarNegocios: () => setSenalExportar(Date.now()), onNuevaTarea: () => setSenalNuevaTarea(Date.now()), onAgregarParada: () => setSenalReparto({ tipo: "agregar", n: Date.now() }), onCerrarVuelta: () => setSenalReparto({ tipo: "cerrar", n: Date.now() }), onVerReposicion: () => setSenalReparto({ tipo: "reposicion", n: Date.now() }), onNuevoProducto: () => setSenalNuevo((n) => n + 1), onNuevoMovimiento: () => setSenalMovimiento((n) => n + 1), onNuevoUsuario: () => setSenalUsuario((n) => n + 1), onVerInvitaciones: () => setSenalInvitaciones((n) => n + 1), onVerRoles: () => setSenalRoles((n) => n + 1), onNuevoCliente: () => setSenalNuevoCliente((n) => n + 1), onImportarClientes: () => setSenalImportarClientes((n) => n + 1), onBorrarClientes: () => setSenalBorrarClientes((n) => n + 1), onOpcionCatalogo: (accion) => setOpcionCatalogo({ accion, n: Date.now() }) }), /* @__PURE__ */ React.createElement("div", { className: "ct-main ct-limite", style: { padding: isMobile ? "0 12px 96px" : "0 28px 48px" } }, tab === "pos" && /* @__PURE__ */ React.createElement(PuntoDeVenta, { data, persist }), tab === "caja" && /* @__PURE__ */ React.createElement(CajaView, { data, persist }), tab === "inventario" && /* @__PURE__ */ React.createElement(Inventario, { data, persist, senalNuevo, opcionElegida: opcionCatalogo, salto , onEditando: setEditandoProducto }), tab === "stock" && /* @__PURE__ */ React.createElement(InventarioStock, { data, persist }), tab === "movimientos" && /* @__PURE__ */ React.createElement(MovimientosStock, { data, persist, senalMovimiento }), tab === "ronda" && /* @__PURE__ */ React.createElement(RondaSemanalView, { data, persist, onIrAReparto: () => setTab("reparto") }), tab === "reparto" && /* @__PURE__ */ React.createElement(RepartoView, { data, persist, senalReparto }), tab === "tareas" && /* @__PURE__ */ React.createElement(TareasView, { data, persist, senalNuevaTarea }), tab === "clientes" && /* @__PURE__ */ React.createElement(Clientes, { data, persist, senalNuevoCliente, senalImportarClientes, senalBorrarClientes, salto }), tab === "catalogo" && /* @__PURE__ */ React.createElement(CatalogoOnline, { data, persist }), tab === "usuarios" && /* @__PURE__ */ React.createElement(UsuariosView, { data, persist, senalUsuario, senalInvitaciones, senalRoles }), (tab === "negocios" || tab === "reportes") && /* @__PURE__ */ React.createElement(NegociosInicio, { data, persist, setTab, filtroNegocio: filtroNegocios, rango: rangoNegocios, senalExportar, filtros: filtrosReportes }), tab === "negocios-productos" && /* @__PURE__ */ React.createElement(NegociosProductos, { data, persist, setTab, senalNuevo }), tab === "transferencias" && /* @__PURE__ */ React.createElement(TransferenciasView, { data, persist }), tab === "actividad" && /* @__PURE__ */ React.createElement(ActividadView, { data }), tab === "configuracion" && /* @__PURE__ */ React.createElement(ConfiguracionView, { data, persist, tema, setTema }), tab === "soporte" && /* @__PURE__ */ React.createElement(SoporteView, { data })))), isMobile && /* @__PURE__ */ React.createElement(Sidebar, { tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile: true, data, usuario, onAbrirCaja: () => setVerCaja(true), onCambiarUsuario: () => setCambiarUsuario(true) }), verCaja && /* @__PURE__ */ React.createElement(CajaRapida, { data, persist, onClose: () => setVerCaja(false) }), cambiarUsuario && /* @__PURE__ */ React.createElement(CambiarUsuarioModal, { data, persist, onClose: () => setCambiarUsuario(false) }),  buscando && /* @__PURE__ */ React.createElement(BuscadorGeneral, {
+    }, /* @__PURE__ */ React.createElement(ChevronRight, { size: 16 })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, marginLeft: (!isMobile && !railOculto) ? (window.innerWidth < 1050 ? 188 : 226) : 0 } }, /* @__PURE__ */ React.createElement(Header, { data, persist, mobile: isMobile, tab, editandoProducto, rangoReportes, filtrosReportes, setFiltrosReportes, rangoNegocios, filtroNegocios, setFiltroNegocios, onExportarNegocios: () => setSenalExportar(Date.now()), onNuevaTarea: () => setSenalNuevaTarea(Date.now()), onAgregarParada: () => setSenalReparto({ tipo: "agregar", n: Date.now() }), onCerrarVuelta: () => setSenalReparto({ tipo: "cerrar", n: Date.now() }), onVerReposicion: () => setSenalReparto({ tipo: "reposicion", n: Date.now() }), onNuevoProducto: () => setSenalNuevo((n) => n + 1), onNuevoMovimiento: () => setSenalMovimiento((n) => n + 1), onNuevoUsuario: () => setSenalUsuario((n) => n + 1), onVerInvitaciones: () => setSenalInvitaciones((n) => n + 1), onVerRoles: () => setSenalRoles((n) => n + 1), onNuevoCliente: () => setSenalNuevoCliente((n) => n + 1), onImportarClientes: () => setSenalImportarClientes((n) => n + 1), onBorrarClientes: () => setSenalBorrarClientes((n) => n + 1), onOpcionCatalogo: (accion) => setOpcionCatalogo({ accion, n: Date.now() }) }), /* @__PURE__ */ React.createElement("div", { className: "ct-main ct-limite", style: { padding: isMobile ? "0 12px 96px" : "0 28px 48px" } }, tab === "pos" && /* @__PURE__ */ React.createElement(PuntoDeVenta, { data, persist }), tab === "caja" && /* @__PURE__ */ React.createElement(CajaView, { data, persist }), tab === "inventario" && /* @__PURE__ */ React.createElement(Inventario, { data, persist, senalNuevo, opcionElegida: opcionCatalogo, salto , onEditando: setEditandoProducto }), tab === "stock" && /* @__PURE__ */ React.createElement(InventarioStock, { data, persist }), tab === "movimientos" && /* @__PURE__ */ React.createElement(MovimientosStock, { data, persist, senalMovimiento }), tab === "ronda" && /* @__PURE__ */ React.createElement(RondaSemanalView, { data, persist, onIrAReparto: () => setTab("reparto") }), tab === "reparto" && /* @__PURE__ */ React.createElement(RepartoView, { data, persist, senalReparto }), tab === "tareas" && /* @__PURE__ */ React.createElement(TareasView, { data, persist, senalNuevaTarea }), tab === "clientes" && /* @__PURE__ */ React.createElement(Clientes, { data, persist, senalNuevoCliente, senalImportarClientes, senalBorrarClientes, salto }), tab === "catalogo" && /* @__PURE__ */ React.createElement(CatalogoOnline, { data, persist }), tab === "usuarios" && /* @__PURE__ */ React.createElement(UsuariosView, { data, persist, senalUsuario, senalInvitaciones, senalRoles }), (tab === "negocios" || tab === "reportes") && /* @__PURE__ */ React.createElement(NegociosInicio, { data, persist, setTab, filtroNegocio: filtroNegocios, rango: rangoNegocios, senalExportar, filtros: filtrosReportes }), tab === "negocios-productos" && /* @__PURE__ */ React.createElement(NegociosProductos, { data, persist, setTab, senalNuevo }), tab === "transferencias" && /* @__PURE__ */ React.createElement(TransferenciasView, { data, persist }), tab === "actividad" && /* @__PURE__ */ React.createElement(ActividadView, { data }), tab === "configuracion" && /* @__PURE__ */ React.createElement(ConfiguracionView, { data, persist, tema, setTema }), tab === "soporte" && /* @__PURE__ */ React.createElement(SoporteView, { data })))), isMobile && /* @__PURE__ */ React.createElement(Sidebar, { tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile: true, data, usuario, onAbrirCaja: () => setVerCaja(true), onCambiarUsuario: () => setCambiarUsuario(true) }), verCaja && /* @__PURE__ */ React.createElement(CajaRapida, { data, persist, onClose: () => setVerCaja(false) }),  buscando && /* @__PURE__ */ React.createElement(BuscadorGeneral, {
     data,
     negocioId: negocioActivo(data).id,
     onIr: (r) => {
@@ -3032,17 +3034,16 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
       verDiag && React.createElement(DiagnosticoCaja, { data, onClose: () => setVerDiag(false) })
     ),
 
-    // Quién está atendiendo: en un dispositivo compartido hace falta poder
-    // cambiar de persona al empezar el turno.
+    // Quién está usando la app. No se puede cambiar acá: cada persona entra
+    // con su mail y contraseña, así que dejar un selector permitiría a un
+    // empleado pasarse a la cuenta del dueño con un toque.
     nombreUsuario && React.createElement(
-      "button",
+      "div",
       {
-        onClick: onCambiarUsuario,
-        title: "Cambiar de usuario",
         style: {
           display: "flex", alignItems: "center", gap: 10, width: "100%",
           background: "var(--surface)", border: "none", borderRadius: 10,
-          padding: "10px 12px", cursor: "pointer", textAlign: "left",
+          padding: "10px 12px", textAlign: "left",
           fontFamily: "'Inter', sans-serif"
         }
       },
@@ -3054,8 +3055,7 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
         { style: { flex: 1, minWidth: 0 } },
         React.createElement("span", { style: { display: "block", fontSize: 12.5, fontWeight: 650, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, nombreUsuario),
         React.createElement("span", { style: { display: "block", fontSize: 11, color: "var(--muted)", marginTop: 1 } }, rol)
-      ),
-      React.createElement(ArrowRightLeft, { size: 14, color: "var(--muted)", style: { flexShrink: 0 } })
+      )
     )
 
   );
@@ -10584,6 +10584,8 @@ function PuntoDeVenta({ data, persist }) {
   const [categoria, setCategoria] = useState("Todas");
   const [barcode, setBarcode] = useState("");
   const [barcodeError, setBarcodeError] = useState("");
+  // Aviso naranja: se vendió algo que figura sin stock
+  const [avisoStock, setAvisoStock] = useState("");
   const [showConsulta, setShowConsulta] = useState(false);
   const [showAgregarMonto, setShowAgregarMonto] = useState(false);
   const [showCheckout, setShowCheckout] = useState(false);
@@ -10629,7 +10631,10 @@ function PuntoDeVenta({ data, persist }) {
     const clave = prod.id + "|" + (vs.length ? talle : "");
     const existente = cart.find((it) => it.productoId === prod.id && (it.varianteTalle || "") === (vs.length ? talle : ""));
     if (existente) {
-      if (existente.cantidad >= disponible) return;
+      // Se permite pasarse del stock: queda en negativo y avisado
+      if (existente.cantidad >= disponible) {
+        setAvisoStock('"' + prod.nombre + '" queda en negativo: había ' + disponible + ".");
+      }
       setCart(cart.map((it) => it === existente ? { ...it, cantidad: it.cantidad + 1 } : it));
     } else {
       setCart([
@@ -10778,7 +10783,9 @@ function PuntoDeVenta({ data, persist }) {
       .slice(0, 8);
   })();
 
-  // Suma el producto al carrito si hay stock en este negocio
+  // Suma el producto al carrito. Sin stock deja vender igual pero avisa: la
+  // prenda puede estar en la mano aunque el conteo esté mal, y perder la venta
+  // por eso no tiene sentido. El aviso queda para revisarlo después.
   const sumarAlCarrito = (prod) => {
     const hay = stockNegocio(prod, negocioId);
     if (hay <= 0) {
@@ -10787,10 +10794,11 @@ function PuntoDeVenta({ data, persist }) {
       const otros = listaNegocios(data)
         .filter((n) => n.id !== negocioId && stockNegocio(prod, n.id) > 0)
         .map((n) => n.nombre + " (" + stockNegocio(prod, n.id) + ")");
-      setBarcodeError(otros.length
-        ? `"${prod.nombre}" no tiene stock en ${negocioActivo(data).nombre}. Hay en ${otros.join(", ")}.`
-        : `"${prod.nombre}" no tiene stock en ningún local.`);
-      return;
+      setAvisoStock(otros.length
+        ? `"${prod.nombre}" figura sin stock acá. Hay en ${otros.join(", ")}. Se vende igual y queda en negativo.`
+        : `"${prod.nombre}" figura sin stock. Se vende igual y queda en negativo: revisá el conteo después.`);
+    } else {
+      setAvisoStock("");
     }
     setBarcodeError("");
     addToCart(prod);
@@ -10802,10 +10810,11 @@ function PuntoDeVenta({ data, persist }) {
   const sumarVarianteAlCarrito = (prod, v) => {
     const disponible = Number(v.stock) || 0;
     if (disponible <= 0) {
-      // Sin stock suena distinto: no alcanza con que el código exista
+      // Sin stock suena distinto, pero se agrega igual
       pitido(false);
-      setBarcodeError(`"${prod.nombre}" ${etiquetaVariante(v)} no tiene stock disponible.`);
-      return;
+      setAvisoStock(`"${prod.nombre}" ${etiquetaVariante(v)} figura sin stock. Se vende igual y queda en negativo.`);
+    } else {
+      setAvisoStock("");
     }
     setBarcodeError("");
     addToCart(prod, listaActual, claveVariante(v));
@@ -11093,6 +11102,18 @@ function PuntoDeVenta({ data, persist }) {
           ))
         ),
         barcodeError && React.createElement("p", { style: { color: posColors.danger, fontSize: 12.5, marginTop: 10 } }, barcodeError),
+        // El aviso de stock en negativo va en naranja, no en rojo: la venta se
+        // hizo bien, lo que hay que revisar es el conteo.
+        avisoStock && React.createElement(
+          "div",
+          { style: { display: "flex", alignItems: "flex-start", gap: 9, marginTop: 10, background: "color-mix(in srgb, var(--mustard) 14%, transparent)", border: "1px solid color-mix(in srgb, var(--mustard) 40%, transparent)", borderRadius: 9, padding: "10px 12px" } },
+          React.createElement(AlertTriangle, { size: 15, color: "var(--mustard)", style: { flexShrink: 0, marginTop: 1 } }),
+          React.createElement("span", { style: { flex: 1, minWidth: 0, fontSize: 12.5, lineHeight: 1.5 } }, avisoStock),
+          React.createElement("button", {
+            onClick: () => setAvisoStock(""),
+            style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", padding: 0, flexShrink: 0 }
+          }, React.createElement(X, { size: 14 }))
+        ),
 
         sugerencias.length > 0 && React.createElement(
           "div",
