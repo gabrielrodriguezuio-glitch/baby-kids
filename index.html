@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.645";
+const VERSION_APP = "9.657";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1408,9 +1408,23 @@ function ControlTienda() {
     return () => clearTimeout(reloj);
   }, []);
 
-  // Los datos vienen de la nube, no del navegador: por eso todos ven lo mismo
+  // Los datos vienen de la nube, no del navegador: por eso todos ven lo mismo.
+  // Pero se guarda una copia local para mostrar la app al instante mientras
+  // llegan los datos frescos: antes había que esperar a que bajaran 10.000
+  // filas mirando la pantalla de carga.
   useEffect(() => {
     if (!sesion) return;
+
+    let mostradoDeLaCopia = false;
+    try {
+      const copia = JSON.parse(localStorage.getItem("ct-copia") || "null");
+      if (copia && copia.quien === sesion.auth_id && copia.datos) {
+        setData(migrarCajas(migrarDatos(copia.datos)));
+        setLoading(false);
+        mostradoDeLaCopia = true;
+      }
+    } catch (e) {}
+
     (async () => {
       setErrorNube("");
       try {
@@ -1419,9 +1433,26 @@ function ControlTienda() {
         const traer = traerDeLaNube(sesion && sesion.auth_id);
         const tope = new Promise((_, rechazar) =>
           setTimeout(() => rechazar(new Error("La conexión está muy lenta y no se pudieron traer los datos.")), 30000));
-        setData(migrarCajas(migrarDatos(await Promise.race([traer, tope]))));
+        const frescos = migrarCajas(migrarDatos(await Promise.race([traer, tope])));
+        setData(frescos);
+        // Se guarda para la próxima vez, sin el historial: lo que hace falta
+        // para abrir y vender son los productos, clientes y cajas. Las ventas
+        // viejas llegan enseguida con los datos frescos.
+        try {
+          const liviano = { ...frescos,
+            ventas: (frescos.ventas || []).slice(0, 200),
+            movimientosStock: [], cambios: [], gastos: [], compras: [],
+            devolucionesReparto: [], cajasCerradas: (frescos.cajasCerradas || []).slice(0, 30)
+          };
+          localStorage.setItem("ct-copia", JSON.stringify({ quien: sesion.auth_id, datos: liviano }));
+        } catch (e) {
+          // Si no entra, se sigue sin copia: la app funciona igual, sólo tarda
+          try { localStorage.removeItem("ct-copia"); } catch (e2) {}
+        }
       } catch (e) {
-        setErrorNube(String((e && e.message) || e));
+        // Con la copia en pantalla no se corta el trabajo: se avisa y listo
+        if (!mostradoDeLaCopia) setErrorNube(String((e && e.message) || e));
+        else avisar("No se pudieron traer los datos nuevos. Estás viendo la última copia.", { tono: "error" });
       }
       setLoading(false);
     })();
@@ -4576,6 +4607,9 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
         nombre: u.nombre,
         rol: u.rol,
         telefono: u.telefono || null,
+        // El email lo completa la base desde la cuenta de acceso, así que no
+        // se manda: mandarlo vacío borraría el que ya tiene.
+        usuario: u.usuario || null,
         activo: u.activo !== false,
         negocios: (u.negocios && u.negocios.length) ? u.negocios : null
       };
@@ -4977,9 +5011,7 @@ async function traerDeLaNube(quienEntro) {
     // a nombre de quien la hizo.
     usuarios: (usuarios.data || []).map((u) => ({
       id: u.id, authId: u.auth_id, nombre: u.nombre, rol: u.rol,
-      // Estos dos no viven en la base pero el formulario los espera: sin
-      // ellos, editar un integrante rompía la app.
-      usuario: "", email: "",
+      usuario: u.usuario || "", email: u.email || "",
       telefono: u.telefono || "", activo: u.activo !== false,
       // A qué locales pertenece. Vacío significa todos.
       negocios: u.negocios || [],
@@ -10500,8 +10532,35 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
   const negocioId = negocioActivo(data).id;
   // Varios carritos en paralelo: cada uno con su cliente, su lista y sus extras.
   // Sirve para atender a alguien que se fue a buscar otro talle sin perder lo cargado.
-  const [carritos, setCarritos] = useState(() => [nuevoCarrito(1, (data.listasPrecio || EMPTY.listasPrecio)[0].id)]);
-  const [activoId, setActivoId] = useState(() => carritos[0].id);
+  // Los carritos quedan guardados en el dispositivo: si la app se cierra sin
+  // querer en medio de un cobro, al volver está todo como estaba.
+  const [carritos, setCarritos] = useState(() => {
+    try {
+      const g = JSON.parse(localStorage.getItem("ct-carritos") || "null");
+      if (g && g.carritos && g.carritos.length && g.negocioId === negocioId) return g.carritos;
+    } catch (e) {}
+    return [nuevoCarrito(1, (data.listasPrecio || EMPTY.listasPrecio)[0].id)];
+  });
+  const [activoId, setActivoId] = useState(() => {
+    try {
+      const g = JSON.parse(localStorage.getItem("ct-carritos") || "null");
+      if (g && g.activoId && carritos.some((c) => c.id === g.activoId)) return g.activoId;
+    } catch (e) {}
+    return carritos[0].id;
+  });
+
+  // Se guarda en cada cambio. Va con el negocio para no mezclar el carrito de
+  // un local con el de otro.
+  useEffect(() => {
+    try {
+      const hayAlgo = carritos.some((c) => (c.cart || []).length > 0);
+      if (hayAlgo) {
+        localStorage.setItem("ct-carritos", JSON.stringify({ carritos, activoId, negocioId }));
+      } else {
+        localStorage.removeItem("ct-carritos");
+      }
+    } catch (e) {}
+  }, [carritos, activoId, negocioId]);
   const actual = carritos.find((c) => c.id === activoId) || carritos[0];
 
   // Cada campo del carrito activo se lee y escribe como si fuera un estado suelto
@@ -17364,16 +17423,27 @@ function UsuarioModal({ data, inicial, onGuardar, onClose }) {
         React.createElement("input", { autoFocus: true, style: inputStyle, value: f.nombre, onChange: (e) => set("nombre", e.target.value), placeholder: "Cristina" })),
       React.createElement(Field, { label: "Nombre de usuario" },
         React.createElement("input", { style: inputStyle, value: f.usuario, onChange: (e) => set("usuario", e.target.value), placeholder: handleDesde(f.nombre) || "@cristina" })),
-      React.createElement(Field, { label: "Email" },
-        React.createElement("input", { style: inputStyle, type: "email", value: f.email, onChange: (e) => set("email", e.target.value), placeholder: "cristina@gmail.com" })),
+      // Se completa solo con el mail de la cuenta de acceso, así que se
+      // muestra pero no se edita: escribir otro no cambiaría con cuál entra.
+      React.createElement(Field, { label: "Email de la cuenta" },
+        React.createElement("input", {
+          style: { ...inputStyle, opacity: 0.7, cursor: "default" },
+          type: "email", value: f.email || "", readOnly: true,
+          placeholder: "Se completa al crear la cuenta en Supabase"
+        }),
+        React.createElement("p", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 5, lineHeight: 1.5 } },
+          f.email
+            ? "Es el mail con el que entra a la app."
+            : "Todavía no tiene cuenta de acceso. Se crea en Supabase \u2192 Authentication.")),
       !f.invitar && React.createElement(Field, {
         label: editando ? "Contraseña nueva (opcional)" : "Contraseña",
         ayuda: editando ? "Dejala vacía para no cambiarla" : null
       },
         React.createElement(CampoClave, { valor: f.clave || "", onCambiar: (v) => set("clave", v) })),
 
-      // A qué locales entra. Sin esto, un usuario creado quedaba en todos.
-      listaNegocios(data).length > 1 && f.rol !== "Propietario" && React.createElement(
+      // A qué locales entra. Se muestra siempre: antes desaparecía al elegir
+      // Propietario y lo tildado se perdía sin aviso.
+      listaNegocios(data).length > 1 && React.createElement(
         "div",
         { style: { marginBottom: 16 } },
         React.createElement("div", { style: { fontSize: 12, color: "var(--muted)", fontWeight: 500, marginBottom: 9 } }, "¿En qué locales trabaja?"),
@@ -17398,9 +17468,11 @@ function UsuarioModal({ data, inicial, onGuardar, onClose }) {
           })
         ),
         React.createElement("p", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 8, lineHeight: 1.5 } },
-          (f.negocios || []).length === 0
-            ? "Sin elegir ninguno puede entrar a todos."
-            : "Sólo va a poder cambiar entre los locales elegidos.")
+          f.rol === "Propietario"
+            ? "El propietario entra a todos los locales, sin importar lo que se elija acá."
+            : (f.negocios || []).length === 0
+              ? "Sin elegir ninguno puede entrar a todos."
+              : "Sólo va a poder cambiar entre los locales elegidos.")
       ),
 
       // Tarjetas en vez de un desplegable: con cuatro roles que además hay
@@ -23252,7 +23324,10 @@ function UsuariosView({ data, persist, senalUsuario, senalInvitaciones, senalRol
     } else if (f.id) {
       persist({ ...data, usuarios: usuarios.map((u) => u.id === f.id ? { ...u, ...f } : u) });
     } else {
-      const nuevo = { id: uid(), nombre: f.nombre, usuario: f.usuario, email: f.email, rol: f.rol, activo: true, ultimoAcceso: todayISO(), esVos: usuarios.length === 0 };
+      // Los locales viajan también: sin esto un usuario nuevo quedaba en todos
+      const nuevo = { id: uid(), nombre: f.nombre, usuario: f.usuario, email: f.email,
+        rol: f.rol, negocios: f.negocios || [], telefono: f.telefono || "",
+        activo: true, ultimoAcceso: todayISO(), esVos: usuarios.length === 0 };
       persist({ ...data, usuarios: [...usuarios, nuevo] });
     }
     setEditando(null);
@@ -23343,7 +23418,6 @@ function UsuariosView({ data, persist, senalUsuario, senalInvitaciones, senalRol
                 React.createElement("th", null, "Email"),
                 React.createElement("th", null, "Rol"),
                 React.createElement("th", null, "Último acceso"),
-                React.createElement("th", null, "Ventas"),
                 React.createElement("th", { style: { textAlign: "right" } }, "Acciones")
               )),
               React.createElement("tbody", null, visibles.map((u) => {
@@ -23376,24 +23450,7 @@ function UsuariosView({ data, persist, senalUsuario, senalInvitaciones, senalRol
                   ),
                   React.createElement("td", { style: { color: "var(--muted)", whiteSpace: "nowrap" } }, u.ultimoAcceso ? fechaLarga(u.ultimoAcceso) : "Sin registro"),
 
-                  // Cuánto vendió: sale del historial de ventas
-                  React.createElement(
-                    "td",
-                    { style: { whiteSpace: "nowrap" } },
-                    (() => {
-                      const suyas = (data.ventas || []).filter((v) =>
-                        !esDevolucion(v) && (v.usuarioNombre === u.nombre || v.usuarioId === u.id));
-                      if (!suyas.length) return React.createElement("span", { style: { color: "var(--muted)" } }, "Sin ventas");
-                      const total = suyas.reduce((a, v) => a + (v.total || 0), 0);
-                      return React.createElement(
-                        "span",
-                        null,
-                        React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 650 } }, money(total)),
-                        React.createElement("span", { style: { display: "block", fontSize: 12, color: "var(--muted)", marginTop: 3 } },
-                          suyas.length, " venta", suyas.length === 1 ? "" : "s")
-                      );
-                    })()
-                  ),
+
 
                   React.createElement(
                     "td",
