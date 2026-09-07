@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.485";
+const VERSION_APP = "9.488";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -141,7 +141,14 @@ import { createPortal } from "react-dom";
 import { Tag, Package, ShoppingBag, Users, Wallet, Plus, Trash2, X, AlertTriangle, Search, Pencil, TrendingUp, TrendingDown, Minus, CreditCard, Banknote, ArrowRightLeft, Check, ShoppingCart, Share2, UserCog, BarChart3, MessageCircle, ArrowDownCircle, ArrowUpCircle, Truck, QrCode, ScanBarcode, Receipt, DollarSign, ChevronDown, ChevronLeft, ChevronRight, Lock, Unlock, Calculator, SlidersHorizontal, LayoutGrid, Archive, MoreHorizontal, Sparkles, Clock3, Boxes, Tags, Sun, Moon, Crown, UserPlus, Mail } from "lucide-react";
 const STORAGE_KEY = "control-tienda-ropa-v1";
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-const todayISO = () => (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+// La fecha de HOY según el reloj de acá, no el de Greenwich. Con toISOString,
+// después de las 21:00 en Argentina la app creía que ya era el día siguiente:
+// las ventas de la noche quedaban con fecha equivocada y no aparecían en el
+// cierre ni en los informes del día.
+// Pasa una fecha al formato aaaa-mm-dd usando el reloj de acá
+const isoLocal = (d) =>
+  new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+const todayISO = () => isoLocal(/* @__PURE__ */ new Date());
 const money = (n) => new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(n || 0);
 const fecha = (iso) => (/* @__PURE__ */ new Date(iso + "T00:00:00")).toLocaleDateString("es-AR", { day: "2-digit", month: "short" });
 // Fecha numérica completa: 31/8/2021
@@ -5409,7 +5416,7 @@ function RegistrarMovimientoModal({ data, negocioId, onGuardar, onClose }) {
 
 function MovimientosStock({ data, persist, senalMovimiento }) {
   const hoy = todayISO();
-  const haceUnMes = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+  const haceUnMes = isoLocal(new Date(Date.now() - 30 * 864e5));
   const [desde, setDesde] = useState(haceUnMes);
   const [hasta, setHasta] = useState(hoy);
   const [vista, setVista] = useState("resumen");
@@ -21887,7 +21894,7 @@ const fechaHoraLargaISO = (iso) => {
 const sumarDias = (iso, dias) => {
   const d = new Date(iso + "T00:00:00");
   d.setDate(d.getDate() + dias);
-  return d.toISOString().slice(0, 10);
+  return isoLocal(d);
 };
 // Nombre del usuario que está operando; sin usuarios cargados queda sin dato
 // Resumen legible de los productos de una venta
