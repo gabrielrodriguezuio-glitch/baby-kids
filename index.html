@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.588";
+const VERSION_APP = "9.593";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -2741,7 +2741,9 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
       // Stock y Transferencias a la vista, sin desplegar nada: son de las
       // pantallas que más se abren en el día.
       { id: "stock", label: "Stock", labelCorto: "Stock", icon: Boxes, badge: lowStockCount },
-      { id: "transferencias", label: "Transferencias", labelCorto: "Transfer.", icon: Truck }
+      // Flechas cruzadas: mercadería que va de un local a otro. El camión ya
+      // lo usa Reparto y en el menú se veían dos íconos iguales.
+      { id: "transferencias", label: "Transferencias", labelCorto: "Transfer.", icon: ArrowRightLeft }
     ] },
     { titulo: "Personas", items: [
       { id: "tareas", label: "Tareas", labelCorto: "Tareas", icon: Check, badge: tareasHoy },
@@ -5184,6 +5186,47 @@ function ListaComprobantes({ ventas, lista, onCambiar }) {
     aviso && React.createElement("p", { style: { fontSize: 11.5, color: "var(--rose)", marginTop: 8 } }, aviso),
 
     ampliado && React.createElement(VisorComprobante, { src: ampliado, onClose: () => setAmpliado(null) })
+  );
+}
+
+// Buscador de productos: lupa, texto, borrar y escáner en un mismo recuadro.
+// Antes cada pantalla lo armaba a su manera y el escáner quedaba como un
+// botón aparte, de tamaños distintos.
+function BuscadorProducto({ valor, onCambiar, onEnter, onEscanear, placeholder, autoFocus }) {
+  return React.createElement(
+    "div",
+    {
+      className: "ct-buscador",
+      style: {
+        display: "flex", alignItems: "center", gap: 10,
+        background: "var(--surface-2)", border: "1.5px solid var(--line)",
+        borderRadius: 10, padding: "0 14px",
+        transition: "border-color .12s ease, box-shadow .12s ease"
+      }
+    },
+    React.createElement(Search, { size: 17, color: "var(--muted)", style: { flexShrink: 0 } }),
+    React.createElement("input", {
+      autoFocus: !!autoFocus,
+      value: valor,
+      onChange: (e) => onCambiar(e.target.value),
+      onKeyDown: (e) => { if (e.key === "Enter" && onEnter) { e.preventDefault(); onEnter(); } },
+      placeholder: placeholder || "Buscar producto\u2026",
+      style: { flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", color: "var(--ink)", fontSize: 14, padding: "12px 0", fontFamily: "'Inter', sans-serif" }
+    }),
+    valor && React.createElement("button", {
+      onClick: () => onCambiar(""),
+      title: "Borrar",
+      style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", display: "flex", padding: 4, flexShrink: 0 }
+    }, React.createElement(X, { size: 16 })),
+    onEscanear && React.createElement("button", {
+      onClick: onEscanear,
+      title: "Escanear con la cámara",
+      style: {
+        display: "flex", alignItems: "center", background: "none", border: "none",
+        borderLeft: "1px solid var(--line)", cursor: "pointer", color: "var(--muted)",
+        padding: "8px 0 8px 12px", marginLeft: 4, flexShrink: 0
+      }
+    }, React.createElement(ScanBarcode, { size: 17 }))
   );
 }
 
@@ -11259,21 +11302,24 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
             },
               style: { flex: 1, minWidth: 0, height: "100%", background: "transparent", border: "none", outline: "none", color: posColors.text, fontSize: isMobilePos ? 16 : 15, padding: 0 }
             }),
-            // El escáner al costado del campo, separado por una línea: se
-            // escribe o se escanea, las dos cosas a mano. Es el mismo bloque
-            // que en transferencias.
-            React.createElement("span", {
-              style: { width: 1, height: 26, background: "color-mix(in srgb, var(--denim) 30%, transparent)", flexShrink: 0 }
-            }),
+            // Borrar lo escrito y escanear, al final del campo. Es el mismo
+            // patrón que en Consultar precio: lupa, texto y escáner adentro
+            // del mismo recuadro.
+            barcode && React.createElement("button", {
+              onClick: () => { setBarcode(""); setBarcodeError(""); },
+              title: "Borrar",
+              style: { background: "none", border: "none", cursor: "pointer", color: posColors.muted, display: "flex", padding: 4, flexShrink: 0 }
+            }, React.createElement(X, { size: 16 })),
             React.createElement("button", {
               onClick: () => setEscaneando(true),
               title: "Escanear con la cámara",
               style: {
-                background: "none", border: "none", cursor: "pointer",
-                color: "var(--denim-light)", padding: "0 2px 0 4px",
-                display: "flex", alignItems: "center", flexShrink: 0
+                display: "flex", alignItems: "center", background: "none", border: "none",
+                borderLeft: "1px solid color-mix(in srgb, var(--denim) 30%, transparent)",
+                cursor: "pointer", color: "var(--denim-light)",
+                padding: "8px 0 8px 12px", marginLeft: 4, flexShrink: 0
               }
-            }, React.createElement(ScanBarcode, { size: 20 }))
+            }, React.createElement(ScanBarcode, { size: 18 }))
           ),
           // Sólo el ícono: con la pistola casi no se usan, y con texto le
           // comían la mitad del ancho al buscador, que es lo que más se toca.
@@ -21095,18 +21141,12 @@ function NuevoPedidoModal({ data, persist, negocioId, onClose }) {
     React.createElement(
       "div",
       { style: { display: "flex", gap: 8, alignItems: "stretch" } },
-      React.createElement("input", {
-        value: query,
-        onChange: (e) => setQuery(e.target.value),
-        onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); porCodigo(query); } },
-        placeholder: "Escaneá o buscá por nombre\u2026",
-        style: { ...inputStyle, flex: 1, minWidth: 0 }
-      }),
-      React.createElement("button", {
-        onClick: () => setEscaneando(true),
-        title: "Escanear con la cámara",
-        style: { background: "var(--surface-2)", border: "1.5px solid var(--line)", borderRadius: 10, padding: "0 14px", cursor: "pointer", color: "var(--ink)", display: "flex", alignItems: "center", flexShrink: 0 }
-      }, React.createElement(ScanBarcode, { size: 17 }))
+      React.createElement(BuscadorProducto, {
+        valor: query, onCambiar: setQuery,
+        onEnter: () => porCodigo(query),
+        onEscanear: () => setEscaneando(true),
+        placeholder: "Escaneá o buscá por nombre\u2026"
+      })
     ),
     escaneando && React.createElement(EscanerModal, {
       titulo: "Escanear para el pedido",
@@ -21680,15 +21720,11 @@ function ResolverCambioModal({ data, persist, venta, itemsDevueltos, valorDevuel
     React.createElement(
       "div",
       { style: { display: "flex", gap: 8 } },
-      React.createElement("input", {
-        value: query, onChange: (e) => setQuery(e.target.value),
-        placeholder: "Buscar el producto que se lleva\u2026",
-        style: { ...inputStyle, flex: 1, minWidth: 0 }
-      }),
-      React.createElement("button", {
-        onClick: () => setEscaneando(true),
-        style: { background: "var(--surface-2)", border: "1.5px solid var(--line)", borderRadius: 10, padding: "0 14px", cursor: "pointer", color: "var(--ink)", display: "flex", alignItems: "center", flexShrink: 0 }
-      }, React.createElement(ScanBarcode, { size: 17 }))
+      React.createElement(BuscadorProducto, {
+        valor: query, onCambiar: setQuery,
+        onEscanear: () => setEscaneando(true),
+        placeholder: "Buscar el producto que se lleva\u2026"
+      })
     ),
 
     escaneando && React.createElement(EscanerModal, {
@@ -22085,17 +22121,11 @@ function CambiosView({ data, persist, onCerrar, onCobrar }) {
       React.createElement(
         "div",
         { style: { display: "flex", gap: 8 } },
-        React.createElement("input", {
-          autoFocus: true, value: query,
-          onChange: (e) => setQuery(e.target.value),
-          placeholder: "Producto, talle, cliente o monto\u2026",
-          style: { ...inputStyle, flex: 1, minWidth: 0 }
-        }),
-        React.createElement("button", {
-          onClick: () => setEscaneando(true),
-          title: "Escanear la etiqueta de la prenda",
-          style: { background: "var(--surface-2)", border: "1.5px solid var(--line)", borderRadius: 10, padding: "0 14px", cursor: "pointer", color: "var(--ink)", display: "flex", alignItems: "center", flexShrink: 0 }
-        }, React.createElement(ScanBarcode, { size: 17 }))
+        React.createElement(BuscadorProducto, {
+          autoFocus: true, valor: query, onCambiar: setQuery,
+          onEscanear: () => setEscaneando(true),
+          placeholder: "Producto, talle, cliente o monto\u2026"
+        })
       ),
       React.createElement("p", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 8, lineHeight: 1.5 } },
         "Si perdió el ticket, escaneá la etiqueta de lo que trajo."),
