@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.678";
+const VERSION_APP = "9.681";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1428,6 +1428,16 @@ function ControlTienda() {
     (async () => {
       setErrorNube("");
       try {
+        // Primero lo justo para vender: productos, stock, precios y cajas.
+        // Con eso la app ya se puede usar, y el historial llega por detrás.
+        if (!mostradoDeLaCopia) {
+          try {
+            const minimo = migrarCajas(migrarDatos(await traerEsencial(sesion && sesion.auth_id)));
+            setData(minimo);
+            setLoading(false);
+          } catch (e) {}
+        }
+
         // Con un tope de tiempo: si la conexión es muy lenta, mejor avisar que
         // dejar la pantalla de carga girando sin explicación.
         const traer = traerDeLaNube(sesion && sesion.auth_id);
@@ -4653,8 +4663,9 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
         nombre: u.nombre,
         rol: u.rol,
         telefono: u.telefono || null,
-        // El email lo completa la base desde la cuenta de acceso, así que no
-        // se manda: mandarlo vacío borraría el que ya tiene.
+        // Se puede escribir a mano. Si el integrante está enlazado a una
+        // cuenta, la base lo completa sola al enlazarlo.
+        email: u.email || null,
         usuario: u.usuario || null,
         activo: u.activo !== false,
         negocios: (u.negocios && u.negocios.length) ? u.negocios : null
@@ -4984,8 +4995,77 @@ async function traerParcial(tablas, quienEntro) {
   return salida;
 }
 
-// Trae todo lo que la app necesita para arrancar. Se piden las tablas en
-// paralelo, que es bastante más rápido que una tras otra.
+// Lo mínimo para poder trabajar: productos, stock, precios, quién sos y las
+// cajas. Con esto la app ya se puede usar para vender. El historial llega
+// después, por detrás, sin que se note.
+async function traerEsencial(quienEntro) {
+  const [negs, cats, provs, listas, prods, vars, clis, ajustes, usuarios, cajasNube] =
+    await Promise.all([
+      nube.from("negocios").select("*").order("principal", { ascending: false }),
+      nube.from("categorias").select("nombre").order("nombre"),
+      nube.from("proveedores").select("nombre").order("nombre"),
+      nube.from("listas_precio").select("*"),
+      traerTodo("productos", "nombre"),
+      traerTodo("variantes"),
+      traerTodo("clientes", "nombre"),
+      nube.from("ajustes").select("datos").eq("id", 1).maybeSingle(),
+      nube.from("usuarios").select("*").order("creado_en"),
+      nube.from("cajas_abiertas").select("*")
+    ]);
+
+  const primerError = [negs, cats, provs, listas, ajustes, usuarios, cajasNube]
+    .find((r) => r && r.error);
+  if (primerError) throw new Error(primerError.error.message);
+
+  const listasPrecio = (listas.data || []).map((l) => ({
+    id: l.id, nombre: l.nombre, ajustePct: Number(l.ajuste_pct) || 0
+  }));
+  const listaMayor = listasPrecio.find((l) => /mayor/i.test(l.nombre));
+  const varsPorProd = {};
+  (vars || []).forEach((v) => {
+    (varsPorProd[v.producto_id] = varsPorProd[v.producto_id] || []).push(v);
+  });
+  const extra = (ajustes.data && ajustes.data.datos) || {};
+
+  return {
+    ...EMPTY,
+    negocios: (negs.data || []).map((n) => ({
+      id: n.id, nombre: n.nombre, direccion: n.direccion || "",
+      telefono: n.telefono || "", color: n.color || COLORES_NEGOCIO[0],
+      principal: !!n.principal
+    })),
+    negocioActivoId: negocioElegido() || (negs.data && negs.data[0] && negs.data[0].id) || "",
+    categorias: (cats.data || []).map((c) => c.nombre),
+    proveedores: (provs.data || []).map((p) => p.nombre),
+    listasPrecio,
+    productos: (prods || []).map((p) => deLaNube.producto(p, varsPorProd[p.id], listaMayor && listaMayor.id)),
+    clientes: (clis || []).map(deLaNube.cliente),
+    usuarios: (usuarios.data || []).map((u) => ({
+      id: u.id, authId: u.auth_id, nombre: u.nombre, rol: u.rol,
+      usuario: u.usuario || "", email: u.email || "",
+      negocios: u.negocios || [],
+      telefono: u.telefono || "", activo: u.activo !== false,
+      esVos: !!(quienEntro && u.auth_id === quienEntro)
+    })),
+    cajas: (cajasNube.data || []).reduce((acc, c) => {
+      acc[c.clave] = {
+        abierta: !!c.abierta, montoInicial: Number(c.monto_inicial) || 0,
+        abiertaEn: c.abierta_en || null, abiertaPor: c.usuario_nombre || "",
+        movimientos: c.movimientos || []
+      };
+      return acc;
+    }, { ...cajasLocales() }),
+    negocio: extra.negocio || {},
+    catalogo: extra.catalogo || EMPTY.catalogo,
+    rolesPersonalizados: extra.rolesPersonalizados || [],
+    soporteTelefono: extra.soporteTelefono || "",
+    costoSoloDueno: !!extra.costoSoloDueno,
+    _parcial: true
+  };
+}
+
+// Trae todo lo que la app necesita. Se piden las tablas en paralelo, que es
+// bastante más rápido que una tras otra.
 async function traerDeLaNube(quienEntro) {
   const [negs, cats, provs, listas, prods, vars, clis, ventas, items, movsCC, ajustes, usuarios, cajasNube, cierresNube, transfNube, movStockNube, pedidosNube, notasNube, cambiosNube, devolNube, gastosNube, comprasNube] =
     await Promise.all([
@@ -17483,18 +17563,15 @@ function UsuarioModal({ data, inicial, onGuardar, onClose }) {
         React.createElement("input", { autoFocus: true, style: inputStyle, value: f.nombre, onChange: (e) => set("nombre", e.target.value), placeholder: "Cristina" })),
       React.createElement(Field, { label: "Nombre de usuario" },
         React.createElement("input", { style: inputStyle, value: f.usuario, onChange: (e) => set("usuario", e.target.value), placeholder: handleDesde(f.nombre) || "@cristina" })),
-      // Se completa solo con el mail de la cuenta de acceso, así que se
-      // muestra pero no se edita: escribir otro no cambiaría con cuál entra.
-      React.createElement(Field, { label: "Email de la cuenta" },
+      // Se completa solo al enlazar la cuenta, pero se puede escribir a mano
+      React.createElement(Field, { label: "Email" },
         React.createElement("input", {
-          style: { ...inputStyle, opacity: 0.7, cursor: "default" },
-          type: "email", value: f.email || "", readOnly: true,
-          placeholder: "Se completa al crear la cuenta en Supabase"
+          style: inputStyle, type: "email", value: f.email || "",
+          onChange: (e) => set("email", e.target.value),
+          placeholder: "cristina@gmail.com"
         }),
         React.createElement("p", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 5, lineHeight: 1.5 } },
-          f.email
-            ? "Es el mail con el que entra a la app."
-            : "Todavía no tiene cuenta de acceso. Se crea en Supabase \u2192 Authentication.")),
+          "Se completa solo si tiene cuenta de acceso. También se puede escribir a mano.")),
       !f.invitar && React.createElement(Field, {
         label: editando ? "Contraseña nueva (opcional)" : "Contraseña",
         ayuda: editando ? "Dejala vacía para no cambiarla" : null
