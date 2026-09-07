@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.488";
+const VERSION_APP = "9.490";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1336,35 +1336,46 @@ function ControlTienda() {
   useEffect(() => {
     if (!sesion || loading) return;
     let pendiente = null;
+    // Qué tablas avisaron desde el último refresco. Traer las 11.000 filas
+    // enteras para ver una venta nueva es lo que hacía que tardara.
+    let tocadas = new Set();
 
-    const refrescar = () => {
-      // Se espera un momento: una venta dispara varios cambios seguidos y no
-      // tiene sentido traer todo cinco veces.
+    const refrescar = (tabla) => {
+      if (tabla) tocadas.add(tabla);
+      // Se espera un instante: una venta dispara varios cambios seguidos y no
+      // tiene sentido traer todo cinco veces. Con 250ms el cambio se ve casi
+      // al toque y los avisos de una misma venta siguen agrupándose.
       clearTimeout(pendiente);
       pendiente = setTimeout(async () => {
         // Si hay un guardado en curso se reintenta después: traer datos a
         // mitad de una escritura pisaría lo que se acaba de hacer.
         if (guardando.current > 0) return refrescar();
+        const cuales = new Set(tocadas);
+        tocadas = new Set();
         try {
-          setData(migrarCajas(migrarDatos(await traerDeLaNube(sesion && sesion.auth_id))));
+          // Sólo las tablas que cambiaron: una venta trae ventas, renglones y
+          // el stock, no el catálogo entero.
+          const parcial = await traerParcial(cuales, sesion && sesion.auth_id);
+          if (parcial) setData((actual) => migrarCajas(migrarDatos({ ...actual, ...parcial })));
+          else setData(migrarCajas(migrarDatos(await traerDeLaNube(sesion && sesion.auth_id))));
         } catch (e) {}
-      }, 900);
+      }, 250);
     };
 
     const canal = nube.channel("cambios")
-      .on("postgres_changes", { event: "*", schema: "public", table: "ventas" }, refrescar)
-      .on("postgres_changes", { event: "*", schema: "public", table: "variantes" }, refrescar)
-      .on("postgres_changes", { event: "*", schema: "public", table: "productos" }, refrescar)
-      .on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, refrescar)
-      .on("postgres_changes", { event: "*", schema: "public", table: "movimientos_cc" }, refrescar)
-      .on("postgres_changes", { event: "*", schema: "public", table: "cajas_abiertas" }, refrescar)
-      .on("postgres_changes", { event: "*", schema: "public", table: "caja_cierres" }, refrescar)
-      .on("postgres_changes", { event: "*", schema: "public", table: "transferencias" }, refrescar)
-      .on("postgres_changes", { event: "*", schema: "public", table: "pedidos" }, refrescar)
-      .on("postgres_changes", { event: "*", schema: "public", table: "devoluciones_reparto" }, refrescar)
-      .on("postgres_changes", { event: "*", schema: "public", table: "movimientos_stock" }, refrescar)
-      .on("postgres_changes", { event: "*", schema: "public", table: "gastos" }, refrescar)
-      .on("postgres_changes", { event: "*", schema: "public", table: "compras" }, refrescar)
+      .on("postgres_changes", { event: "*", schema: "public", table: "ventas" }, () => refrescar("ventas"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "variantes" }, () => refrescar("variantes"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "productos" }, () => refrescar("productos"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, () => refrescar("clientes"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "movimientos_cc" }, () => refrescar("movimientos_cc"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "cajas_abiertas" }, () => refrescar("cajas_abiertas"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "caja_cierres" }, () => refrescar("caja_cierres"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "transferencias" }, () => refrescar("transferencias"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "pedidos" }, () => refrescar("pedidos"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "devoluciones_reparto" }, () => refrescar("devoluciones_reparto"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "movimientos_stock" }, () => refrescar("movimientos_stock"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "gastos" }, () => refrescar("gastos"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "compras" }, () => refrescar("compras"))
       .subscribe();
 
     // Al volver a la pestaña también se refresca: si el aviso se perdió
@@ -4562,6 +4573,70 @@ const guardarCajasLocal = (cajas) => {
 const cajasLocales = () => {
   try { return JSON.parse(localStorage.getItem(CAJAS_LOCAL) || "{}"); } catch (e) { return {}; }
 };
+
+// Trae sólo las tablas que cambiaron. Es la diferencia entre esperar a que
+// bajen 11.000 filas y ver la venta del otro casi al instante.
+async function traerParcial(tablas, quienEntro) {
+  if (!tablas || !tablas.size) return null;
+  const salida = {};
+
+  // El stock: una venta lo toca siempre, y hay que rearmar los productos
+  if (tablas.has("variantes") || tablas.has("productos")) {
+    const [prods, vars, listas] = await Promise.all([
+      traerTodo("productos", "nombre"),
+      traerTodo("variantes"),
+      nube.from("listas_precio").select("*")
+    ]);
+    const porProd = {};
+    (vars || []).forEach((v) => {
+      (porProd[v.producto_id] = porProd[v.producto_id] || []).push(v);
+    });
+    const lp = (listas.data || []).map((l) => ({ id: l.id, nombre: l.nombre, ajustePct: Number(l.ajuste_pct) || 0 }));
+    const mayor = lp.find((l) => /mayor/i.test(l.nombre));
+    salida.productos = (prods || []).map((p) => deLaNube.producto(p, porProd[p.id], mayor && mayor.id));
+  }
+
+  if (tablas.has("ventas") || tablas.has("venta_items")) {
+    const [ventas, items] = await Promise.all([traerTodo("ventas"), traerTodo("venta_items")]);
+    const porVenta = {};
+    (items || []).forEach((it) => {
+      (porVenta[it.venta_id] = porVenta[it.venta_id] || []).push(it);
+    });
+    salida.ventas = (ventas || [])
+      .map((v) => deLaNube.venta(v, porVenta[v.id]))
+      .sort((a, b) => (b.fecha + " " + (b.horaTexto || "")).localeCompare(a.fecha + " " + (a.horaTexto || "")));
+  }
+
+  if (tablas.has("clientes")) {
+    salida.clientes = (await traerTodo("clientes", "nombre")).map(deLaNube.cliente);
+  }
+
+  if (tablas.has("movimientos_cc")) {
+    salida.movimientosCC = (await traerTodo("movimientos_cc")).map((m) => ({
+      id: m.id, clienteId: m.cliente_id, tipo: m.tipo, monto: Number(m.monto) || 0,
+      concepto: m.concepto || "", metodo: m.metodo || "", fecha: m.fecha, usuario: m.usuario || ""
+    }));
+  }
+
+  if (tablas.has("cajas_abiertas")) {
+    const { data: cs } = await nube.from("cajas_abiertas").select("*");
+    salida.cajas = (cs || []).reduce((acc, c) => {
+      acc[c.clave] = {
+        abierta: !!c.abierta, montoInicial: Number(c.monto_inicial) || 0,
+        abiertaEn: c.abierta_en || null, abiertaPor: c.usuario_nombre || "",
+        movimientos: c.movimientos || []
+      };
+      return acc;
+    }, { ...cajasLocales() });
+  }
+
+  // Lo que no está contemplado obliga a traer todo, para no quedarse corto
+  const conocidas = ["variantes", "productos", "ventas", "venta_items", "clientes",
+                     "movimientos_cc", "cajas_abiertas"];
+  for (const t of tablas) if (conocidas.indexOf(t) < 0) return null;
+
+  return salida;
+}
 
 // Trae todo lo que la app necesita para arrancar. Se piden las tablas en
 // paralelo, que es bastante más rápido que una tras otra.
