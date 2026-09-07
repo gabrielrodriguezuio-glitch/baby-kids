@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.698";
+const VERSION_APP = "9.700";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -4423,6 +4423,23 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
       if (error) throw new Error(error.message);
     } catch (e) {
       if (avisarProblema) avisarProblema("El cambio no se guardó: " + String((e && e.message) || e));
+    }
+  }
+
+  // Los integrantes que se sacaron de la lista se borran también de la base:
+  // antes desaparecían de la pantalla y volvían al recargar.
+  const equipoDespues = new Set((despues.usuarios || []).map((u) => u.id));
+  const borrados = (antes.usuarios || [])
+    .filter((u) => !equipoDespues.has(u.id) && esIdDeLaBase(u.id));
+  for (const u of borrados) {
+    try {
+      // Primero su caja: sin esto queda abierta la de alguien que ya no está
+      await nube.from("cajas_abiertas").delete().like("clave", "%|" + u.id);
+      const { error } = await nube.from("usuarios").delete().eq("id", u.id);
+      if (error) throw new Error(error.message);
+    } catch (e) {
+      if (avisarProblema) avisarProblema("No se pudo borrar el integrante: " +
+        String((e && e.message) || e));
     }
   }
 
@@ -23596,9 +23613,39 @@ function UsuariosView({ data, persist, senalUsuario, senalInvitaciones, senalRol
   };
   const cancelarInvitacion = (id) => persist({ ...data, invitaciones: invitaciones.filter((x) => x.id !== id) });
 
-  const toggleActivo = (u) => { persist({ ...data, usuarios: usuarios.map((x) => x.id === u.id ? { ...x, activo: x.activo === false } : x) }); setMenuAbierto(null); };
+  const toggleActivo = (u) => {
+    const quitando = u.activo !== false;
+    const cajas = { ...(data.cajas || {}) };
+    // Al quitarle el acceso se le cierra la caja: si no, queda abierta la de
+    // alguien que ya no puede entrar y su efectivo sigue en los totales.
+    if (quitando) {
+      Object.keys(cajas).forEach((k) => {
+        if (k.split("|")[1] === u.id && cajas[k] && cajas[k].abierta) {
+          cajas[k] = { ...CAJA_VACIA };
+        }
+      });
+    }
+    persist({ ...data, cajas,
+      usuarios: usuarios.map((x) => x.id === u.id ? { ...x, activo: !quitando } : x) });
+    setMenuAbierto(null);
+    avisar(quitando ? u.nombre + " ya no puede entrar" : u.nombre + " puede entrar de nuevo", { tono: "info" });
+  };
   const marcarComoVos = (u) => { persist({ ...data, usuarios: usuarios.map((x) => ({ ...x, esVos: x.id === u.id })) }); setMenuAbierto(null); };
-  const eliminar = (u) => { persist({ ...data, usuarios: usuarios.filter((x) => x.id !== u.id) }); setMenuAbierto(null); };
+  const eliminar = (u) => {
+    if (u.esVos) { setMenuAbierto(null); return avisar("No podés borrar tu propia cuenta.", { tono: "error" }); }
+    if (!window.confirm("¿Borrar a " + u.nombre + " del equipo?\n\nSus ventas anteriores siguen figurando a su nombre. La cuenta de acceso se borra aparte, en Supabase.")) {
+      setMenuAbierto(null);
+      return;
+    }
+    const anterior = data;
+    // También se le cierra la caja, para que no quede abierta la de alguien
+    // que ya no está en el equipo
+    const cajas = { ...(data.cajas || {}) };
+    Object.keys(cajas).forEach((k) => { if (k.split("|")[1] === u.id) delete cajas[k]; });
+    persist({ ...data, cajas, usuarios: usuarios.filter((x) => x.id !== u.id) });
+    setMenuAbierto(null);
+    avisar(u.nombre + " se borró del equipo", { deshacer: () => persist(anterior) });
+  };
 
   return React.createElement(
     "div",
