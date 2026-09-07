@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.643";
+const VERSION_APP = "9.645";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -4478,13 +4478,17 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
   }
 
   if (prods.borrados.length) {
-    // Sólo los que existen en la base. Un producto creado en la app y borrado
-    // antes de que subiera tiene un id que la base no reconoce, y ese id
-    // hacía que rechazara el borrado completo.
+    // Sólo los que existen en la base: un producto creado en la app y borrado
+    // antes de que subiera tiene un id que la base no reconoce.
     const enLaBase = prods.borrados.filter(esIdDeLaBase);
-    if (enLaBase.length) {
-      const { error } = await nube.from("productos").delete().in("id", enLaBase);
-      if (error) throw new Error("Al borrar productos: " + error.message);
+    // De a 30: los identificadores viajan en la dirección del pedido y con
+    // muchos a la vez se pasa del largo permitido, y el servidor la rechaza
+    // entera con un error que no dice cuál es el problema.
+    for (let i = 0; i < enLaBase.length; i += 30) {
+      const tanda = enLaBase.slice(i, i + 30);
+      const { error } = await nube.from("productos").delete().in("id", tanda);
+      if (error) throw new Error("Al borrar productos (" + tanda.length + " de " +
+        enLaBase.length + "): " + (error.message || error.code || "sin detalle"));
     }
   }
 
@@ -4602,9 +4606,12 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
       nota: c.nota || null, email: c.email || null, documento: c.documento || null
     }).eq("id", c.id);
   }
-  // Mismo cuidado que con los productos: sólo los que la base conoce
+  // Mismo cuidado que con los productos: sólo los que la base conoce, y de a
+  // tandas para no pasarse del largo del pedido.
   const clisEnLaBase = clis.borrados.filter(esIdDeLaBase);
-  if (clisEnLaBase.length) await nube.from("clientes").delete().in("id", clisEnLaBase);
+  for (let i = 0; i < clisEnLaBase.length; i += 30) {
+    await nube.from("clientes").delete().in("id", clisEnLaBase.slice(i, i + 30));
+  }
 
   // ── Negocios ──────────────────────────────────────────────
   // Editar el nombre o los datos de un local no llegaba a la base.
