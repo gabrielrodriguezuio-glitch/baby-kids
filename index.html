@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.635";
+const VERSION_APP = "9.637";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -4891,8 +4891,15 @@ async function traerDeLaNube(quienEntro) {
       // Sólo los últimos: el historial completo se usa en una sola pantalla y
       // 2000 filas hacían más lento el arranque de todas las demás.
       nube.from("movimientos_stock").select("*").order("creado_en", { ascending: false }).limit(400),
-      nube.from("pedidos").select("*").order("creado_en", { ascending: false }).limit(500),
-      nube.from("notas_credito").select("*").order("creado_en", { ascending: false }).limit(500),
+      // Igual con los pedidos: uno reservado hace tiempo sigue estando
+      nube.from("pedidos").select("*")
+        .or("estado.eq.pendiente,creado_en.gte." + haceMeses(6))
+        .order("creado_en", { ascending: false }).limit(1000),
+      // Las notas sin usar se traen TODAS: no vencen, así que una de hace un
+      // año tiene que poder canjearse igual. Las ya usadas, sólo las últimas.
+      nube.from("notas_credito").select("*")
+        .or("estado.eq.activa,creado_en.gte." + haceMeses(12))
+        .order("creado_en", { ascending: false }).limit(1500),
       nube.from("cambios").select("*").order("creado_en", { ascending: false }).limit(500),
       nube.from("devoluciones_reparto").select("*").order("creado_en", { ascending: false }).limit(500),
       nube.from("gastos").select("*").order("fecha", { ascending: false }).limit(1000),
