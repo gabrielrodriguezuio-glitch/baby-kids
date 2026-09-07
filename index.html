@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.619";
+const VERSION_APP = "9.620";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -2299,7 +2299,21 @@ function Header({ data, persist, mobile, tab, editandoProducto, onAbrirMenu, ran
     },
     React.createElement(
       "div",
-      { style: { minWidth: 0 } },
+      { style: { minWidth: 0, display: "flex", alignItems: "flex-start", gap: 12 } },
+      // El menú abre desde acá, al lado del título de la pantalla
+      !mobile && onAbrirMenu && React.createElement("button", {
+        onClick: onAbrirMenu,
+        title: "Abrir el menú",
+        style: {
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          width: 42, height: 42, flexShrink: 0, marginTop: 2,
+          background: "var(--surface-2)", border: "1.5px solid var(--line)",
+          borderRadius: 10, cursor: "pointer", color: "var(--ink)"
+        }
+      }, React.createElement(Menu, { size: 19 })),
+      React.createElement(
+        "div",
+        { style: { minWidth: 0 } },
       !editandoProducto && React.createElement("h1", {
         style: {
           fontFamily: "'Inter Tight', sans-serif",
@@ -2314,21 +2328,11 @@ function Header({ data, persist, mobile, tab, editandoProducto, onAbrirMenu, ran
       !editandoProducto && React.createElement("div", {
         style: { fontSize: mobile ? 12.5 : 14, color: "var(--muted)", marginTop: 5 }
       }, subtitulo, negocioNombre && tab === "pos" ? " \u00B7 " + negocioNombre : negocioNombre && (tab === "stock" || tab === "actividad") ? " de " + negocioNombre : "")
+      )
     ),
     React.createElement(
       "div",
       { style: { display: "flex", alignItems: "center", gap: 8, flexShrink: 0, marginLeft: "auto" } },
-      // El menú se abre desde acá, a la derecha con el resto de las acciones
-      !mobile && onAbrirMenu && React.createElement("button", {
-        onClick: onAbrirMenu,
-        title: "Abrir el menú",
-        style: {
-          display: "inline-flex", alignItems: "center", justifyContent: "center",
-          width: 40, height: 40, flexShrink: 0,
-          background: "var(--surface-2)", border: "1.5px solid var(--line)",
-          borderRadius: 10, cursor: "pointer", color: "var(--ink)"
-        }
-      }, React.createElement(Menu, { size: 18 })),
       tab === "inventario" && !editandoProducto && React.createElement(
         "div",
         { style: { position: "relative" } },
