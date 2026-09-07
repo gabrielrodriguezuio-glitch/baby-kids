@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.675";
+const VERSION_APP = "9.678";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1432,7 +1432,7 @@ function ControlTienda() {
         // dejar la pantalla de carga girando sin explicación.
         const traer = traerDeLaNube(sesion && sesion.auth_id);
         const tope = new Promise((_, rechazar) =>
-          setTimeout(() => rechazar(new Error("La conexión está muy lenta y no se pudieron traer los datos.")), 30000));
+          setTimeout(() => rechazar(new Error("La conexión está muy lenta y no se pudieron traer los datos.")), 20000));
         const frescos = migrarCajas(migrarDatos(await Promise.race([traer, tope])));
         setData(frescos);
         // Se guarda para la próxima vez, sin el historial: lo que hace falta
@@ -1446,8 +1446,19 @@ function ControlTienda() {
           };
           localStorage.setItem("ct-copia", JSON.stringify({ quien: sesion.auth_id, datos: liviano }));
         } catch (e) {
-          // Si no entra, se sigue sin copia: la app funciona igual, sólo tarda
-          try { localStorage.removeItem("ct-copia"); } catch (e2) {}
+          // Si no entra, se guarda una versión más chica antes de rendirse:
+          // con los productos alcanza para abrir y vender.
+          try {
+            localStorage.setItem("ct-copia", JSON.stringify({
+              quien: sesion.auth_id,
+              datos: { ...EMPTY, productos: frescos.productos, negocios: frescos.negocios,
+                       listasPrecio: frescos.listasPrecio, categorias: frescos.categorias,
+                       usuarios: frescos.usuarios, negocio: frescos.negocio,
+                       clientes: (frescos.clientes || []).slice(0, 300) }
+            }));
+          } catch (e2) {
+            try { localStorage.removeItem("ct-copia"); } catch (e3) {}
+          }
         }
       } catch (e) {
         // Con la copia en pantalla no se corta el trabajo: se avisa y listo
@@ -4843,18 +4854,32 @@ async function guardarVariantesEnTanda(items) {
 // acotar por fecha sin perder el paginado.
 async function traerTodo(tabla, orden, filtro) {
   const TAM = 1000;
-  let desde = 0;
-  const todo = [];
-  for (;;) {
+  const armar = (desde) => {
     let q = nube.from(tabla).select("*").range(desde, desde + TAM - 1);
     if (filtro) q = q.gte(filtro.campo, filtro.desde);
     if (orden) q = q.order(orden);
-    const { data, error } = await q;
-    if (error) throw new Error(tabla + ": " + error.message);
-    todo.push(...(data || []));
-    if (!data || data.length < TAM) break;
-    desde += TAM;
-  }
+    return q;
+  };
+
+  // La primera página trae además cuántas filas hay en total, así se sabe de
+  // una cuántas faltan. Antes se pedía una, se esperaba, se pedía la
+  // siguiente: con 6361 variantes eso son siete idas y vueltas en fila.
+  let cuenta = nube.from(tabla).select("*", { count: "exact" }).range(0, TAM - 1);
+  if (filtro) cuenta = cuenta.gte(filtro.campo, filtro.desde);
+  if (orden) cuenta = cuenta.order(orden);
+  const { data, error, count } = await cuenta;
+  if (error) throw new Error(tabla + ": " + error.message);
+  const todo = [...(data || [])];
+  if (!count || count <= TAM) return todo;
+
+  // El resto se pide todo junto, en paralelo
+  const pedidos = [];
+  for (let desde = TAM; desde < count; desde += TAM) pedidos.push(armar(desde));
+  const respuestas = await Promise.all(pedidos);
+  respuestas.forEach((r) => {
+    if (r.error) throw new Error(tabla + ": " + r.error.message);
+    todo.push(...(r.data || []));
+  });
   return todo;
 }
 
