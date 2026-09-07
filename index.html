@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.683";
+const VERSION_APP = "9.685";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -3183,6 +3183,21 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
       ),
       // Para revisar por qué la caja no se guarda, sin tener que abrir las
       // herramientas del navegador.
+      // Salir de la cuenta: hacía falta para que otro empleado pueda entrar
+      // en el mismo dispositivo sin borrar los datos del navegador.
+      React.createElement("button", {
+        onClick: async () => {
+          if (!window.confirm("¿Cerrar la sesión de " + (nombreUsuario || "esta cuenta") + "?")) return;
+          try { await nube.auth.signOut(); } catch (e) {}
+          try {
+            localStorage.removeItem("ct-copia");
+            localStorage.removeItem("ct-carritos");
+          } catch (e) {}
+          window.location.reload();
+        },
+        style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 7, width: "100%", background: "var(--surface-2)", border: "none", borderRadius: 9, cursor: "pointer", color: "var(--muted)", fontSize: 12.5, fontWeight: 600, padding: "9px 0", marginTop: 10, fontFamily: "'Inter', sans-serif" }
+      }, React.createElement(Lock, { size: 14 }), "Cerrar sesión"),
+
       React.createElement("button", {
         onClick: () => setVerDiag(true),
         style: { display: "block", width: "100%", background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 11, marginTop: 8, fontFamily: "'Inter', sans-serif" }
