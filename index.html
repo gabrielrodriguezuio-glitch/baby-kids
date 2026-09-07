@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.637";
+const VERSION_APP = "9.638";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -4748,12 +4748,15 @@ async function guardarVariantesEnTanda(items) {
 // La base devuelve como máximo 1000 filas por consulta. Con 6339 variantes
 // eso significaba perder el 84% del stock sin ningún aviso, así que se pide
 // de a páginas hasta que no venga nada más.
-async function traerTodo(tabla, orden) {
+// Trae una tabla entera, de a mil filas. El filtro opcional sirve para
+// acotar por fecha sin perder el paginado.
+async function traerTodo(tabla, orden, filtro) {
   const TAM = 1000;
   let desde = 0;
   const todo = [];
   for (;;) {
     let q = nube.from(tabla).select("*").range(desde, desde + TAM - 1);
+    if (filtro) q = q.gte(filtro.campo, filtro.desde);
     if (orden) q = q.order(orden);
     const { data, error } = await q;
     if (error) throw new Error(tabla + ": " + error.message);
@@ -4880,8 +4883,8 @@ async function traerDeLaNube(quienEntro) {
       // Los últimos seis meses: alcanza para el trabajo diario, los informes
       // y los cambios. Sin este corte, al año serían 50.000 filas al abrir la
       // app y cada arranque se haría más lento que el anterior.
-      nube.from("ventas").select("*").gte("fecha", haceMeses(6)).order("fecha", { ascending: false }),
-      nube.from("venta_items").select("*").gte("creado_en", haceMeses(6)),
+      traerTodo("ventas", null, { campo: "fecha", desde: haceMeses(6) }),
+      traerTodo("venta_items", null, { campo: "creado_en", desde: haceMeses(6) }),
       traerTodo("movimientos_cc"),
       nube.from("ajustes").select("datos").eq("id", 1).maybeSingle(),
       nube.from("usuarios").select("*").order("creado_en"),
