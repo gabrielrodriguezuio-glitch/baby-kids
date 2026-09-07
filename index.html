@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.694";
+const VERSION_APP = "9.698";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -4295,7 +4295,7 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
     if (previo && JSON.stringify(previo) === JSON.stringify(l)) continue;
     try {
       const fila = { nombre: l.nombre, ajuste_pct: Number(l.ajustePct) || 0 };
-      const { error } = previo
+      const { error } = (previo && esIdDeLaBase(l.id))
         ? await nube.from("listas_precio").update(fila).eq("id", l.id)
         : await nube.from("listas_precio").insert(fila);
       if (error) throw new Error(error.message);
@@ -4393,7 +4393,7 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
         usada_en: n.usadaEn || null, usada_hora: n.usadaHora || null,
         usada_por: n.usadaPor || null, usada_venta_id: n.usadaVentaId || null
       };
-      const { error } = previo
+      const { error } = (previo && esIdDeLaBase(n.id))
         ? await nube.from("notas_credito").update(fila).eq("id", n.id)
         : await nube.from("notas_credito").insert(fila);
       if (error) throw new Error(error.message);
@@ -4449,7 +4449,7 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
         entregado_por: p.entregadoPor || null,
         recibido_por: p.recibidoPor || null
       };
-      const { error } = previo
+      const { error } = (previo && esIdDeLaBase(p.id))
         ? await nube.from("pedidos").update(fila).eq("id", p.id)
         : await nube.from("pedidos").insert(fila);
       if (error) throw new Error(error.message);
@@ -4492,6 +4492,9 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
   for (const t of (despues.transferencias || [])) {
     const previo = transfPrevias[t.id];
     if (!previo || JSON.stringify(previo) === JSON.stringify(t)) continue;
+    // Sólo las que la base conoce: una recién creada todavía tiene el id
+    // de la app y el pedido se rechazaría entero.
+    if (!esIdDeLaBase(t.id)) continue;
     try {
       const { error } = await nube.from("transferencias").update({
         estado: t.estado || "completada",
@@ -4685,7 +4688,9 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
         activo: u.activo !== false,
         negocios: (u.negocios && u.negocios.length) ? u.negocios : null
       };
-      const { error } = previo
+      // Sólo se actualiza si la base lo conoce. Un integrante recién creado
+      // todavía tiene el id de la app, y la base no lo reconoce.
+      const { error } = (previo && esIdDeLaBase(u.id))
         ? await nube.from("usuarios").update(fila).eq("id", u.id)
         : await nube.from("usuarios").insert(fila);
       if (error) throw new Error(error.message);
@@ -4707,6 +4712,8 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
     cambios.push({ tipo: "cliente", viejo: c.id, nuevo: fila.id });
   }
   for (const c of clis.editados) {
+    // Sólo los que la base conoce, igual que con el resto
+    if (!esIdDeLaBase(c.id)) continue;
     await nube.from("clientes").update({
       nombre: c.nombre, telefono: c.telefono || null, direccion: c.direccion || null,
       nota: c.nota || null, email: c.email || null, documento: c.documento || null
@@ -4732,7 +4739,7 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
         telefono: n.telefono || null, color: n.color || null,
         principal: !!n.principal
       };
-      const { error } = previo
+      const { error } = (previo && esIdDeLaBase(n.id))
         ? await nube.from("negocios").update(fila).eq("id", n.id)
         : await nube.from("negocios").insert(fila);
       if (error) throw new Error(error.message);
