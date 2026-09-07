@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.638";
+const VERSION_APP = "9.640";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -4884,7 +4884,10 @@ async function traerDeLaNube(quienEntro) {
       // y los cambios. Sin este corte, al año serían 50.000 filas al abrir la
       // app y cada arranque se haría más lento que el anterior.
       traerTodo("ventas", null, { campo: "fecha", desde: haceMeses(6) }),
-      traerTodo("venta_items", null, { campo: "creado_en", desde: haceMeses(6) }),
+      // Los renglones no tienen fecha propia. Se traen todos y después se
+      // descartan los de ventas viejas: es más simple y no depende de cómo
+      // estén armadas las relaciones en la base.
+      traerTodo("venta_items"),
       traerTodo("movimientos_cc"),
       nube.from("ajustes").select("datos").eq("id", 1).maybeSingle(),
       nube.from("usuarios").select("*").order("creado_en"),
