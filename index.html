@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.627";
+const VERSION_APP = "9.630";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -2291,10 +2291,12 @@ function Header({ data, persist, mobile, tab, editandoProducto, onAbrirMenu, ran
       style: {
         padding: mobile ? "18px 12px 14px" : "30px 28px 22px",
         display: "flex",
-        alignItems: "flex-start",
+        // Centrados y en la misma línea que el título: antes se alineaban
+        // arriba y en pantallas medianas se iban a un renglón aparte.
+        alignItems: "center",
         justifyContent: "space-between",
-        gap: 12,
-        flexWrap: "wrap"
+        gap: 20,
+        flexWrap: mobile ? "wrap" : "nowrap"
       }
     },
     React.createElement(
@@ -3064,12 +3066,18 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
               React.createElement("span", { style: { color: "var(--muted)" } }, "Mi efectivo:"),
               React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, color: "var(--ink)" } }, money(efectivoEnCaja(caja)))
             ),
-            React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 4 } }, "Abrió ", abrioLaCaja(data, caja, usuarioActualId(data)), " · ", horaHMS(caja.abiertaEn))
+            React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 4 } }, "Desde ", horaHMS(caja.abiertaEn))
           )
         : React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginBottom: 10 } }, "Tu caja est\u00E1 cerrada"),
+      // Azul sólo si hay algo que hacer: abrir la caja. Con la caja abierta,
+      // gestionarla es una consulta más y no necesita llamar la atención.
       React.createElement(
         Button,
-        { onClick: () => onAbrirCaja && onAbrirCaja(), style: { width: "100%", justifyContent: "center" } },
+        {
+          tone: abierta ? "ghost" : undefined,
+          onClick: () => onAbrirCaja && onAbrirCaja(),
+          style: { width: "100%", justifyContent: "center" }
+        },
         React.createElement(DollarSign, { size: 14 }),
         abierta ? " Gestionar Mi Caja" : " Abrir Mi Caja"
       ),
@@ -15960,7 +15968,7 @@ function MiCajaCard({ data, persist }) {
   if (!caja.abierta) {
     return /* @__PURE__ */ React.createElement(Card, { style: { width: "100%" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, /* @__PURE__ */ React.createElement(Lock, { size: 16, color: "var(--muted)" }), /* @__PURE__ */ React.createElement(SectionTitle, null, "Mi Caja")), /* @__PURE__ */ React.createElement(SwingTag, { tone: "rose", small: true }, "Cerrada")), /* @__PURE__ */ React.createElement("p", { style: { fontSize: 12.5, color: "var(--muted)", marginBottom: 14 } }, "Tu caja est\xE1 cerrada. Abrila para empezar a registrar el efectivo de hoy."), /* @__PURE__ */ React.createElement(Button, { onClick: () => setShowAbrir(true), style: { width: "100%", justifyContent: "center" } }, /* @__PURE__ */ React.createElement(Unlock, { size: 14 }), " Abrir Mi Caja"), /* @__PURE__ */ React.createElement("button", { onClick: () => setVerDiag(true), style: { display: "block", width: "100%", background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 11.5, marginTop: 9, fontFamily: "'Inter', sans-serif" } }, "Ver diagnóstico"), showAbrir && /* @__PURE__ */ React.createElement(AbrirCajaModal, { onAbrir: abrirCaja, onClose: () => setShowAbrir(false) }), verDiag && /* @__PURE__ */ React.createElement(DiagnosticoCaja, { data, onClose: () => setVerDiag(false) }));
   }
-  return /* @__PURE__ */ React.createElement(Card, { style: { width: "100%" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, /* @__PURE__ */ React.createElement(Unlock, { size: 16, color: "var(--sage)" }), /* @__PURE__ */ React.createElement(SectionTitle, null, "Mi Caja")), /* @__PURE__ */ React.createElement(SwingTag, { tone: "sage", small: true }, "Abierta")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: "var(--muted)" } }, "Mi efectivo"), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", letterSpacing: -0.03, fontSize: 28, margin: "2px 0 10px" } }, money(disponible)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginBottom: 16 } }, "Abrió ", abrioLaCaja(data, caja, miId), " · ", horaHMS(caja.abiertaEn)), /* @__PURE__ */ React.createElement(Button, { tone: "ghost", onClick: () => setShowGestionar(true), style: { width: "100%", justifyContent: "center" } }, /* @__PURE__ */ React.createElement(SlidersHorizontal, { size: 14 }), " Gestionar Caja"), showGestionar && /* @__PURE__ */ React.createElement(GestionarCajaModal, {
+  return /* @__PURE__ */ React.createElement(Card, { style: { width: "100%" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, /* @__PURE__ */ React.createElement(Unlock, { size: 16, color: "var(--sage)" }), /* @__PURE__ */ React.createElement(SectionTitle, null, "Mi Caja")), /* @__PURE__ */ React.createElement(SwingTag, { tone: "sage", small: true }, "Abierta")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: "var(--muted)" } }, "Mi efectivo"), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", letterSpacing: -0.03, fontSize: 28, margin: "2px 0 10px" } }, money(disponible)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginBottom: 16 } }, "Desde ", horaHMS(caja.abiertaEn)), /* @__PURE__ */ React.createElement(Button, { tone: "ghost", onClick: () => setShowGestionar(true), style: { width: "100%", justifyContent: "center" } }, /* @__PURE__ */ React.createElement(SlidersHorizontal, { size: 14 }), " Gestionar Caja"), showGestionar && /* @__PURE__ */ React.createElement(GestionarCajaModal, {
     data,
     caja,
     onIngresar: agregarMovimiento("ingreso"),
@@ -22250,11 +22258,16 @@ function TransferenciasView({ data, persist }) {
                 {
                   key: t.id,
                   className: "ct-transfer",
+                  // En columna: arriba el recorrido y las unidades, abajo las
+                  // acciones a la derecha.
                   style: {
                     background: "var(--surface-2)", borderRadius: 14, padding: "15px 17px",
-                    display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap"
+                    display: "flex", flexDirection: "column", gap: 0
                   }
                 },
+                React.createElement(
+                  "div",
+                  { style: { display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" } },
                 // El recorrido es el dato central: origen y destino juntos, con
                 // la flecha en el medio. En columnas separadas había que leer
                 // dos celdas para entender de dónde a dónde iba.
@@ -22290,16 +22303,13 @@ function TransferenciasView({ data, persist }) {
                     unidades, React.createElement("span", { style: { fontSize: 12.5, fontWeight: 500, color: "var(--muted)" } }, " u")),
                   React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 3 } },
                     (t.items || []).length, " producto", (t.items || []).length === 1 ? "" : "s")
+                )
                 ),
-                React.createElement(SwingTag, { tone: est.tono, small: true }, est.label),
-                // El número de remito, discreto y clicable
-                React.createElement("button", {
-                  onClick: () => setVerRemito(t),
-                  title: "Ver remito",
-                  className: "ct-accion",
-                  style: { background: "none", border: "none", cursor: "pointer", fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "var(--muted)", padding: 0, flexShrink: 0 }
-                }, t.remito || "sin n\u00B0"),
+                // Las acciones al pie y a la derecha del registro
                 React.createElement(
+                  "div",
+                  { style: { display: "flex", justifyContent: "flex-end", marginTop: 8 } },
+React.createElement(
                   "div",
                   { style: { position: "relative", flexShrink: 0 } },
                   React.createElement("button", {
@@ -22321,6 +22331,15 @@ function TransferenciasView({ data, persist }) {
                     }, React.createElement(Icono, { size: 16, color: peligro ? "var(--rose)" : "var(--muted)", strokeWidth: 1.9 }), texto))
                   )
                 )
+                ),
+                React.createElement(SwingTag, { tone: est.tono, small: true }, est.label),
+                // El número de remito, discreto y clicable
+                React.createElement("button", {
+                  onClick: () => setVerRemito(t),
+                  title: "Ver remito",
+                  className: "ct-accion",
+                  style: { background: "none", border: "none", cursor: "pointer", fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "var(--muted)", padding: 0, flexShrink: 0 }
+                }, t.remito || "sin n\u00B0")
               );
             })
           )
