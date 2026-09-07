@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.597";
+const VERSION_APP = "9.612";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -138,7 +138,9 @@ const nube = createClient(NUBE_URL, NUBE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true }
 });
 import { createPortal } from "react-dom";
-import { Tag, Package, ShoppingBag, Users, Wallet, Plus, Trash2, X, AlertTriangle, Search, Pencil, TrendingUp, TrendingDown, Minus, CreditCard, Banknote, ArrowRightLeft, Check, ShoppingCart, Share2, UserCog, BarChart3, MessageCircle, ArrowDownCircle, ArrowUpCircle, Truck, QrCode, ScanBarcode, Receipt, DollarSign, ChevronDown, ChevronLeft, ChevronRight, Lock, Unlock, Calculator, SlidersHorizontal, LayoutGrid, Archive, MoreHorizontal, Sparkles, Clock3, Boxes, Tags, Sun, Moon, Crown, UserPlus, Mail } from "lucide-react";
+import { Tag, Package, ShoppingBag, Users, Wallet, Plus, Trash2, X, AlertTriangle, Search, Pencil, TrendingUp, TrendingDown, Minus, CreditCard, Banknote, ArrowRightLeft, Check, ShoppingCart, Share2, UserCog, BarChart3, MessageCircle, ArrowDownCircle, ArrowUpCircle, Truck, QrCode, ScanBarcode, Receipt, DollarSign, ChevronDown, ChevronLeft, ChevronRight, Lock, Unlock, Calculator, SlidersHorizontal, LayoutGrid, Archive, MoreHorizontal, Sparkles, Clock3, Boxes, Tags, Sun, Moon, Crown, UserPlus, Mail,
+  Menu
+} from "lucide-react";
 const STORAGE_KEY = "control-tienda-ropa-v1";
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 // La fecha de HOY según el reloj de acá, no el de Greenwich. Con toISOString,
@@ -1303,16 +1305,10 @@ function ControlTienda() {
   const [cambiarUsuario, setCambiarUsuario] = useState(false);
   const [senalNuevoCliente, setSenalNuevoCliente] = useState(0);
   const [opcionCatalogo, setOpcionCatalogo] = useState(null);
-  // La barra se puede esconder para trabajar con más ancho, sobre todo en
-  // las tablas anchas. Queda guardado para la próxima vez.
-  const [railOculto, setRailOculto] = useState(() => {
-    try { return localStorage.getItem("ct-rail-oculto") === "1"; } catch (e) { return false; }
-  });
-  const alternarRail = () => {
-    const nuevo = !railOculto;
-    setRailOculto(nuevo);
-    try { localStorage.setItem("ct-rail-oculto", nuevo ? "1" : "0"); } catch (e) {}
-  };
+  // El menú se abre por encima del contenido y arranca cerrado: así la
+  // pantalla queda entera para trabajar y no se mueve al abrirlo.
+  const [railOculto, setRailOculto] = useState(true);
+  const alternarRail = () => setRailOculto((x) => !x);
 
   // Con Ctrl+B se esconde y se muestra, como en cualquier editor
   useEffect(() => {
@@ -1689,17 +1685,11 @@ function ControlTienda() {
       }, "Después")),
 
     /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-start", paddingTop: (errorGuardado || avisoRespaldo) ? 46 : 0 } }, !isMobile && !railOculto && /* @__PURE__ */ React.createElement(Sidebar, { tab, setTab, lowStockCount, tareasHoy, paradasHoy, data, usuario, onAbrirCaja: () => setVerCaja(true), onBuscar: () => setBuscando(true), onOcultar: alternarRail, onCambiarUsuario: () => setCambiarUsuario(true) }),
-    !isMobile && railOculto && /* @__PURE__ */ React.createElement("button", {
+    // El velo cierra el menú al tocar cualquier lugar fuera de él
+    !isMobile && !railOculto && /* @__PURE__ */ React.createElement("div", {
       onClick: alternarRail,
-      title: "Mostrar el menú (Ctrl+B)",
-      style: {
-        position: "fixed", left: 0, top: "50%", transform: "translateY(-50%)", zIndex: 60,
-        width: 26, height: 76, cursor: "pointer",
-        background: "var(--surface)", border: "none", borderLeft: "none",
-        borderRadius: "0 10px 10px 0", color: "var(--muted)",
-        display: "flex", alignItems: "center", justifyContent: "center"
-      }
-    }, /* @__PURE__ */ React.createElement(ChevronRight, { size: 16 })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, marginLeft: (!isMobile && !railOculto) ? (window.innerWidth < 1050 ? 188 : 226) : 0 } }, /* @__PURE__ */ React.createElement(Header, { data, persist, mobile: isMobile, tab, editandoProducto, rangoReportes, filtrosReportes, setFiltrosReportes, rangoNegocios, filtroNegocios, setFiltroNegocios, onExportarNegocios: () => setSenalExportar(Date.now()), onNuevaTarea: () => setSenalNuevaTarea(Date.now()), onAgregarParada: () => setSenalReparto({ tipo: "agregar", n: Date.now() }), onCerrarVuelta: () => setSenalReparto({ tipo: "cerrar", n: Date.now() }), onVerReposicion: () => setSenalReparto({ tipo: "reposicion", n: Date.now() }), onNuevoProducto: () => setSenalNuevo((n) => n + 1), onNuevoMovimiento: () => setSenalMovimiento((n) => n + 1), onNuevoUsuario: () => setSenalUsuario((n) => n + 1), onVerInvitaciones: () => setSenalInvitaciones((n) => n + 1), onVerRoles: () => setSenalRoles((n) => n + 1), onNuevoCliente: () => setSenalNuevoCliente((n) => n + 1), onImportarClientes: () => setSenalImportarClientes((n) => n + 1), onBorrarClientes: () => setSenalBorrarClientes((n) => n + 1), onOpcionCatalogo: (accion) => setOpcionCatalogo({ accion, n: Date.now() }) }), /* @__PURE__ */ React.createElement("div", { className: "ct-main ct-limite", style: { padding: isMobile ? "0 12px 96px" : "0 28px 48px" } }, tab === "pos" && /* @__PURE__ */ React.createElement(PuntoDeVenta, { data, persist, cobroPendiente, onCobroTomado: () => setCobroPendiente(null), onIrACambios: () => setTab("cambios") }), tab === "caja" && /* @__PURE__ */ React.createElement(CajaView, { data, persist }), tab === "cambios" && /* @__PURE__ */ React.createElement(CambiosView, { data, persist, onCerrar: () => setTab("pos"), onCobrar: (c) => { setCobroPendiente(c); setTab("pos"); } }), tab === "inventario" && /* @__PURE__ */ React.createElement(Inventario, { data, persist, senalNuevo, opcionElegida: opcionCatalogo, salto , onEditando: setEditandoProducto }), tab === "stock" && /* @__PURE__ */ React.createElement(InventarioStock, { data, persist }), tab === "ronda" && /* @__PURE__ */ React.createElement(RondaSemanalView, { data, persist, onIrAReparto: () => setTab("reparto") }), tab === "reparto" && /* @__PURE__ */ React.createElement(RepartoView, { data, persist, senalReparto }), tab === "tareas" && /* @__PURE__ */ React.createElement(TareasView, { data, persist, senalNuevaTarea }), tab === "clientes" && /* @__PURE__ */ React.createElement(Clientes, { data, persist, senalNuevoCliente, senalImportarClientes, senalBorrarClientes, salto }), tab === "catalogo" && /* @__PURE__ */ React.createElement(CatalogoOnline, { data, persist }), tab === "usuarios" && /* @__PURE__ */ React.createElement(UsuariosView, { data, persist, senalUsuario, senalInvitaciones, senalRoles }), (tab === "negocios" || tab === "reportes") && /* @__PURE__ */ React.createElement(NegociosInicio, { data, persist, setTab, filtroNegocio: filtroNegocios, rango: rangoNegocios, senalExportar, filtros: filtrosReportes }), tab === "negocios-productos" && /* @__PURE__ */ React.createElement(NegociosProductos, { data, persist, setTab, senalNuevo }), tab === "transferencias" && /* @__PURE__ */ React.createElement(TransferenciasView, { data, persist }), tab === "actividad" && /* @__PURE__ */ React.createElement(ActividadView, { data, persist, senalMovimiento }), tab === "configuracion" && /* @__PURE__ */ React.createElement(ConfiguracionView, { data, persist, tema, setTema }), tab === "soporte" && /* @__PURE__ */ React.createElement(SoporteView, { data })))), isMobile && /* @__PURE__ */ React.createElement(Sidebar, { tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile: true, data, usuario, onAbrirCaja: () => setVerCaja(true), onCambiarUsuario: () => setCambiarUsuario(true) }), verCaja && /* @__PURE__ */ React.createElement(CajaRapida, { data, persist, onClose: () => setVerCaja(false) }),  buscando && /* @__PURE__ */ React.createElement(BuscadorGeneral, {
+      style: { position: "fixed", inset: 0, zIndex: 55, background: "rgba(0,0,0,.35)" }
+    }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement(Header, { data, persist, mobile: isMobile, tab, editandoProducto, onAbrirMenu: alternarRail, rangoReportes, filtrosReportes, setFiltrosReportes, rangoNegocios, filtroNegocios, setFiltroNegocios, onExportarNegocios: () => setSenalExportar(Date.now()), onNuevaTarea: () => setSenalNuevaTarea(Date.now()), onAgregarParada: () => setSenalReparto({ tipo: "agregar", n: Date.now() }), onCerrarVuelta: () => setSenalReparto({ tipo: "cerrar", n: Date.now() }), onVerReposicion: () => setSenalReparto({ tipo: "reposicion", n: Date.now() }), onNuevoProducto: () => setSenalNuevo((n) => n + 1), onNuevoMovimiento: () => setSenalMovimiento((n) => n + 1), onNuevoUsuario: () => setSenalUsuario((n) => n + 1), onVerInvitaciones: () => setSenalInvitaciones((n) => n + 1), onVerRoles: () => setSenalRoles((n) => n + 1), onNuevoCliente: () => setSenalNuevoCliente((n) => n + 1), onImportarClientes: () => setSenalImportarClientes((n) => n + 1), onBorrarClientes: () => setSenalBorrarClientes((n) => n + 1), onOpcionCatalogo: (accion) => setOpcionCatalogo({ accion, n: Date.now() }) }), /* @__PURE__ */ React.createElement("div", { className: "ct-main ct-limite", style: { padding: isMobile ? "0 12px 96px" : "0 28px 48px" } }, tab === "pos" && /* @__PURE__ */ React.createElement(PuntoDeVenta, { data, persist, cobroPendiente, onCobroTomado: () => setCobroPendiente(null), onIrACambios: () => setTab("cambios") }), tab === "caja" && /* @__PURE__ */ React.createElement(CajaView, { data, persist }), tab === "cambios" && /* @__PURE__ */ React.createElement(CambiosView, { data, persist, onCerrar: () => setTab("pos"), onCobrar: (c) => { setCobroPendiente(c); setTab("pos"); } }), tab === "inventario" && /* @__PURE__ */ React.createElement(Inventario, { data, persist, senalNuevo, opcionElegida: opcionCatalogo, salto , onEditando: setEditandoProducto }), tab === "stock" && /* @__PURE__ */ React.createElement(InventarioStock, { data, persist }), tab === "ronda" && /* @__PURE__ */ React.createElement(RondaSemanalView, { data, persist, onIrAReparto: () => setTab("reparto") }), tab === "reparto" && /* @__PURE__ */ React.createElement(RepartoView, { data, persist, senalReparto }), tab === "tareas" && /* @__PURE__ */ React.createElement(TareasView, { data, persist, senalNuevaTarea }), tab === "clientes" && /* @__PURE__ */ React.createElement(Clientes, { data, persist, senalNuevoCliente, senalImportarClientes, senalBorrarClientes, salto }), tab === "catalogo" && /* @__PURE__ */ React.createElement(CatalogoOnline, { data, persist }), tab === "usuarios" && /* @__PURE__ */ React.createElement(UsuariosView, { data, persist, senalUsuario, senalInvitaciones, senalRoles }), (tab === "negocios" || tab === "reportes") && /* @__PURE__ */ React.createElement(NegociosInicio, { data, persist, setTab, filtroNegocio: filtroNegocios, rango: rangoNegocios, senalExportar, filtros: filtrosReportes }), tab === "negocios-productos" && /* @__PURE__ */ React.createElement(NegociosProductos, { data, persist, setTab, senalNuevo }), tab === "transferencias" && /* @__PURE__ */ React.createElement(TransferenciasView, { data, persist }), tab === "actividad" && /* @__PURE__ */ React.createElement(ActividadView, { data, persist, senalMovimiento }), tab === "configuracion" && /* @__PURE__ */ React.createElement(ConfiguracionView, { data, persist, tema, setTema }), tab === "soporte" && /* @__PURE__ */ React.createElement(SoporteView, { data })))), isMobile && /* @__PURE__ */ React.createElement(Sidebar, { tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile: true, data, usuario, onAbrirCaja: () => setVerCaja(true), onCambiarUsuario: () => setCambiarUsuario(true) }), verCaja && /* @__PURE__ */ React.createElement(CajaRapida, { data, persist, onClose: () => setVerCaja(false) }),  buscando && /* @__PURE__ */ React.createElement(BuscadorGeneral, {
     data,
     negocioId: negocioActivo(data).id,
     onIr: (r) => {
@@ -2278,7 +2268,7 @@ function PillButton({ children, onClick, title, activo, primario }) {
   );
 }
 
-function Header({ data, persist, mobile, tab, editandoProducto, rangoReportes, filtrosReportes, setFiltrosReportes, rangoNegocios, filtroNegocios, setFiltroNegocios, onExportarNegocios, onNuevoProducto, onNuevoMovimiento, onNuevoUsuario, onVerInvitaciones, onVerRoles, onNuevoCliente, onImportarClientes, onBorrarClientes, onNuevaTarea, onAgregarParada, onCerrarVuelta, onVerReposicion, onOpcionCatalogo }) {
+function Header({ data, persist, mobile, tab, editandoProducto, onAbrirMenu, rangoReportes, filtrosReportes, setFiltrosReportes, rangoNegocios, filtroNegocios, setFiltroNegocios, onExportarNegocios, onNuevoProducto, onNuevoMovimiento, onNuevoUsuario, onVerInvitaciones, onVerRoles, onNuevoCliente, onImportarClientes, onBorrarClientes, onNuevaTarea, onAgregarParada, onCerrarVuelta, onVerReposicion, onOpcionCatalogo }) {
   const [abreAcciones, setAbreAcciones] = useState(false);
   const [titulo, subtitulo] = TITULOS_TAB[tab] || ["Control de tienda", ""];
   const negocioNombre = (data.negocio && data.negocio.nombre) || "";
@@ -2299,6 +2289,30 @@ function Header({ data, persist, mobile, tab, editandoProducto, rangoReportes, f
     React.createElement(
       "div",
       { style: { minWidth: 0 } },
+      // Abre el menú y a la vez dice dónde estás parado y con qué rol. Antes
+      // había que abrir el menú para saberlo.
+      !mobile && onAbrirMenu && React.createElement(
+        "button",
+        {
+          onClick: onAbrirMenu,
+          title: "Abrir el menú",
+          style: {
+            display: "inline-flex", alignItems: "center", gap: 10,
+            background: "var(--surface-2)", border: "1.5px solid var(--line)",
+            borderRadius: 10, padding: "8px 14px 8px 11px", cursor: "pointer",
+            color: "var(--ink)", marginBottom: 12, fontFamily: "'Inter', sans-serif"
+          }
+        },
+        React.createElement(Menu, { size: 17, color: "var(--muted)" }),
+        React.createElement(
+          "span",
+          { style: { textAlign: "left", lineHeight: 1.25 } },
+          React.createElement("span", { style: { display: "block", fontSize: 13, fontWeight: 650 } },
+            negocioActivo(data).nombre),
+          React.createElement("span", { style: { display: "block", fontSize: 11, color: "var(--muted)", marginTop: 1 } },
+            (usuarioSesion(data) || {}).rol || "Propietario")
+        )
+      ),
       !editandoProducto && React.createElement("h1", {
         style: {
           fontFamily: "'Inter Tight', sans-serif",
@@ -2316,7 +2330,7 @@ function Header({ data, persist, mobile, tab, editandoProducto, rangoReportes, f
     ),
     React.createElement(
       "div",
-      { style: { display: "flex", alignItems: "center", gap: 8, flexShrink: 0 } },
+      { style: { display: "flex", alignItems: "center", gap: 8, flexShrink: 0, marginLeft: "auto" } },
       tab === "inventario" && !editandoProducto && React.createElement(
         "div",
         { style: { position: "relative" } },
@@ -2790,7 +2804,7 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
         "button",
         {
           key: it.id,
-          onClick: () => it.accion ? it.accion() : setTab(it.id),
+          onClick: () => { it.accion ? it.accion() : setTab(it.id); if (onOcultar) onOcultar(); },
           style: {
             position: "relative",
             display: "flex",
@@ -2856,7 +2870,7 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
       {
         key: it.id,
         className: "ct-navitem",
-        onClick: () => setTab(it.id),
+        onClick: () => { setTab(it.id); if (onOcultar) onOcultar(); },
         style: {
           position: "relative",
           display: "flex",
@@ -2927,7 +2941,7 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
             "button",
             {
               key: h.id,
-              onClick: () => setTab(h.id),
+              onClick: () => { setTab(h.id); if (onOcultar) onOcultar(); },
               style: {
                 display: "flex", alignItems: "center", width: "100%",
                 padding: "8px 12px", borderRadius: 7, border: "none",
@@ -2964,9 +2978,12 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
         // contenido era largo. Así queda quieto siempre.
         position: "fixed",
         left: 0, top: 0, bottom: 0,
-        zIndex: 30,
+        // Por encima del velo: el menú se abre sobre el contenido en vez de
+        // correrlo, así la pantalla no se mueve al abrirlo y cerrarlo.
+        zIndex: 60,
         background: "var(--rail)",
         borderRight: "1px solid var(--line)",
+        boxShadow: "var(--sombra-alta)",
         padding: 11,
         display: "flex",
         flexDirection: "column",
@@ -5222,9 +5239,12 @@ function BuscadorProducto({ valor, onCambiar, onEnter, onEscanear, placeholder, 
       onClick: onEscanear,
       title: "Escanear con la cámara",
       style: {
-        display: "flex", alignItems: "center", background: "none", border: "none",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: "none", border: "none",
         borderLeft: "1px solid var(--line)", cursor: "pointer", color: "var(--muted)",
-        padding: "8px 0 8px 12px", marginLeft: 4, flexShrink: 0
+        // Ancho fijo, para que no se estire cuando hay espacio de sobra
+        width: 38, flex: "0 0 38px", flexShrink: 0,
+        padding: "8px 0 8px 12px", marginLeft: 4, boxSizing: "content-box"
       }
     }, React.createElement(ScanBarcode, { size: 17 }))
   );
@@ -10973,7 +10993,10 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
             // romper la alineación de la fila.
             // En celular ocupa el ancho completo y los tres botones quedan
             // debajo repartidos: así el bloque entero mide lo mismo.
-            { className: "ct-buscador", style: { flex: isMobilePos ? "1 0 100%" : 1, minWidth: isMobilePos ? "100%" : 190, display: "flex", alignItems: "center", gap: 12, background: "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "1.5px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: RADIO.control, padding: isMobilePos ? "0 18px" : "0 17px", height: 56, minHeight: 56, boxSizing: "border-box", transition: "border-color .12s ease, box-shadow .12s ease" } },
+            { className: "ct-buscador", style: { flex: isMobilePos ? "1 0 100%" : 1, minWidth: isMobilePos ? "100%" : 190,
+              // Con un tope, los botones de al lado quedan más holgados: el
+              // buscador ya es cómodo con 460px y no necesita más.
+              maxWidth: isMobilePos ? "100%" : 460, display: "flex", alignItems: "center", gap: 12, background: "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "1.5px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: RADIO.control, padding: isMobilePos ? "0 18px" : "0 17px", height: 56, minHeight: 56, boxSizing: "border-box", transition: "border-color .12s ease, box-shadow .12s ease" } },
             React.createElement(Search, { size: 18, color: "var(--denim-light)" }),
             React.createElement("input", {
               autoFocus: true,
@@ -11003,10 +11026,14 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
               onClick: () => setEscaneando(true),
               title: "Escanear con la cámara",
               style: {
-                display: "flex", alignItems: "center", background: "none", border: "none",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: "none", border: "none",
                 borderLeft: "1px solid color-mix(in srgb, var(--denim) 30%, transparent)",
                 cursor: "pointer", color: "var(--denim-light)",
-                padding: "8px 0 8px 12px", marginLeft: 4, flexShrink: 0
+                // Ancho fijo: cuando el buscador ocupa toda la fila, como en
+                // la tablet vertical, sin esto el botón se lleva el sobrante.
+                width: 42, flex: "0 0 42px", flexShrink: 0,
+                padding: "8px 0 8px 12px", marginLeft: 4, boxSizing: "content-box"
               }
             }, React.createElement(ScanBarcode, { size: 18 }))
           ),
@@ -11027,9 +11054,12 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
               // En celular se reparten el ancho para igualar al buscador.
               // En celular van apilados y del ancho completo, igual que el
               // buscador: los cuatro miden lo mismo.
-              flex: isMobilePos ? "1 0 100%" : "0 0 auto",
+              // En pantalla grande crecen con el espacio que deja el buscador,
+              // en vez de quedar apretados en 60px.
+              flex: isMobilePos ? "1 0 100%" : "1 1 120px",
               width: isMobilePos ? "100%" : "auto",
-              minWidth: isMobilePos ? "100%" : 60,
+              minWidth: isMobilePos ? "100%" : 100,
+              maxWidth: isMobilePos ? "100%" : 190,
               height: 56, minHeight: 56,
               flexShrink: 0, borderRadius: RADIO.control, cursor: "pointer",
               boxSizing: "border-box",
@@ -11508,7 +11538,10 @@ function MenuFila({ ancla, onClose, children }) {
   if (!ancla) return null;
   const ancho = 190;
   const alto = 190;
-  // Si no entra abajo, se abre hacia arriba; si no entra a la derecha, se corre
+  // En pantalla angosta el menú va fijo abajo a la derecha: las tablas se
+  // desplazan de costado y el botón de los tres puntos podía quedar fuera de
+  // la vista, con el menú colgando de un lugar que no se veía.
+  const angosta = window.innerWidth < 900;
   const abajo = ancla.bottom + alto > window.innerHeight && ancla.top > alto;
   const izq = Math.max(8, Math.min(ancla.right - ancho, window.innerWidth - ancho - 8));
 
@@ -11518,12 +11551,15 @@ function MenuFila({ ancla, onClose, children }) {
       onClick: (e) => e.stopPropagation(),
       style: {
         position: "fixed",
-        left: izq,
-        top: abajo ? undefined : ancla.bottom + 6,
-        bottom: abajo ? window.innerHeight - ancla.top + 6 : undefined,
+        left: angosta ? undefined : izq,
+        right: angosta ? 14 : undefined,
+        top: angosta ? undefined : (abajo ? undefined : ancla.bottom + 6),
+        bottom: angosta
+          ? "max(18px, env(safe-area-inset-bottom, 0px))"
+          : (abajo ? window.innerHeight - ancla.top + 6 : undefined),
         minWidth: ancho, zIndex: 200,
         background: "var(--surface)", border: "none",
-        borderRadius: 10, boxShadow: "var(--sombra-alta)", overflow: "hidden"
+        borderRadius: 12, boxShadow: "var(--sombra-alta)", overflow: "hidden"
       }
     },
     children
@@ -20829,7 +20865,7 @@ function NuevoPedidoModal({ data, persist, negocioId, onClose }) {
     React.createElement("div", { style: { height: 14 } }),
     React.createElement(
       "div",
-      { style: { display: "flex", gap: 8, alignItems: "stretch" } },
+      { style: { display: "block" } },
       React.createElement(BuscadorProducto, {
         valor: query, onCambiar: setQuery,
         onEnter: () => porCodigo(query),
@@ -21408,7 +21444,7 @@ function ResolverCambioModal({ data, persist, venta, itemsDevueltos, valorDevuel
 
     React.createElement(
       "div",
-      { style: { display: "flex", gap: 8 } },
+      { style: { display: "block" } },
       React.createElement(BuscadorProducto, {
         valor: query, onCambiar: setQuery,
         onEscanear: () => setEscaneando(true),
@@ -21807,15 +21843,13 @@ function CambiosView({ data, persist, onCerrar, onCobrar }) {
       Card,
       null,
       React.createElement("div", { style: { fontSize: 13.5, fontWeight: 650, marginBottom: 10 } }, "¿Qué compró?"),
-      React.createElement(
-        "div",
-        { style: { display: "flex", gap: 8 } },
-        React.createElement(BuscadorProducto, {
-          autoFocus: true, valor: query, onCambiar: setQuery,
-          onEscanear: () => setEscaneando(true),
-          placeholder: "Producto, talle, cliente o monto\u2026"
-        })
-      ),
+      // Sin envoltorio: el buscador toma el ancho de la tarjeta. Antes estaba
+      // dentro de un contenedor que no le daba ancho y quedaba angosto.
+      React.createElement(BuscadorProducto, {
+        autoFocus: true, valor: query, onCambiar: setQuery,
+        onEscanear: () => setEscaneando(true),
+        placeholder: "Producto, talle, cliente o monto\u2026"
+      }),
       React.createElement("p", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 8, lineHeight: 1.5 } },
         "Si perdió el ticket, escaneá la etiqueta de lo que trajo."),
 
@@ -22168,9 +22202,11 @@ function TransferenciasView({ data, persist }) {
       { style: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16, alignItems: "center" } },
       // Los dos filtros juntos en un mismo recuadro: son la misma decisión
       // (qué transferencias mirar) y separados parecían dos cosas distintas.
+      // Todo en una sola barra: los dos filtros, Pedidos y el + de nueva
+      // transferencia. Separados parecían controles de cosas distintas.
       React.createElement(
         "div",
-        { style: { display: "flex", alignItems: "center", background: "var(--surface-2)", border: "1.5px solid var(--line)", borderRadius: 10, overflow: "hidden" } },
+        { style: { display: "flex", alignItems: "stretch", background: "var(--surface-2)", border: "1.5px solid var(--line)", borderRadius: 10, overflow: "hidden" } },
         React.createElement("select", {
           value: filtroEstado,
           onChange: (e) => setFiltroEstado(e.target.value),
@@ -22179,23 +22215,33 @@ function TransferenciasView({ data, persist }) {
           React.createElement("option", { value: "" }, "Todos los estados"),
           Object.keys(ESTADOS_TRANSFER).map((k) =>
             React.createElement("option", { key: k, value: k }, ESTADOS_TRANSFER[k].label))),
-        React.createElement("span", { style: { width: 1, alignSelf: "stretch", background: "var(--line)" } }),
+        React.createElement("span", { style: { width: 1, alignSelf: "stretch", background: "var(--line)", flexShrink: 0 } }),
         React.createElement("select", {
           value: filtroNegocio,
           onChange: (e) => setFiltroNegocio(e.target.value),
           style: { background: "none", border: "none", outline: "none", color: "var(--ink)", fontSize: 13, fontWeight: 600, padding: "10px 12px", cursor: "pointer", fontFamily: "'Inter', sans-serif" }
         },
           React.createElement("option", { value: "" }, "Todos los negocios"),
-          negocios.map((n) => React.createElement("option", { key: n.id, value: n.id }, n.nombre)))
-      ),
+          negocios.map((n) => React.createElement("option", { key: n.id, value: n.id }, n.nombre))),
 
-      React.createElement(Button, { tone: "ghost", onClick: () => setModo("pedidos"), style: { marginLeft: "auto", padding: "11px 16px" } },
-        React.createElement(ShoppingBag, { size: 15 }), " Pedidos",
-        pedidosPendientes > 0 && React.createElement("span", {
-          style: { background: "var(--mustard)", color: "#0B0D12", borderRadius: 999, fontSize: 10.5, fontWeight: 700, padding: "1px 6px", marginLeft: 4 }
-        }, pedidosPendientes)),
-      React.createElement(Button, { onClick: () => setNueva(true), style: { padding: "11px 18px" } },
-        React.createElement(Plus, { size: 16 }), " Nueva")
+        React.createElement("span", { style: { width: 1, alignSelf: "stretch", background: "var(--line)", flexShrink: 0 } }),
+        React.createElement("button", {
+          onClick: () => setModo("pedidos"),
+          title: "Pedidos de clientes",
+          style: { display: "inline-flex", alignItems: "center", gap: 7, background: "none", border: "none", cursor: "pointer", color: "var(--ink)", fontSize: 13, fontWeight: 600, padding: "10px 14px", fontFamily: "'Inter', sans-serif", flexShrink: 0 }
+        },
+          React.createElement(ShoppingBag, { size: 15, color: "var(--muted)" }), "Pedidos",
+          pedidosPendientes > 0 && React.createElement("span", {
+            style: { background: "var(--mustard)", color: "#0B0D12", borderRadius: 999, fontSize: 10.5, fontWeight: 700, padding: "1px 6px" }
+          }, pedidosPendientes)),
+
+        // Nueva transferencia: sólo el símbolo, dentro de la misma barra
+        React.createElement("button", {
+          onClick: () => setNueva(true),
+          title: "Nueva transferencia",
+          style: { display: "inline-flex", alignItems: "center", justifyContent: "center", background: "var(--denim)", color: "var(--on-accent)", border: "none", cursor: "pointer", padding: "0 16px", flexShrink: 0 }
+        }, React.createElement(Plus, { size: 18, strokeWidth: 2.2 }))
+      )
     ),
 
     React.createElement(
