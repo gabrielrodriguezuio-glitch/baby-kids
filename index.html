@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.580";
+const VERSION_APP = "9.585";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1699,7 +1699,7 @@ function ControlTienda() {
         borderRadius: "0 10px 10px 0", color: "var(--muted)",
         display: "flex", alignItems: "center", justifyContent: "center"
       }
-    }, /* @__PURE__ */ React.createElement(ChevronRight, { size: 16 })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, marginLeft: (!isMobile && !railOculto) ? (window.innerWidth < 1050 ? 188 : 226) : 0 } }, /* @__PURE__ */ React.createElement(Header, { data, persist, mobile: isMobile, tab, editandoProducto, rangoReportes, filtrosReportes, setFiltrosReportes, rangoNegocios, filtroNegocios, setFiltroNegocios, onExportarNegocios: () => setSenalExportar(Date.now()), onNuevaTarea: () => setSenalNuevaTarea(Date.now()), onAgregarParada: () => setSenalReparto({ tipo: "agregar", n: Date.now() }), onCerrarVuelta: () => setSenalReparto({ tipo: "cerrar", n: Date.now() }), onVerReposicion: () => setSenalReparto({ tipo: "reposicion", n: Date.now() }), onNuevoProducto: () => setSenalNuevo((n) => n + 1), onNuevoMovimiento: () => setSenalMovimiento((n) => n + 1), onNuevoUsuario: () => setSenalUsuario((n) => n + 1), onVerInvitaciones: () => setSenalInvitaciones((n) => n + 1), onVerRoles: () => setSenalRoles((n) => n + 1), onNuevoCliente: () => setSenalNuevoCliente((n) => n + 1), onImportarClientes: () => setSenalImportarClientes((n) => n + 1), onBorrarClientes: () => setSenalBorrarClientes((n) => n + 1), onOpcionCatalogo: (accion) => setOpcionCatalogo({ accion, n: Date.now() }) }), /* @__PURE__ */ React.createElement("div", { className: "ct-main ct-limite", style: { padding: isMobile ? "0 12px 96px" : "0 28px 48px" } }, tab === "pos" && /* @__PURE__ */ React.createElement(PuntoDeVenta, { data, persist, cobroPendiente, onCobroTomado: () => setCobroPendiente(null) }), tab === "caja" && /* @__PURE__ */ React.createElement(CajaView, { data, persist }), tab === "cambios" && /* @__PURE__ */ React.createElement(CambiosView, { data, persist, onCerrar: () => setTab("pos"), onCobrar: (c) => { setCobroPendiente(c); setTab("pos"); } }), tab === "inventario" && /* @__PURE__ */ React.createElement(Inventario, { data, persist, senalNuevo, opcionElegida: opcionCatalogo, salto , onEditando: setEditandoProducto }), tab === "stock" && /* @__PURE__ */ React.createElement(InventarioStock, { data, persist }), tab === "ronda" && /* @__PURE__ */ React.createElement(RondaSemanalView, { data, persist, onIrAReparto: () => setTab("reparto") }), tab === "reparto" && /* @__PURE__ */ React.createElement(RepartoView, { data, persist, senalReparto }), tab === "tareas" && /* @__PURE__ */ React.createElement(TareasView, { data, persist, senalNuevaTarea }), tab === "clientes" && /* @__PURE__ */ React.createElement(Clientes, { data, persist, senalNuevoCliente, senalImportarClientes, senalBorrarClientes, salto }), tab === "catalogo" && /* @__PURE__ */ React.createElement(CatalogoOnline, { data, persist }), tab === "usuarios" && /* @__PURE__ */ React.createElement(UsuariosView, { data, persist, senalUsuario, senalInvitaciones, senalRoles }), (tab === "negocios" || tab === "reportes") && /* @__PURE__ */ React.createElement(NegociosInicio, { data, persist, setTab, filtroNegocio: filtroNegocios, rango: rangoNegocios, senalExportar, filtros: filtrosReportes }), tab === "negocios-productos" && /* @__PURE__ */ React.createElement(NegociosProductos, { data, persist, setTab, senalNuevo }), tab === "transferencias" && /* @__PURE__ */ React.createElement(TransferenciasView, { data, persist }), tab === "actividad" && /* @__PURE__ */ React.createElement(ActividadView, { data, persist, senalMovimiento }), tab === "configuracion" && /* @__PURE__ */ React.createElement(ConfiguracionView, { data, persist, tema, setTema }), tab === "soporte" && /* @__PURE__ */ React.createElement(SoporteView, { data })))), isMobile && /* @__PURE__ */ React.createElement(Sidebar, { tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile: true, data, usuario, onAbrirCaja: () => setVerCaja(true), onCambiarUsuario: () => setCambiarUsuario(true) }), verCaja && /* @__PURE__ */ React.createElement(CajaRapida, { data, persist, onClose: () => setVerCaja(false) }),  buscando && /* @__PURE__ */ React.createElement(BuscadorGeneral, {
+    }, /* @__PURE__ */ React.createElement(ChevronRight, { size: 16 })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, marginLeft: (!isMobile && !railOculto) ? (window.innerWidth < 1050 ? 188 : 226) : 0 } }, /* @__PURE__ */ React.createElement(Header, { data, persist, mobile: isMobile, tab, editandoProducto, rangoReportes, filtrosReportes, setFiltrosReportes, rangoNegocios, filtroNegocios, setFiltroNegocios, onExportarNegocios: () => setSenalExportar(Date.now()), onNuevaTarea: () => setSenalNuevaTarea(Date.now()), onAgregarParada: () => setSenalReparto({ tipo: "agregar", n: Date.now() }), onCerrarVuelta: () => setSenalReparto({ tipo: "cerrar", n: Date.now() }), onVerReposicion: () => setSenalReparto({ tipo: "reposicion", n: Date.now() }), onNuevoProducto: () => setSenalNuevo((n) => n + 1), onNuevoMovimiento: () => setSenalMovimiento((n) => n + 1), onNuevoUsuario: () => setSenalUsuario((n) => n + 1), onVerInvitaciones: () => setSenalInvitaciones((n) => n + 1), onVerRoles: () => setSenalRoles((n) => n + 1), onNuevoCliente: () => setSenalNuevoCliente((n) => n + 1), onImportarClientes: () => setSenalImportarClientes((n) => n + 1), onBorrarClientes: () => setSenalBorrarClientes((n) => n + 1), onOpcionCatalogo: (accion) => setOpcionCatalogo({ accion, n: Date.now() }) }), /* @__PURE__ */ React.createElement("div", { className: "ct-main ct-limite", style: { padding: isMobile ? "0 12px 96px" : "0 28px 48px" } }, tab === "pos" && /* @__PURE__ */ React.createElement(PuntoDeVenta, { data, persist, cobroPendiente, onCobroTomado: () => setCobroPendiente(null), onIrACambios: () => setTab("cambios") }), tab === "caja" && /* @__PURE__ */ React.createElement(CajaView, { data, persist }), tab === "cambios" && /* @__PURE__ */ React.createElement(CambiosView, { data, persist, onCerrar: () => setTab("pos"), onCobrar: (c) => { setCobroPendiente(c); setTab("pos"); } }), tab === "inventario" && /* @__PURE__ */ React.createElement(Inventario, { data, persist, senalNuevo, opcionElegida: opcionCatalogo, salto , onEditando: setEditandoProducto }), tab === "stock" && /* @__PURE__ */ React.createElement(InventarioStock, { data, persist }), tab === "ronda" && /* @__PURE__ */ React.createElement(RondaSemanalView, { data, persist, onIrAReparto: () => setTab("reparto") }), tab === "reparto" && /* @__PURE__ */ React.createElement(RepartoView, { data, persist, senalReparto }), tab === "tareas" && /* @__PURE__ */ React.createElement(TareasView, { data, persist, senalNuevaTarea }), tab === "clientes" && /* @__PURE__ */ React.createElement(Clientes, { data, persist, senalNuevoCliente, senalImportarClientes, senalBorrarClientes, salto }), tab === "catalogo" && /* @__PURE__ */ React.createElement(CatalogoOnline, { data, persist }), tab === "usuarios" && /* @__PURE__ */ React.createElement(UsuariosView, { data, persist, senalUsuario, senalInvitaciones, senalRoles }), (tab === "negocios" || tab === "reportes") && /* @__PURE__ */ React.createElement(NegociosInicio, { data, persist, setTab, filtroNegocio: filtroNegocios, rango: rangoNegocios, senalExportar, filtros: filtrosReportes }), tab === "negocios-productos" && /* @__PURE__ */ React.createElement(NegociosProductos, { data, persist, setTab, senalNuevo }), tab === "transferencias" && /* @__PURE__ */ React.createElement(TransferenciasView, { data, persist }), tab === "actividad" && /* @__PURE__ */ React.createElement(ActividadView, { data, persist, senalMovimiento }), tab === "configuracion" && /* @__PURE__ */ React.createElement(ConfiguracionView, { data, persist, tema, setTema }), tab === "soporte" && /* @__PURE__ */ React.createElement(SoporteView, { data })))), isMobile && /* @__PURE__ */ React.createElement(Sidebar, { tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile: true, data, usuario, onAbrirCaja: () => setVerCaja(true), onCambiarUsuario: () => setCambiarUsuario(true) }), verCaja && /* @__PURE__ */ React.createElement(CajaRapida, { data, persist, onClose: () => setVerCaja(false) }),  buscando && /* @__PURE__ */ React.createElement(BuscadorGeneral, {
     data,
     negocioId: negocioActivo(data).id,
     onIr: (r) => {
@@ -10706,7 +10706,7 @@ const nuevoCarrito = (n, listaId) => ({
   extras: { ...EXTRAS_VACIOS }
 });
 
-function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado }) {
+function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambios }) {
   const isMobilePos = useIsMobile();
   // Todo el punto de venta trabaja sobre el stock del negocio activo
   const negocioId = negocioActivo(data).id;
@@ -11259,7 +11259,14 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado }) {
               else if (e.key === "ArrowUp") { e.preventDefault(); setResaltado((i) => Math.max(0, i - 1)); }
             },
               style: { flex: 1, minWidth: 0, height: "100%", background: "transparent", border: "none", outline: "none", color: posColors.text, fontSize: isMobilePos ? 16 : 15, padding: 0 }
-            })
+            }),
+            // El escáner adentro del buscador: son la misma acción, encontrar
+            // un producto. Separados, competían por el mismo espacio.
+            React.createElement("button", {
+              onClick: () => setEscaneando(true),
+              title: "Escanear con la cámara",
+              style: { background: "none", border: "none", cursor: "pointer", color: "var(--denim-light)", padding: "0 0 0 6px", display: "flex", alignItems: "center", flexShrink: 0 }
+            }, React.createElement(ScanBarcode, { size: 19 }))
           ),
           // Sólo el ícono: con la pistola casi no se usan, y con texto le
           // comían la mitad del ancho al buscador, que es lo que más se toca.
@@ -11267,7 +11274,6 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado }) {
           // aparece al apoyar el mouse, así que en pantalla táctil los
           // botones quedaban sin ninguna pista de qué hacían.
           [
-            [ScanBarcode, () => setEscaneando(true), "Escanear", "Escanear con la cámara"],
             [DollarSign, () => setShowConsulta(true), "Precio", "Consultar precio"],
             [Plus, () => setShowAgregarMonto(true), "Monto", "Agregar un monto suelto al carrito"]
           ].map(([Icono, accion, corto, ayuda]) => React.createElement("button", {
@@ -11296,6 +11302,22 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado }) {
             React.createElement(Icono, { size: 18 }),
             React.createElement("span", { style: { fontSize: 14, fontWeight: 600 } }, corto)
           ))
+        ),
+        // Ir a Cambios sin salir del punto de venta: el cliente que viene a
+        // cambiar llega al mostrador igual que el que viene a comprar.
+        onIrACambios && React.createElement(
+          "button",
+          {
+            onClick: onIrACambios,
+            style: {
+              display: "inline-flex", alignItems: "center", gap: 8, marginTop: 10,
+              background: "none", border: "none", cursor: "pointer",
+              color: posColors.muted, fontSize: 13, padding: "6px 0",
+              fontFamily: "'Inter', sans-serif"
+            }
+          },
+          React.createElement(ArrowRightLeft, { size: 15 }),
+          "¿Viene a cambiar algo?"
         ),
         barcodeError && React.createElement("p", { style: { color: posColors.danger, fontSize: 12.5, marginTop: 10 } }, barcodeError),
         // El aviso de stock en negativo va en naranja, no en rojo: la venta se
@@ -21174,7 +21196,7 @@ function NotaCreditoModal({ data, nota, onClose }) {
       ".caja .rot{font-size:8pt;text-transform:uppercase;letter-spacing:.08em;color:#777;margin-bottom:1.5mm}" +
       ".caja .val{font-size:11pt;font-weight:700}" +
       ".legal{font-size:8.5pt;color:#666;line-height:1.5;border-top:1px solid #ddd;padding-top:4mm;margin-top:4mm}" +
-      ".firma{margin-top:14mm;border-top:1px solid #999;padding-top:2mm;font-size:9pt;color:#666;width:70mm}";
+      ".legal strong{font-weight:700}";
 
     const cuerpo =
       "<div class='cab'><div><h1>Nota de crédito</h1>" +
@@ -21212,7 +21234,7 @@ function NotaCreditoModal({ data, nota, onClose }) {
       "presentándola en el mostrador. No se cambia por dinero. " +
       "Si la compra supera el valor de la nota, se abona la diferencia.</div>" +
 
-      "<div class='firma'>Firma y aclaración</div>";
+      "";
 
     return { estilos, cuerpo, titulo: "Nota de crédito " + nota.numero };
   };
@@ -21235,7 +21257,7 @@ function NotaCreditoModal({ data, nota, onClose }) {
       ".item{margin-bottom:2mm}" +
       ".item .det{font-size:8.5pt;padding-left:4mm}" +
       ".pie{font-size:8pt;text-align:center;margin-top:4mm;line-height:1.5}" +
-      ".firma{margin-top:9mm;border-top:1px solid #000;padding-top:1mm;font-size:8pt;text-align:center}";
+      ".pie strong{font-weight:700}";
 
     const linea = (a, b) => "<div class='fila'><span>" + a + "</span><span>" + b + "</span></div>";
 
@@ -21269,9 +21291,7 @@ function NotaCreditoModal({ data, nota, onClose }) {
       "<div class='sep'></div>" +
       "<div class='pie'>Presentá esta nota en cualquiera de nuestros locales.<br>" +
       "No se cambia por dinero. Si la compra supera el valor,<br>se abona la diferencia.<br>" +
-      "Esta nota no vence.</div>" +
-
-      "<div class='firma'>Firma y aclaración</div>";
+      "Esta nota no vence.</div>";
 
     return { estilos, cuerpo, titulo: "Nota " + nota.numero };
   };
