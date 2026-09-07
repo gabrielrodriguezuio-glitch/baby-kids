@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.495";
+const VERSION_APP = "9.497";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1353,8 +1353,45 @@ function ControlTienda() {
     // enteras para ver una venta nueva es lo que hacía que tardara.
     let tocadas = new Set();
 
-    const refrescar = (tabla) => {
+    // El aviso de la base ya trae la fila que cambió: se aplica al instante y
+    // después se confirma con el pedido completo. Sin esto había que esperar
+    // a que volviera la consulta para ver la venta del otro.
+    const alVuelo = (tabla, evento) => {
+      if (!evento || !evento.new) return;
+      const tipo = evento.eventType;
+      // Una venta se agrega; el stock se modifica. Cada uno tiene su evento.
+      if (tipo !== "INSERT" && tipo !== "UPDATE") return;
+      const fila = evento.new;
+      if (tabla === "ventas" && tipo === "INSERT") {
+        setData((d) => {
+          if ((d.ventas || []).some((v) => v.id === fila.id)) return d;
+          const venta = deLaNube.venta(fila, []);
+          return { ...d, ventas: [venta, ...(d.ventas || [])] };
+        });
+      } else if (tabla === "variantes") {
+        // El stock nuevo se aplica en la variante que corresponde
+        setData((d) => ({
+          ...d,
+          productos: (d.productos || []).map((p) => {
+            if (p.id !== fila.producto_id) return p;
+            const porNegocio = { ...(p.porNegocio || {}) };
+            const n = porNegocio[fila.negocio_id];
+            if (!n) return p;
+            const vs = (n.variantes || []).map((v) =>
+              (v.talle || "") === (fila.talle || "") && (v.color || "") === (fila.color || "")
+                ? { ...v, stock: Number(fila.stock) || 0 } : v);
+            const stock = vs.length ? vs.reduce((a, v) => a + (Number(v.stock) || 0), 0) : Number(fila.stock) || 0;
+            porNegocio[fila.negocio_id] = { ...n, variantes: vs, stock };
+            return { ...p, porNegocio, stock: Object.values(porNegocio).reduce((a, x) => a + (Number(x.stock) || 0), 0) };
+          })
+        }));
+      }
+    };
+
+    const refrescar = (tabla, evento) => {
       if (tabla) tocadas.add(tabla);
+      // Primero lo que ya vino en el aviso, para que se vea sin demora
+      if (guardando.current === 0) { try { alVuelo(tabla, evento); } catch (e) {} }
       // Se espera un instante: una venta dispara varios cambios seguidos y no
       // tiene sentido traer todo cinco veces. Con 250ms el cambio se ve casi
       // al toque y los avisos de una misma venta siguen agrupándose.
@@ -1376,19 +1413,19 @@ function ControlTienda() {
     };
 
     const canal = nube.channel("cambios")
-      .on("postgres_changes", { event: "*", schema: "public", table: "ventas" }, () => refrescar("ventas"))
-      .on("postgres_changes", { event: "*", schema: "public", table: "variantes" }, () => refrescar("variantes"))
-      .on("postgres_changes", { event: "*", schema: "public", table: "productos" }, () => refrescar("productos"))
-      .on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, () => refrescar("clientes"))
-      .on("postgres_changes", { event: "*", schema: "public", table: "movimientos_cc" }, () => refrescar("movimientos_cc"))
-      .on("postgres_changes", { event: "*", schema: "public", table: "cajas_abiertas" }, () => refrescar("cajas_abiertas"))
-      .on("postgres_changes", { event: "*", schema: "public", table: "caja_cierres" }, () => refrescar("caja_cierres"))
-      .on("postgres_changes", { event: "*", schema: "public", table: "transferencias" }, () => refrescar("transferencias"))
-      .on("postgres_changes", { event: "*", schema: "public", table: "pedidos" }, () => refrescar("pedidos"))
-      .on("postgres_changes", { event: "*", schema: "public", table: "devoluciones_reparto" }, () => refrescar("devoluciones_reparto"))
-      .on("postgres_changes", { event: "*", schema: "public", table: "movimientos_stock" }, () => refrescar("movimientos_stock"))
-      .on("postgres_changes", { event: "*", schema: "public", table: "gastos" }, () => refrescar("gastos"))
-      .on("postgres_changes", { event: "*", schema: "public", table: "compras" }, () => refrescar("compras"))
+      .on("postgres_changes", { event: "*", schema: "public", table: "ventas" }, (ev) => refrescar("ventas", ev))
+      .on("postgres_changes", { event: "*", schema: "public", table: "variantes" }, (ev) => refrescar("variantes", ev))
+      .on("postgres_changes", { event: "*", schema: "public", table: "productos" }, (ev) => refrescar("productos", ev))
+      .on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, (ev) => refrescar("clientes", ev))
+      .on("postgres_changes", { event: "*", schema: "public", table: "movimientos_cc" }, (ev) => refrescar("movimientos_cc", ev))
+      .on("postgres_changes", { event: "*", schema: "public", table: "cajas_abiertas" }, (ev) => refrescar("cajas_abiertas", ev))
+      .on("postgres_changes", { event: "*", schema: "public", table: "caja_cierres" }, (ev) => refrescar("caja_cierres", ev))
+      .on("postgres_changes", { event: "*", schema: "public", table: "transferencias" }, (ev) => refrescar("transferencias", ev))
+      .on("postgres_changes", { event: "*", schema: "public", table: "pedidos" }, (ev) => refrescar("pedidos", ev))
+      .on("postgres_changes", { event: "*", schema: "public", table: "devoluciones_reparto" }, (ev) => refrescar("devoluciones_reparto", ev))
+      .on("postgres_changes", { event: "*", schema: "public", table: "movimientos_stock" }, (ev) => refrescar("movimientos_stock", ev))
+      .on("postgres_changes", { event: "*", schema: "public", table: "gastos" }, (ev) => refrescar("gastos", ev))
+      .on("postgres_changes", { event: "*", schema: "public", table: "compras" }, (ev) => refrescar("compras", ev))
       .subscribe();
 
     // Al volver a la pestaña también se refresca: si el aviso se perdió
