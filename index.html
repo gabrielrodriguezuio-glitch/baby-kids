@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.593";
+const VERSION_APP = "9.597";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -5787,251 +5787,7 @@ function RegistrarMovimientoModal({ data, negocioId, onGuardar, onClose }) {
   );
 }
 
-function MovimientosStock({ data, persist, senalMovimiento }) {
-  const hoy = todayISO();
-  const haceUnMes = isoLocal(new Date(Date.now() - 30 * 864e5));
-  const [desde, setDesde] = useState(haceUnMes);
-  const [hasta, setHasta] = useState(hoy);
-  const [vista, setVista] = useState("resumen");
-  const [query, setQuery] = useState("");
-  const [mostrarFiltros, setMostrarFiltros] = useState(false);
-  const [filtroOrigen, setFiltroOrigen] = useState("");
-  const [registrando, setRegistrando] = useState(false);
-
-  useEffect(() => { if (senalMovimiento) setRegistrando(true); }, [senalMovimiento]);
-
-  const libro = data.movimientosStock || [];
-  const q = query.trim().toLowerCase();
-  const coincide = (m) => !q || (m.nombre || "").toLowerCase().includes(q) ||
-    ((data.productos.find((p) => p.id === m.productoId) || {}).codigoBarras || "").toLowerCase().includes(q);
-
-  const detalle = libro
-    .filter((m) => m.fecha >= desde && m.fecha <= hasta)
-    .filter((m) => !filtroOrigen || m.origen === filtroOrigen)
-    .filter(coincide);
-
-  const resumen = resumenMovimientos(data, desde, hasta)
-    .filter((r) => r.entradas > 0 || r.salidas > 0)
-    .filter((r) => !q || (r.nombre || "").toLowerCase().includes(q))
-    .sort((a, b) => (b.entradas + b.salidas) - (a.entradas + a.salidas));
-
-  const totalEntradas = detalle.filter((m) => m.cantidad > 0).reduce((a, m) => a + m.cantidad, 0);
-  const totalSalidas = detalle.filter((m) => m.cantidad < 0).reduce((a, m) => a - m.cantidad, 0);
-
-  const registrar = (producto, cantidad, motivo, talle) => {
-    const ajustado = ajustarEnNegocio(producto, negocioActivo(data).id, talle, cantidad);
-    const productos = data.productos.map((p) => p.id === producto.id ? ajustado : p);
-    const mov = nuevoMovimiento({
-      producto: { ...producto, talla: talle || producto.talla },
-      cantidad,
-      origen: "manual",
-      motivo,
-      stockResultante: ajustado.stock,
-      usuario: usuarioActivo(data),
-    });
-    persist(conMovimientos({ ...data, productos }, [mov]));
-    setRegistrando(false);
-  };
-
-  const botonVista = (id, label) => React.createElement(
-    "button",
-    {
-      key: id,
-      onClick: () => setVista(id),
-      style: {
-        padding: "8px 18px", borderRadius: 8, cursor: "pointer", border: "none",
-        background: vista === id ? "var(--denim)" : "transparent",
-        color: vista === id ? "var(--on-accent)" : "var(--muted)",
-        fontSize: 13, fontWeight: 600, fontFamily: "'Inter', sans-serif"
-      }
-    },
-    label
-  );
-
-  const vacio = React.createElement(
-    "div",
-    { style: { padding: "70px 24px 80px", textAlign: "center" } },
-    React.createElement(Package, { size: 44, color: "var(--muted)", strokeWidth: 1.2 }),
-    React.createElement("div", { style: { fontFamily: "'Inter Tight', sans-serif", fontSize: 21, fontWeight: 600, letterSpacing: -0.02, marginTop: 16 } }, "Sin movimientos"),
-    React.createElement("div", { style: { fontSize: 14, color: "var(--muted)", marginTop: 8 } }, "No hubo movimientos de stock en este rango de fechas.")
-  );
-
-  const tablaResumen = React.createElement(
-    "div",
-    { className: "ct-tablewrap" },
-    React.createElement(
-      "table",
-      { style: { minWidth: 680 } },
-      React.createElement("thead", null, React.createElement(
-        "tr",
-        null,
-        React.createElement("th", null, "Producto"),
-        React.createElement("th", { style: { textAlign: "right" } }, "Stock inicial"),
-        React.createElement("th", { style: { textAlign: "right" } }, "Entradas"),
-        React.createElement("th", { style: { textAlign: "right" } }, "Salidas"),
-        React.createElement("th", { style: { textAlign: "right" } }, "Stock final")
-      )),
-      React.createElement("tbody", null, resumen.map((r) => React.createElement(
-        "tr",
-        { key: r.id },
-        React.createElement(
-          "td",
-          null,
-          React.createElement("div", { style: { fontSize: 13.5, fontWeight: 650, textTransform: "uppercase", color: r.existe ? "var(--ink)" : "var(--muted)" } }, r.nombre),
-          r.talla && React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 3 } }, "Talle ", r.talla)
-        ),
-        React.createElement("td", { style: { textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: "var(--muted)" } }, r.inicial, " u"),
-        React.createElement("td", { style: { textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: r.entradas ? "var(--sage)" : "var(--muted)" } }, r.entradas ? "+" + r.entradas : "–"),
-        React.createElement("td", { style: { textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: r.salidas ? "var(--rose)" : "var(--muted)" } }, r.salidas ? "−" + r.salidas : "–"),
-        React.createElement("td", { style: { textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 } }, r.final, " u")
-      )))
-    )
-  );
-
-  const tablaDetalle = React.createElement(
-    "div",
-    { className: "ct-tablewrap" },
-    React.createElement(
-      "table",
-      { style: { minWidth: 640 } },
-      React.createElement("thead", null, React.createElement(
-        "tr",
-        null,
-        React.createElement("th", null, "Fecha"),
-        React.createElement("th", null, "Producto"),
-        React.createElement("th", null, "Origen"),
-        React.createElement("th", null, "Motivo"),
-        React.createElement("th", { style: { textAlign: "right" } }, "Cantidad"),
-        React.createElement("th", { style: { textAlign: "right" } }, "Stock resultante")
-      )),
-      React.createElement("tbody", null, detalle.map((m) => {
-        const origen = ORIGENES_MOV[m.origen] || ORIGENES_MOV.manual;
-        const entra = m.cantidad > 0;
-        return React.createElement(
-          "tr",
-          { key: m.id },
-          React.createElement("td", { style: { color: "var(--muted)", whiteSpace: "nowrap" } }, fecha(m.fecha), " · ", m.hora || ""),
-          React.createElement(
-            "td",
-            null,
-            React.createElement("div", { style: { fontSize: 13.5, fontWeight: 600, textTransform: "uppercase" } }, m.nombre),
-            m.talla && React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 3 } }, "Talle ", m.talla)
-          ),
-          React.createElement("td", null, React.createElement(SwingTag, { tone: origen.tono, small: true }, origen.label)),
-          React.createElement("td", { style: { color: "var(--muted)" } }, m.motivo || "–"),
-          React.createElement("td", { style: { textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, color: entra ? "var(--sage)" : "var(--rose)" } },
-            (entra ? "+" : "−") + Math.abs(m.cantidad), " u"),
-          React.createElement("td", { style: { textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: "var(--muted)" } },
-            m.stockResultante == null ? "–" : m.stockResultante + " u")
-        );
-      }))
-    )
-  );
-
-  const hay = vista === "resumen" ? resumen.length > 0 : detalle.length > 0;
-
-  return React.createElement(
-    "div",
-    null,
-
-    // Rango de fechas
-    React.createElement(
-      "div",
-      { style: { display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16, alignItems: "flex-end" } },
-      React.createElement(Field, { label: "Desde" },
-        React.createElement("input", { type: "date", value: desde, max: hasta, onChange: (e) => setDesde(e.target.value), style: inputStyle })),
-      React.createElement(Field, { label: "Hasta" },
-        React.createElement("input", { type: "date", value: hasta, min: desde, onChange: (e) => setHasta(e.target.value), style: inputStyle })),
-      React.createElement(
-        "div",
-        { style: { display: "flex", gap: 16, marginLeft: "auto", paddingBottom: 4 } },
-        React.createElement(
-          "div",
-          null,
-          React.createElement("div", { style: { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.07, color: "var(--muted)", fontWeight: 600 } }, "Entradas"),
-          React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 18, color: "var(--sage)" } }, "+", totalEntradas, " u")
-        ),
-        React.createElement(
-          "div",
-          null,
-          React.createElement("div", { style: { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.07, color: "var(--muted)", fontWeight: 600 } }, "Salidas"),
-          React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 18, color: "var(--rose)" } }, "−", totalSalidas, " u")
-        )
-      )
-    ),
-
-    // Buscador
-    React.createElement(
-      "div",
-      { style: { display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" } },
-      React.createElement(
-        "div",
-        { style: { position: "relative", flex: 1, minWidth: 200 } },
-        React.createElement(Search, { size: 16, style: { position: "absolute", left: 15, top: "50%", transform: "translateY(-50%)", color: "var(--muted)", pointerEvents: "none" } }),
-        React.createElement("input", {
-          placeholder: "Buscar por nombre o código…",
-          value: query,
-          onChange: (e) => setQuery(e.target.value),
-          style: { ...inputStyle, width: "100%", height: 46, paddingLeft: 42, borderRadius: 10, background: "var(--surface)" }
-        })
-      ),
-      React.createElement(
-        "button",
-        {
-          onClick: () => setMostrarFiltros(!mostrarFiltros),
-          style: { display: "inline-flex", alignItems: "center", gap: 9, background: mostrarFiltros ? "var(--denim-soft)" : "var(--surface)", color: "var(--ink)", border: "none", borderRadius: 10, height: 46, padding: "0 20px", fontSize: 14, fontWeight: 550, fontFamily: "'Inter', sans-serif", cursor: "pointer" }
-        },
-        React.createElement(SlidersHorizontal, { size: 15, strokeWidth: 1.9 }),
-        "Filtros"
-      )
-    ),
-
-    mostrarFiltros && React.createElement(
-      Card,
-      { style: { marginBottom: 16 } },
-      React.createElement(Field, { label: "Origen del movimiento" },
-        React.createElement("select", { style: { ...inputStyle, maxWidth: 320 }, value: filtroOrigen, onChange: (e) => setFiltroOrigen(e.target.value) },
-          React.createElement("option", { value: "" }, "Todos"),
-          Object.keys(ORIGENES_MOV).map((k) => React.createElement("option", { key: k, value: k }, ORIGENES_MOV[k].label))))
-    ),
-
-    // Tabla
-    React.createElement(
-      Card,
-      { style: { padding: 0, overflow: "hidden" } },
-      React.createElement(
-        "div",
-        { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, padding: "20px 22px 14px", flexWrap: "wrap" } },
-        React.createElement(
-          "div",
-          null,
-          React.createElement(SectionTitle, null, "Movimientos"),
-          React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: 6 } },
-            vista === "resumen" ? "Stock inicial, entradas, salidas y stock final por producto" : "Cada entrada y salida registrada, de la más reciente a la más vieja")
-        ),
-        React.createElement(
-          "div",
-          { style: { display: "flex", gap: 2, background: "var(--surface-2)", border: "none", borderRadius: 10, padding: 3 } },
-          botonVista("resumen", "Resumen"),
-          botonVista("detalle", "Detalle")
-        )
-      ),
-      hay ? (vista === "resumen" ? tablaResumen : tablaDetalle) : vacio
-    ),
-
-    registrando && React.createElement(RegistrarMovimientoModal, {
-      data,
-      negocioId: negocioActivo(data).id,
-      onGuardar: registrar,
-      onClose: () => setRegistrando(false)
-    })
-  );
-}
-
 function InventarioStock({ data, persist }) {
-  // El dinero en stock y el proveedor son datos de compra: sólo el dueño
-  const verCostos = puede(data, "verCostos");
-  const verAlertas = puede(data, "verAlertasStock");
   const [query, setQuery] = useState("");
   const [mostrarFiltros, setMostrarFiltros] = useState(false);
   const [filtroCategoria, setFiltroCategoria] = useState("");
@@ -6044,9 +5800,11 @@ function InventarioStock({ data, persist }) {
   const [panel, setPanel] = useState(null);
   const [ajustando, setAjustando] = useState(null);
 
-  // Mirar el stock de otro local sin cambiar dónde se vende: alcanza para
-  // responderle a un cliente sin llamar al compañero del otro negocio.
+  // Mirar el stock de otro local sin cambiar dónde se vende
   const [verNegocio, setVerNegocio] = useState("");
+  const [escaneandoStock, setEscaneandoStock] = useState(false);
+  const verCostos = puede(data, "verCostos");
+  const verAlertas = puede(data, "verAlertasStock");
   const negId = verNegocio || negocioActivo(data).id;
   const esOtro = negId !== negocioActivo(data).id;
   const nombreVisto = (listaNegocios(data).find((n) => n.id === negId) || {}).nombre || "";
@@ -6059,8 +5817,6 @@ function InventarioStock({ data, persist }) {
 
   const q = query.trim().toLowerCase();
   let productos = data.productos.filter((p) => {
-    // Sólo los de este local: antes se listaban los 1173 en los tres, y al
-    // cambiar de negocio parecía que nada cambiaba.
     if (!publicadoEn(p, negId, listaNegocios(data)[0].id)) return false;
     if (q && !((p.nombre || "").toLowerCase().includes(q) || (p.codigoBarras || "").toLowerCase().includes(q))) return false;
     if (filtroCategoria && p.categoria !== filtroCategoria) return false;
@@ -6121,7 +5877,6 @@ function InventarioStock({ data, persist }) {
     null,
 
     // Cabeceras de alerta
-    // Los avisos de reposición sólo para quien compra
     verAlertas && React.createElement(
       Card,
       { style: { padding: 0, overflow: "hidden", marginBottom: 20 } },
@@ -6154,15 +5909,24 @@ function InventarioStock({ data, persist }) {
       { style: { display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" } },
       React.createElement(
         "div",
-        { style: { position: "relative", flex: 1, minWidth: 200 } },
-        React.createElement(Search, { size: 16, style: { position: "absolute", left: 15, top: "50%", transform: "translateY(-50%)", color: "var(--muted)", pointerEvents: "none" } }),
-        React.createElement("input", {
-          placeholder: "Buscar por nombre o código…",
-          value: query,
-          onChange: (e) => setQuery(e.target.value),
-          style: { ...inputStyle, width: "100%", height: 46, paddingLeft: 42, borderRadius: 10, background: "var(--surface)" }
+        { style: { flex: 1, minWidth: 200 } },
+        React.createElement(BuscadorProducto, {
+          valor: query, onCambiar: setQuery,
+          onEscanear: () => setEscaneandoStock(true),
+          placeholder: "Buscar por nombre o código\u2026"
         })
       ),
+      escaneandoStock && React.createElement(EscanerModal, {
+        titulo: "Buscar producto",
+        sinManual: true,
+        onLeer: (code) => {
+          setEscaneandoStock(false);
+          const prod = data.productos.find((p) =>
+            (p.codigoBarras || "").trim() === String(code).trim() || mismoCodigo(p.codigoBarras, code));
+          setQuery(prod ? prod.nombre : String(code));
+        },
+        onClose: () => setEscaneandoStock(false)
+      }),
       React.createElement(
         "button",
         {
@@ -6205,43 +5969,24 @@ function InventarioStock({ data, persist }) {
           { style: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" } },
           React.createElement(SectionTitle, null, "Productos"),
           verCostos && React.createElement(SwingTag, { tone: "ink" }, "Total en stock: ", money(totalEnStock)),
-
-          // Ver el stock de otro local. Va arriba a la derecha y no cambia
-          // dónde se vende: es sólo para consultar.
+          // Ver el stock de otro local, sin cambiar dónde se vende
           listaNegocios(data).length > 1 && React.createElement(
             "div",
             { style: { marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 } },
-            esOtro && React.createElement("span", {
-              style: { fontSize: 11.5, color: "var(--mustard)", fontWeight: 650 }
-            }, "Sólo mirando"),
-            React.createElement(
-              "select",
-              {
-                value: negId,
-                onChange: (e) => setVerNegocio(e.target.value === negocioActivo(data).id ? "" : e.target.value),
-                title: "Ver el stock de otro local",
-                style: {
-                  background: esOtro ? "color-mix(in srgb, var(--mustard) 16%, var(--surface-2))" : "var(--surface-2)",
-                  border: "1.5px solid " + (esOtro ? "var(--mustard)" : "var(--line)"),
-                  borderRadius: 9, color: "var(--ink)", fontSize: 13,
-                  fontWeight: 600, padding: "8px 12px", cursor: "pointer",
-                  fontFamily: "'Inter', sans-serif"
-                }
-              },
-              listaNegocios(data).map((n) => React.createElement("option", { key: n.id, value: n.id },
-                n.id === negocioActivo(data).id ? n.nombre + " (acá)" : n.nombre))
-            )
+            esOtro && React.createElement("span", { style: { fontSize: 11.5, color: "var(--mustard)", fontWeight: 650 } }, "Sólo mirando"),
+            React.createElement("select", {
+              value: negId,
+              onChange: (e) => setVerNegocio(e.target.value === negocioActivo(data).id ? "" : e.target.value),
+              title: "Ver el stock de otro local",
+              style: {
+                background: esOtro ? "color-mix(in srgb, var(--mustard) 16%, var(--surface-2))" : "var(--surface-2)",
+                border: "1.5px solid " + (esOtro ? "var(--mustard)" : "var(--line)"),
+                borderRadius: 9, color: "var(--ink)", fontSize: 13,
+                fontWeight: 600, padding: "8px 12px", cursor: "pointer", fontFamily: "'Inter', sans-serif"
+              }
+            }, listaNegocios(data).map((n) => React.createElement("option", { key: n.id, value: n.id },
+              n.id === negocioActivo(data).id ? n.nombre + " (acá)" : n.nombre)))
           )
-        ),
-
-        // Queda claro que se está mirando otro local, para no confundirse
-        esOtro && React.createElement(
-          "div",
-          { style: { display: "flex", alignItems: "center", gap: 9, marginTop: 12, background: "color-mix(in srgb, var(--mustard) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--mustard) 38%, transparent)", borderRadius: 9, padding: "10px 12px" } },
-          React.createElement(AlertTriangle, { size: 15, color: "var(--mustard)", style: { flexShrink: 0 } }),
-          React.createElement("span", { style: { fontSize: 12.5, lineHeight: 1.5 } },
-            "Estás viendo el stock de ", React.createElement("strong", null, nombreVisto),
-            ". Para transferir mercadería usá Transferencias.")
         ),
         React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: 6 } }, "Control y seguimiento de inventario de productos")
       ),
@@ -6266,8 +6011,6 @@ function InventarioStock({ data, persist }) {
                   React.createElement("th", null, "Categoría"),
                   React.createElement("th", { style: { width: 78 } }, "Estado"),
                   React.createElement(Th, { campo: "stock", style: { width: 130 } }, "Stock"),
-                  // Dinero en stock sale del costo, así que va con ese permiso.
-                  // El proveedor tampoco: es información de compra.
                   verCostos && React.createElement(Th, { campo: "dinero", style: { width: 150 } },
                     React.createElement("span", { title: "Costo del producto multiplicado por las unidades en stock: lo que tenés inmovilizado en mercadería.", style: { display: "inline-flex", alignItems: "center", gap: 5 } },
                       "Dinero en stock",
@@ -6315,13 +6058,13 @@ function InventarioStock({ data, persist }) {
               )
             )
           ),
-      // La paginación va dentro de la tarjeta: suelta parecía de otra cosa.
+      // La paginación va dentro de la tarjeta, igual que en Productos.
       React.createElement("div", { style: { height: 1, background: "var(--line)", margin: "0 22px" } }),
       React.createElement("div", { style: { padding: "14px 22px 18px" } },
       // Navegación entre páginas. Sólo aparece si hay más de una.
       paginas > 1 && React.createElement(
         "div",
-        { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" } },
+        { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 14, flexWrap: "wrap" } },
         React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)" } },
           "Mostrando ", desde + 1, " a ", Math.min(desde + porPagina, productos.length),
           " de ", productos.length),
@@ -6386,70 +6129,6 @@ function InventarioStock({ data, persist }) {
 
 
 
-// ===== Buscador general =====
-// Se abre con Ctrl+K desde cualquier pantalla y encuentra productos, clientes,
-// ventas o secciones sin tener que navegar hasta ellas.
-const SECCIONES_BUSCABLES = [
-  { tab: "pos", nombre: "Punto de Venta", icono: ShoppingCart },
-  { tab: "inventario", nombre: "Productos", icono: Package },
-  { tab: "stock", nombre: "Inventario", icono: Boxes },
-  { tab: "movimientos", nombre: "Movimientos de stock", icono: ArrowRightLeft },
-  { tab: "clientes", nombre: "Clientes", icono: Users },
-  { tab: "ronda", nombre: "Ronda semanal", icono: MessageCircle },
-  { tab: "usuarios", nombre: "Usuarios", icono: UserCog },
-  { tab: "catalogo", nombre: "Catálogo Online", icono: Share2 },
-  { tab: "negocios", nombre: "Mis Negocios \u00B7 Reportes", icono: LayoutGrid },
-  { tab: "transferencias", nombre: "Transferencias de stock", icono: Truck },
-  { tab: "configuracion", nombre: "Configuración", icono: SlidersHorizontal },
-  { tab: "soporte", nombre: "Soporte", icono: MessageCircle }
-];
-
-// Arma los resultados de las cuatro familias, ya limitados
-const resultadosBusqueda = (data, texto, negocioId) => {
-  const q = texto.trim().toLowerCase();
-  if (!q) return SECCIONES_BUSCABLES.slice(0, 6).map((x) => ({
-    tipo: "seccion", clave: "s" + x.tab, tab: x.tab, icono: x.icono, titulo: x.nombre, detalle: "Ir a la sección"
-  }));
-
-  const digitos = soloDigitos(q);
-  const out = [];
-
-  SECCIONES_BUSCABLES.filter((x) => x.nombre.toLowerCase().includes(q)).slice(0, 4).forEach((x) => out.push({
-    tipo: "seccion", clave: "s" + x.tab, tab: x.tab, icono: x.icono, titulo: x.nombre, detalle: "Ir a la sección"
-  }));
-
-  (data.productos || [])
-    .filter((p) => (p.nombre || "").toLowerCase().includes(q) || (p.codigoBarras || "").includes(q.trim()))
-    .slice(0, 6)
-    .forEach((p) => out.push({
-      tipo: "producto", clave: "p" + p.id, tab: "inventario", texto: p.nombre, icono: Package,
-      titulo: p.nombre,
-      detalle: money(p.precioVenta) + " · " + stockNegocio(p, negocioId) + " u" + (p.codigoBarras ? " · " + p.codigoBarras : "")
-    }));
-
-  (data.clientes || [])
-    .filter((c) => (c.nombre || "").toLowerCase().includes(q) ||
-      (digitos && (soloDigitos(c.dni || "").includes(digitos) || soloDigitos(c.telefono || "").includes(digitos))))
-    .slice(0, 5)
-    .forEach((c) => out.push({
-      tipo: "cliente", clave: "c" + c.id, tab: "clientes", texto: c.nombre, icono: Users,
-      titulo: c.nombre,
-      detalle: (c.dni ? "DNI " + c.dni : "Sin DNI") + (c.telefono ? " · " + c.telefono : "")
-    }));
-
-  (data.ventas || [])
-    .filter((v) => v.id.toLowerCase().includes(q) || (v.clienteNombre || "").toLowerCase().includes(q))
-    .slice(0, 4)
-    .forEach((v) => out.push({
-      tipo: "venta", clave: "v" + v.id, tab: "negocios", icono: Receipt,
-      titulo: "Ticket #" + v.id.slice(-8).toUpperCase(),
-      detalle: fecha(v.fecha) + " · " + money(v.total) + " · " + (v.clienteNombre || "Consumidor final")
-    }));
-
-  return out;
-};
-
-const ETIQUETA_TIPO = { seccion: "Sección", producto: "Producto", cliente: "Cliente", venta: "Venta" };
 
 function BuscadorGeneral({ data, negocioId, onIr, onClose }) {
   const [texto, setTexto] = useState("");
@@ -8626,6 +8305,7 @@ function FiltrosProductosModal({ data, valores, onAplicar, onClose }) {
 }
 
 function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditando }) {
+  const [escaneandoProd, setEscaneandoProd] = useState(false);
   const [editing, setEditing] = useState(null);
   const [query, setQuery] = useState("");
   // Al llegar desde el buscador general, se filtra por lo que se eligió
@@ -8919,15 +8599,24 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
       { style: { display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" } },
       React.createElement(
         "div",
-        { style: { position: "relative", flex: 1, minWidth: 200 } },
-        React.createElement(Search, { size: 16, style: { position: "absolute", left: 15, top: "50%", transform: "translateY(-50%)", color: "var(--muted)", pointerEvents: "none" } }),
-        React.createElement("input", {
-          placeholder: "Buscar por nombre o c\u00F3digo\u2026",
-          value: query,
-          onChange: (e) => setQuery(e.target.value),
-          style: { ...inputStyle, width: "100%", height: 46, paddingLeft: 42, borderRadius: 10, background: "var(--surface)" }
+        { style: { flex: 1, minWidth: 200 } },
+        React.createElement(BuscadorProducto, {
+          valor: query, onCambiar: setQuery,
+          onEscanear: () => setEscaneandoProd(true),
+          placeholder: "Buscar por nombre o código\u2026"
         })
       ),
+      escaneandoProd && React.createElement(EscanerModal, {
+        titulo: "Buscar producto",
+        sinManual: true,
+        onLeer: (code) => {
+          setEscaneandoProd(false);
+          const prod = data.productos.find((p) =>
+            (p.codigoBarras || "").trim() === String(code).trim() || mismoCodigo(p.codigoBarras, code));
+          setQuery(prod ? prod.nombre : String(code));
+        },
+        onClose: () => setEscaneandoProd(false)
+      }),
       React.createElement(
         "button",
         {
@@ -22264,8 +21953,6 @@ function PedidosView({ data, persist, onCerrar }) {
     React.createElement(
       "div",
       { style: { display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" } },
-      React.createElement(Button, { tone: "ghost", onClick: onCerrar, style: { padding: "10px 16px" } },
-        React.createElement(ChevronRight, { size: 15, style: { transform: "rotate(180deg)" } }), " Volver"),
       React.createElement(
         "div",
         { style: { flex: 1, minWidth: 0 } },
