@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.700";
+const VERSION_APP = "9.710";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -204,6 +204,14 @@ const usuarioActualId = (data) => {
 const nombreUsuario = (data, id) => {
   const u = (data.usuarios || []).find((x) => x.id === id);
   return u ? u.nombre : "Sin usuario";
+};
+// Con equipo cargado, la caja sólo se abre si este dispositivo eligió quién
+// sos. Sin esto, la caja se abría a nombre del primero de la lista (o de
+// nadie) y quedaba una sesión colgada que después no se podía cerrar.
+const puedeAbrirCaja = (data) => {
+  const lista = data.usuarios || [];
+  if (!lista.length) return true;
+  return lista.some((u) => u.esVos);
 };
 // Cada negocio tiene su propio efectivo, y dentro de cada uno, cada persona
 // lleva su caja. La clave junta las dos cosas.
@@ -1633,6 +1641,30 @@ function ControlTienda() {
     if (loading) return;
     if (hayHuerfanos(data)) persist(migrarDatos(data));
   }, [loading, data.negocios]);
+
+  // Cajas fantasma: sesiones que quedaron abiertas a nombre de un usuario
+  // que ya no existe (uno que se borró, o una caja abierta antes de crear
+  // el equipo). Si están vacías —sin monto inicial ni movimientos— se
+  // cierran solas al cargar y el cierre se guarda, así no vuelven a
+  // aparecer ni acá ni en la nube. Si tienen plata quedan a la vista en el
+  // historial para cerrarlas a mano con "Forzar cierre".
+  useEffect(() => {
+    if (loading) return;
+    const usuarios = data.usuarios || [];
+    // Sin equipo cargado no se puede saber quién sobra: no se toca nada
+    if (!usuarios.length) return;
+    const fantasmas = Object.keys(data.cajas || {}).filter((k) => {
+      const c = data.cajas[k];
+      if (!c || !c.abierta) return false;
+      const usr = c.abiertaPorId || k.split("|")[1] || "";
+      if (usuarios.some((u) => u.id === usr)) return false;
+      return !(Number(c.montoInicial) || 0) && !(c.movimientos || []).length;
+    });
+    if (!fantasmas.length) return;
+    const cajas = { ...data.cajas };
+    fantasmas.forEach((k) => { cajas[k] = { ...CAJA_VACIA }; });
+    persist({ ...data, cajas });
+  }, [loading, data.usuarios, data.cajas]);
 
   // Si el guardado falla (disco lleno, modo privado, cuota agotada) hay que
   // avisar SÍ O SÍ: antes el error solo iba a la consola y la pantalla mostraba
@@ -16285,6 +16317,12 @@ function MiCajaCard({ data, persist }) {
   const caja = cajaDe(data, miId, negId);
   const disponible = efectivoEnCaja(caja);
   const abrirCaja = (montoInicial) => {
+    // Nadie abre una caja sin nombre: primero hay que elegir quién sos
+    if (!puedeAbrirCaja(data)) {
+      avisar("Elegí tu usuario antes de abrir la caja: tocá \"Cambiar usuario\" en el menú", { tono: "error" });
+      setShowAbrir(false);
+      return;
+    }
     persist(guardarCaja(data, miId, { abierta: true, montoInicial, abiertaEn: (/* @__PURE__ */ new Date()).toISOString(), abiertaPorId: miId, abiertaPor: nombreUsuario(data, miId), movimientos: [] }, negId));
     setShowAbrir(false);
   };
@@ -16378,6 +16416,12 @@ function CajaRapida({ data, persist, onClose }) {
   const disponible = efectivoEnCaja(caja);
 
   const abrirCaja = (montoInicial) => {
+    // Nadie abre una caja sin nombre: primero hay que elegir quién sos
+    if (!puedeAbrirCaja(data)) {
+      avisar("Elegí tu usuario antes de abrir la caja: tocá \"Cambiar usuario\" en el menú", { tono: "error" });
+      onClose();
+      return;
+    }
     persist(guardarCaja(data, miId, { abierta: true, montoInicial, abiertaEn: (/* @__PURE__ */ new Date()).toISOString(), abiertaPorId: miId, abiertaPor: nombreUsuario(data, miId), movimientos: [] }, negId));
     onClose();
     avisar("Caja de " + negocioActivo(data).nombre + " abierta con " + money(montoInicial));
@@ -18224,7 +18268,7 @@ function NegociosInicio({ data, persist, setTab, filtroNegocio, rango, senalExpo
   else if (sub === "comprobantes") contenido = React.createElement(ComprobantesReportes, { data: dataFiltrada, rango: r });
   else if (sub === "envivo") contenido = React.createElement(EnVivoReportes, { data });
   else if (sub === "dormidos") contenido = React.createElement(SinVenderReportes, { data: dataFiltrada, rango: r, persist });
-  else if (sub === "caja") contenido = React.createElement(CajaReportes, { data: dataFiltrada, rango: r });
+  else if (sub === "caja") contenido = React.createElement(CajaReportes, { data: dataFiltrada, rango: r, persist, dataReal: data });
   else contenido = React.createElement(CarritoAbandonadoReportes, { data: dataFiltrada, rango: r });
 
   return React.createElement(
@@ -27808,10 +27852,48 @@ function MetodosPagoReportes({ data, rango }) {
 }
 
 
-function CajaReportes({ data, rango }) {
+function CajaReportes({ data, rango, persist, dataReal }) {
   const [quien, setQuien] = useState("");
   const [menu, setMenu] = useState(null);
   const [detalle, setDetalle] = useState(null);
+  const [forzando, setForzando] = useState(null);
+  // Los datos completos, sin los filtros de la vista: el cierre forzado se
+  // guarda sobre éstos para no pisar ventas que el filtro dejó afuera.
+  const real = dataReal || data;
+  // Cierra una caja colgada desde el historial: la de alguien que se fue sin
+  // cerrar, o la de un usuario que ya no existe. El efectivo esperado se toma
+  // como contado, así el cierre queda sin diferencia, con sus movimientos
+  // guardados y marcado como forzado.
+  const forzarCierre = (c) => {
+    if (!persist) return;
+    const cajaActual = (real.cajas || {})[c.clave];
+    if (!cajaActual || !cajaActual.abierta) { avisar("Esa caja ya estaba cerrada", { tono: "info" }); return; }
+    const negId = c.clave.split("|")[0];
+    const usrId = cajaActual.abiertaPorId || c.clave.split("|")[1] || "";
+    const neg = listaNegocios(real).find((n) => n.id === negId);
+    const disponible = efectivoEnCaja(cajaActual);
+    const cierre = {
+      id: uid(),
+      usuarioId: usrId,
+      usuarioNombre: cajaActual.abiertaPor || nombreUsuario(real, usrId),
+      negocioId: negId,
+      negocioNombre: neg ? neg.nombre : "",
+      montoInicial: cajaActual.montoInicial || 0,
+      movimientos: cajaActual.movimientos || [],
+      abiertaEn: cajaActual.abiertaEn,
+      cerradaEn: (/* @__PURE__ */ new Date()).toISOString(),
+      efectivoEsperado: disponible,
+      efectivoContado: disponible,
+      diferencia: 0,
+      forzado: true
+    };
+    persist({
+      ...real,
+      cajas: { ...(real.cajas || {}), [c.clave]: { ...CAJA_VACIA } },
+      cajasCerradas: [cierre, ...(real.cajasCerradas || [])]
+    });
+    avisar("Caja de " + cierre.usuarioNombre + " cerrada. El cierre quedó en el historial.");
+  };
   const ventas = data.ventas.filter((v) => rango.enRango(v.fecha));
   // La fecha se toma del reloj de acá: el servidor guarda en horario de
   // Greenwich, así que un cierre de las 23:00 quedaba con la fecha del día
@@ -27971,7 +28053,18 @@ function CajaReportes({ data, rango }) {
                 { key: m, style: { fontSize: 12 } },
                 React.createElement("span", { style: { color: "var(--muted)" } }, (METODO_LABELS[m] || m) + " "),
                 React.createElement("strong", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(monto))
-              ))
+              )),
+
+              // El dueño puede cerrarla desde acá si quedó colgada
+              persist && esJefe(real) && React.createElement(
+                "button",
+                {
+                  onClick: () => setForzando(c),
+                  title: "Cerrar esta caja ahora, aunque la haya abierto otra persona",
+                  style: { marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6, background: "none", border: "1px solid color-mix(in srgb, var(--rose) 45%, transparent)", color: "var(--rose)", borderRadius: 7, padding: "5px 10px", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }
+                },
+                React.createElement(Lock, { size: 12 }), " Forzar cierre"
+              )
             )
           ))
         )
@@ -28041,7 +28134,9 @@ function CajaReportes({ data, rango }) {
                       (dif > 0 ? "+" : "") + money(dif)
                     )
                   ),
-                  React.createElement("td", null, React.createElement(SwingTag, { tone: "denim", small: true }, "Cerrada")),
+                  React.createElement("td", null, c.forzado
+                    ? React.createElement(SwingTag, { tone: "mustard", small: true }, "Forzada")
+                    : React.createElement(SwingTag, { tone: "denim", small: true }, "Cerrada")),
                   React.createElement(
                     "td",
                     { style: { position: "relative" } },
@@ -28073,7 +28168,32 @@ function CajaReportes({ data, rango }) {
           )
     ),
 
-    detalle && React.createElement(DetalleCierreModal, { cierre: detalle, data, onClose: () => setDetalle(null) })
+    detalle && React.createElement(DetalleCierreModal, { cierre: detalle, data, onClose: () => setDetalle(null) }),
+
+    // Confirmación antes de forzar: se muestra de quién es y con cuánto cierra
+    forzando && React.createElement(
+      ModalOverlay,
+      { width: 430 },
+      React.createElement(ModalHeader, { icon: AlertTriangle, title: "Forzar cierre de caja", onClose: () => setForzando(null) }),
+      React.createElement("p", { style: { fontSize: 13, color: "var(--muted)", marginTop: -6, lineHeight: 1.6 } },
+        "Vas a cerrar la caja de ",
+        React.createElement("strong", { style: { color: "var(--ink)" } }, forzando.abiertaPor || "Sin usuario"),
+        forzando.negocioNombre ? " en " + forzando.negocioNombre : "", "."),
+      React.createElement("p", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: 10, lineHeight: 1.6 } },
+        "El efectivo esperado (",
+        React.createElement("strong", { style: { fontFamily: "'IBM Plex Mono', monospace", color: "var(--ink)" } }, money(efectivoEnCaja(forzando))),
+        ") se registra como contado, sin diferencia, y el cierre queda marcado como \u201Cforzado\u201D en el historial."),
+      React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 18 } },
+        React.createElement(Button, { tone: "ghost", onClick: () => setForzando(null), style: { flex: 1, justifyContent: "center" } }, "Cancelar"),
+        React.createElement(
+          "button",
+          {
+            onClick: () => { forzarCierre(forzando); setForzando(null); },
+            style: { flex: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "11px 14px", borderRadius: 9, border: "none", cursor: "pointer", background: "var(--rose)", color: "#fff", fontSize: 13.5, fontWeight: 700, fontFamily: "'Inter', sans-serif" }
+          },
+          React.createElement(Lock, { size: 14 }), " Cerrar caja"
+        ))
+    )
   );
 }
 
@@ -28477,7 +28597,7 @@ function ReportesHub({ data, persist, setTab, rangoBase, filtros }) {
   else if (sub === "comprobantes") contenido = React.createElement(ComprobantesReportes, { data: dataFiltrada, rango });
   else if (sub === "envivo") contenido = React.createElement(EnVivoReportes, { data });
   else if (sub === "dormidos") contenido = React.createElement(SinVenderReportes, { data: dataFiltrada, rango, persist });
-  else if (sub === "caja") contenido = React.createElement(CajaReportes, { data: dataFiltrada, rango });
+  else if (sub === "caja") contenido = React.createElement(CajaReportes, { data: dataFiltrada, rango, persist, dataReal: data });
   else contenido = React.createElement(CarritoAbandonadoReportes, { data: dataFiltrada, rango });
 
   return React.createElement(
