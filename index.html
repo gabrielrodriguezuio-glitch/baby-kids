@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.567";
+const VERSION_APP = "9.575";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -21383,8 +21383,21 @@ function ResolverCambioModal({ data, persist, venta, itemsDevueltos, valorDevuel
   const [error, setError] = useState("");
   const [notaHecha, setNotaHecha] = useState(null);
 
+  const [notasUsadas, setNotasUsadas] = useState([]);
+
+  // Notas sin usar de este cliente: se pueden aplicar acá mismo
+  const notasDelCliente = (data.notasCredito || []).filter((n) =>
+    n.estado === "activa" &&
+    ((venta.clienteId && n.clienteId === venta.clienteId) ||
+     (venta.clienteNombre && n.clienteNombre === venta.clienteNombre)));
+  const creditoAplicado = notasUsadas.reduce((a, id) => {
+    const n = notasDelCliente.find((x) => x.id === id);
+    return a + (n ? n.monto : 0);
+  }, 0);
+
   const valorLleva = lleva.reduce((a, x) => a + (x.precioUnit || 0) * x.cantidad, 0);
-  const diferencia = valorLleva - valorDevuelto;
+  // Lo que dejó más las notas que aplique, contra lo que se lleva
+  const diferencia = valorLleva - valorDevuelto - creditoAplicado;
 
   const q = query.trim().toLowerCase();
   const encontrados = q
@@ -21434,6 +21447,9 @@ function ResolverCambioModal({ data, persist, venta, itemsDevueltos, valorDevuel
   const confirmarCambio = () => {
     if (!lleva.length) return setError("Elegí qué se lleva, o hacé una nota de crédito.");
     const anterior = data;
+    const hora = ahora();
+    const saldo = -diferencia;   // a favor del cliente cuando es positivo
+
     const cambio = {
       id: uid(),
       numero: "C-" + String((data.cambios || []).length + 1).padStart(4, "0"),
@@ -21443,16 +21459,52 @@ function ResolverCambioModal({ data, persist, venta, itemsDevueltos, valorDevuel
       devuelto: itemsDevueltos, entregado: lleva,
       diferencia, motivo: motivo.trim(),
       usuario: usuarioActivo(data),
-      fecha: todayISO(), hora: ahora()
+      fecha: todayISO(), hora
     };
-    persist({ ...data, productos: moverStock(), cambios: [cambio, ...(data.cambios || [])] });
-    avisar(diferencia === 0
-      ? "Cambio hecho"
-      : diferencia > 0
-        ? "Cambio hecho · el cliente paga " + money(diferencia)
-        : "Cambio hecho · se le devuelven " + money(-diferencia),
+
+    // Las notas que aplicó quedan marcadas como usadas
+    let notas = (data.notasCredito || []).map((n) => notasUsadas.indexOf(n.id) >= 0
+      ? { ...n, estado: "usada", usadaEn: todayISO(), usadaHora: hora, usadaPor: usuarioActivo(data) }
+      : n);
+
+    // Si le sobró plata del valor que dejó, se le da una nota por el resto:
+    // sin eso el cliente pierde el saldo por no tener con qué completar.
+    let notaSaldo = null;
+    if (saldo > 0) {
+      notaSaldo = {
+        id: uid(),
+        numero: "NC-" + String((data.notasCredito || []).length + 1).padStart(4, "0"),
+        ventaId: venta.id, ventaFecha: venta.fecha,
+        clienteId: venta.clienteId || "", clienteNombre: venta.clienteNombre || "",
+        negocioId,
+        // El detalle es el saldo, no las prendas: éstas ya se cambiaron
+        items: [{ nombre: "Saldo a favor del cambio " + cambio.numero, talla: "", color: "", cantidad: 1, precioUnit: saldo }],
+        monto: saldo, estado: "activa",
+        motivo: "Saldo del cambio " + cambio.numero,
+        usuario: usuarioActivo(data),
+        fecha: todayISO(), hora
+      };
+      notas = [notaSaldo, ...notas];
+      cambio.notaCreditoId = notaSaldo.id;
+    }
+
+    persist({
+      ...data,
+      productos: moverStock(),
+      notasCredito: notas,
+      cambios: [cambio, ...(data.cambios || [])]
+    });
+
+    avisar(diferencia > 0
+      ? "Cambio hecho · el cliente paga " + money(diferencia)
+      : saldo > 0
+        ? "Cambio hecho · nota de crédito por " + money(saldo)
+        : "Cambio hecho",
       { deshacer: () => persist(anterior) });
-    onListo();
+
+    // Si quedó saldo, se muestra la nota para entregarla
+    if (notaSaldo) setNotaHecha(notaSaldo);
+    else onListo();
   };
 
   const hacerNota = () => {
@@ -21597,6 +21649,44 @@ function ResolverCambioModal({ data, persist, venta, itemsDevueltos, valorDevuel
       ))
     ),
 
+    // Notas que el cliente ya tiene: se pueden aplicar acá
+    notasDelCliente.length > 0 && React.createElement(
+      "div",
+      { style: { marginTop: 14, borderTop: "1px solid var(--line)", paddingTop: 12 } },
+      React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, marginBottom: 8 } },
+        "Tiene ", notasDelCliente.length, notasDelCliente.length === 1 ? " nota sin usar" : " notas sin usar"),
+      notasDelCliente.map((n) => {
+        const puesta = notasUsadas.indexOf(n.id) >= 0;
+        return React.createElement(
+          "button",
+          {
+            key: n.id,
+            onClick: () => setNotasUsadas(puesta
+              ? notasUsadas.filter((x) => x !== n.id)
+              : [...notasUsadas, n.id]),
+            style: {
+              display: "flex", alignItems: "center", gap: 10, width: "100%",
+              textAlign: "left", cursor: "pointer", marginBottom: 6,
+              border: "1.5px solid " + (puesta ? "var(--sage)" : "var(--line)"),
+              background: puesta ? "color-mix(in srgb, var(--sage) 12%, transparent)" : "var(--surface-2)",
+              borderRadius: 9, padding: "9px 12px", color: "var(--ink)",
+              fontFamily: "'Inter', sans-serif"
+            }
+          },
+          React.createElement("span", {
+            style: { width: 17, height: 17, borderRadius: 5, flexShrink: 0,
+                     border: "2px solid " + (puesta ? "var(--sage)" : "var(--line)"),
+                     background: puesta ? "var(--sage)" : "transparent",
+                     display: "flex", alignItems: "center", justifyContent: "center" }
+          }, puesta && React.createElement(Check, { size: 11, color: "#0B0D12", strokeWidth: 3.5 })),
+          React.createElement("span", { style: { flex: 1, minWidth: 0, fontSize: 12.5 } },
+            React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700 } }, n.numero),
+            React.createElement("span", { style: { color: "var(--muted)" } }, " · del ", fechaNumerica(n.fecha))),
+          React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, flexShrink: 0 } }, money(n.monto))
+        );
+      })
+    ),
+
     // La diferencia, que es lo que define cómo termina el cambio
     React.createElement(
       "div",
@@ -21604,16 +21694,24 @@ function ResolverCambioModal({ data, persist, venta, itemsDevueltos, valorDevuel
       React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "var(--muted)", marginBottom: 4 } },
         React.createElement("span", null, "Dejó"),
         React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(valorDevuelto))),
+      creditoAplicado > 0 && React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "var(--sage)", marginBottom: 4 } },
+        React.createElement("span", null, "Notas aplicadas"),
+        React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(creditoAplicado))),
       React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "var(--muted)", marginBottom: 8 } },
         React.createElement("span", null, "Se lleva"),
         React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(valorLleva))),
       React.createElement("div", {
         style: { display: "flex", justifyContent: "space-between", fontSize: 14.5, fontWeight: 700, borderTop: "1px solid var(--line)", paddingTop: 8,
-                 color: diferencia > 0 ? "var(--sage)" : diferencia < 0 ? "var(--rose)" : "var(--ink)" }
+                 color: diferencia > 0 ? "var(--sage)" : diferencia < 0 ? "var(--denim-light)" : "var(--ink)" }
       },
         React.createElement("span", null,
-          diferencia > 0 ? "El cliente paga" : diferencia < 0 ? "Se le debe" : "Justo"),
-        React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(Math.abs(diferencia))))
+          diferencia > 0 ? "El cliente paga" : diferencia < 0 ? "Queda a favor" : "Justo"),
+        React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(Math.abs(diferencia)))),
+      // Se avisa qué va a pasar con ese saldo antes de confirmar
+      diferencia < 0 && React.createElement("p", {
+        style: { fontSize: 11.5, color: "var(--muted)", marginTop: 7, lineHeight: 1.5 }
+      }, "Al confirmar se le entrega una nota de crédito por ", money(-diferencia),
+         " para usar cuando quiera. No vence.")
     ),
 
     React.createElement("div", { style: { height: 12 } }),
@@ -21638,10 +21736,155 @@ function ResolverCambioModal({ data, persist, venta, itemsDevueltos, valorDevuel
   );
 }
 
+// Los cambios que ya se hicieron: qué entró, qué salió y quién lo atendió.
+function HistorialCambios({ data }) {
+  const [query, setQuery] = useState("");
+  const [verNota, setVerNota] = useState(null);
+  const [pagina, setPagina] = useState(1);
+  const porPagina = 15;
+
+  const q = query.trim().toLowerCase();
+  const lista = (data.cambios || [])
+    .filter((c) => {
+      if (!q) return true;
+      const texto = [
+        c.numero || "", c.clienteNombre || "", c.usuario || "", c.motivo || "",
+        (c.devuelto || []).map((x) => x.nombre).join(" "),
+        (c.entregado || []).map((x) => x.nombre).join(" ")
+      ].join(" ").toLowerCase();
+      return q.split(/\s+/).every((x) => texto.includes(x));
+    })
+    .sort((a, b) => (b.fecha + " " + (b.hora || "")).localeCompare(a.fecha + " " + (a.hora || "")));
+
+  const paginas = Math.max(1, Math.ceil(lista.length / porPagina));
+  const paginaSegura = Math.min(pagina, paginas);
+  const enPagina = lista.slice((paginaSegura - 1) * porPagina, paginaSegura * porPagina);
+  useEffect(() => { setPagina(1); }, [q]);
+
+  const linea = (items, signo, color) => (items || []).map((it, k) => React.createElement(
+    "div",
+    { key: k, style: { display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, padding: "3px 0" } },
+    React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color, minWidth: 28 } },
+      signo + it.cantidad),
+    React.createElement("span", { style: { flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+      it.nombre, (it.talla || it.color) ? " · " + [it.talla, it.color].filter(Boolean).join(" ") : ""),
+    React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "var(--muted)" } },
+      money((it.precioUnit || 0) * it.cantidad))
+  ));
+
+  if (verNota) return React.createElement(NotaCreditoModal, {
+    data, nota: verNota, onClose: () => setVerNota(null)
+  });
+
+  return React.createElement(
+    Card,
+    { style: { padding: 0, overflow: "hidden" } },
+    React.createElement(
+      "div",
+      { style: { padding: "18px 20px 12px" } },
+      React.createElement(
+        "div",
+        { style: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 } },
+        React.createElement(SectionTitle, null, "Cambios hechos"),
+        React.createElement(SwingTag, { tone: "ink", small: true }, lista.length)
+      ),
+      React.createElement("input", {
+        value: query, onChange: (e) => setQuery(e.target.value),
+        placeholder: "Buscar por cliente, producto o quién lo atendió\u2026",
+        style: { ...inputStyle, width: "100%" }
+      })
+    ),
+
+    lista.length === 0
+      ? React.createElement("div", { style: { padding: "10px 20px 26px" } },
+          React.createElement(Empty, { icono: ArrowRightLeft, text: q ? "No hay cambios con esa búsqueda." : "Todavía no se hizo ningún cambio." }))
+      : React.createElement(
+          "div",
+          { style: { display: "flex", flexDirection: "column" } },
+          enPagina.map((c) => {
+            const nota = c.notaCreditoId
+              ? (data.notasCredito || []).find((n) => n.id === c.notaCreditoId)
+              : null;
+            return React.createElement(
+              "div",
+              { key: c.id, style: { padding: "14px 20px", borderTop: "1px solid var(--line)" } },
+              React.createElement(
+                "div",
+                { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 } },
+                React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 13 } }, c.numero || "—"),
+                React.createElement("span", { style: { flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+                  c.clienteNombre || "Consumidor final"),
+                React.createElement("span", {
+                  style: { fontSize: 12.5, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace",
+                           color: c.diferencia > 0 ? "var(--sage)" : c.diferencia < 0 ? "var(--rose)" : "var(--muted)" }
+                }, c.diferencia === 0 ? "justo" : (c.diferencia > 0 ? "+" : "") + money(c.diferencia))
+              ),
+
+              React.createElement(
+                "div",
+                { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14 } },
+                React.createElement(
+                  "div",
+                  null,
+                  React.createElement("div", { style: { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.07, color: "var(--muted)", fontWeight: 700, marginBottom: 4 } }, "Devolvió"),
+                  linea(c.devuelto, "−", "var(--rose)")
+                ),
+                (c.entregado || []).length > 0
+                  ? React.createElement(
+                      "div",
+                      null,
+                      React.createElement("div", { style: { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.07, color: "var(--muted)", fontWeight: 700, marginBottom: 4 } }, "Se llevó"),
+                      linea(c.entregado, "+", "var(--sage)")
+                    )
+                  : nota && React.createElement(
+                      "div",
+                      null,
+                      React.createElement("div", { style: { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.07, color: "var(--muted)", fontWeight: 700, marginBottom: 4 } }, "Se llevó"),
+                      React.createElement("button", {
+                        onClick: () => setVerNota(nota),
+                        style: { display: "inline-flex", alignItems: "center", gap: 7, background: "var(--surface-2)", border: "1.5px solid var(--line)", borderRadius: 9, padding: "8px 12px", cursor: "pointer", color: "var(--ink)", fontSize: 12.5, fontFamily: "'Inter', sans-serif" }
+                      },
+                        React.createElement(Receipt, { size: 14, color: "var(--muted)" }),
+                        "Nota ", nota.numero, " · ", money(nota.monto),
+                        React.createElement(SwingTag, { tone: nota.estado === "activa" ? "sage" : "ink", small: true },
+                          nota.estado === "activa" ? "Sin usar" : "Usada"))
+                    )
+              ),
+
+              React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 9 } },
+                fechaNumerica(c.fecha), c.hora ? " " + c.hora : "",
+                c.usuario ? " · lo atendió " + c.usuario : "",
+                c.motivo ? " · " + c.motivo : "")
+            );
+          })
+        ),
+
+    paginas > 1 && React.createElement(
+      "div",
+      { style: { padding: "14px 20px 18px", borderTop: "1px solid var(--line)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" } },
+      React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)" } },
+        "Página ", paginaSegura, " de ", paginas),
+      React.createElement(
+        "div",
+        { style: { display: "flex", gap: 6 } },
+        React.createElement(Button, {
+          tone: "ghost", onClick: () => setPagina(Math.max(1, paginaSegura - 1)),
+          disabled: paginaSegura === 1, style: { padding: "8px 14px" }
+        }, "Anterior"),
+        React.createElement(Button, {
+          tone: "ghost", onClick: () => setPagina(Math.min(paginas, paginaSegura + 1)),
+          disabled: paginaSegura === paginas, style: { padding: "8px 14px" }
+        }, "Siguiente")
+      )
+    )
+  );
+}
+
 // ===== Cambios de prendas =====
 // El cliente trae algo y se lleva otra cosa. Si no encuentra nada que le
 // sirva, se le da una nota de crédito para volver cuando entre mercadería.
 function CambiosView({ data, persist, onCerrar }) {
+  const [vista, setVista] = useState("nuevo");  // nuevo · historial
   const [paso, setPaso] = useState("buscar");   // buscar · elegir · resolver
   const [query, setQuery] = useState("");
   const [escaneando, setEscaneando] = useState(false);
@@ -21700,8 +21943,28 @@ function CambiosView({ data, persist, onCerrar }) {
         })())
     ),
 
+    // Dos vistas: hacer un cambio nuevo o mirar los que ya se hicieron
+    React.createElement(
+      "div",
+      { style: { display: "flex", gap: 4, padding: 5, marginBottom: 16, background: "var(--surface-2)", borderRadius: 10, width: "fit-content" } },
+      [["nuevo", "Hacer un cambio"], ["historial", "Historial"]].map(([id, label]) =>
+        React.createElement("button", {
+          key: id,
+          onClick: () => setVista(id),
+          style: {
+            padding: "8px 16px", borderRadius: 8, cursor: "pointer", border: "none",
+            background: vista === id ? "var(--surface)" : "transparent",
+            color: vista === id ? "var(--ink)" : "var(--muted)",
+            fontSize: 13, fontWeight: vista === id ? 650 : 500,
+            fontFamily: "'Inter', sans-serif"
+          }
+        }, label))
+    ),
+
+    vista === "historial" && React.createElement(HistorialCambios, { data }),
+
     // Paso 1: encontrar la venta
-    paso === "buscar" && React.createElement(
+    vista === "nuevo" && paso === "buscar" && React.createElement(
       Card,
       null,
       React.createElement("div", { style: { fontSize: 13.5, fontWeight: 650, marginBottom: 10 } }, "¿Qué compró?"),
@@ -21768,7 +22031,7 @@ function CambiosView({ data, persist, onCerrar }) {
     }),
 
     // Paso 2: qué devuelve
-    paso === "elegir" && venta && React.createElement(
+    vista === "nuevo" && paso === "elegir" && venta && React.createElement(
       Card,
       null,
       React.createElement(
@@ -21814,7 +22077,7 @@ function CambiosView({ data, persist, onCerrar }) {
     ),
 
     // Paso 3: cómo se resuelve
-    paso === "resolver" && venta && React.createElement(ResolverCambioModal, {
+    vista === "nuevo" && paso === "resolver" && venta && React.createElement(ResolverCambioModal, {
       data, persist, venta, itemsDevueltos, valorDevuelto, negocioId: negId,
       onListo: () => { setPaso("buscar"); setVenta(null); setDevuelve({}); setQuery(""); },
       onVolver: () => setPaso("elegir")
