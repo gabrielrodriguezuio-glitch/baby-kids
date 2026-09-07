@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.692";
+const VERSION_APP = "9.694";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -5000,7 +5000,8 @@ async function traerParcial(tablas, quienEntro) {
     salida.cajas = (cs || []).reduce((acc, c) => {
       acc[c.clave] = {
         abierta: !!c.abierta, montoInicial: Number(c.monto_inicial) || 0,
-        abiertaEn: c.abierta_en || null, abiertaPor: c.usuario_nombre || "",
+        abiertaEn: c.abierta_en || null,
+        abiertaPor: c.usuario_nombre || "", abiertaPorId: c.clave.split("|")[1] || "",
         movimientos: c.movimientos || []
       };
       return acc;
@@ -5065,7 +5066,8 @@ async function traerEsencial(quienEntro) {
     cajas: (cajasNube.data || []).reduce((acc, c) => {
       acc[c.clave] = {
         abierta: !!c.abierta, montoInicial: Number(c.monto_inicial) || 0,
-        abiertaEn: c.abierta_en || null, abiertaPor: c.usuario_nombre || "",
+        abiertaEn: c.abierta_en || null,
+        abiertaPor: c.usuario_nombre || "", abiertaPorId: c.clave.split("|")[1] || "",
         movimientos: c.movimientos || []
       };
       return acc;
@@ -27770,13 +27772,17 @@ function CajaReportes({ data, rango }) {
     .map((c) => {
       const negId = c.clave.split("|")[0];
       const neg = listaNegocios(data).find((n) => n.id === negId);
+      // Si la caja se abrió en este dispositivo y todavía no subió, la copia
+      // local no trae el nombre: se busca por el usuario de la clave.
+      const quienId = c.abiertaPorId || c.clave.split("|")[1] || "";
+      const quien = c.abiertaPor || nombreUsuario(data, quienId);
       // Lo cobrado desde que abrió, por medio de pago: la caja sólo anota el
       // efectivo, así que sin esto no se ve lo que entró por transferencia.
       const desde = c.abiertaEn ? new Date(c.abiertaEn).getTime() : 0;
       const suyas = (data.ventas || []).filter((v) => {
         if (esDevolucion(v)) return false;
         if (v.negocioId && v.negocioId !== negId) return false;
-        if (c.abiertaPor && v.usuarioNombre && v.usuarioNombre !== c.abiertaPor) return false;
+        if (quien && quien !== "Sin usuario" && v.usuarioNombre && v.usuarioNombre !== quien) return false;
         const cuando = momentoDeVenta(v);
         return cuando == null ? v.fecha === diaLocal(c.abiertaEn) : cuando >= desde - 60000;
       });
@@ -27788,7 +27794,7 @@ function CajaReportes({ data, rango }) {
           porMedio[m] = (porMedio[m] || 0) + (p.monto || 0);
         });
       });
-      return { ...c, negocioNombre: neg ? neg.nombre : "",
+      return { ...c, negocioNombre: neg ? neg.nombre : "", abiertaPor: quien,
         ventas: suyas.length, porMedio,
         recaudado: Object.values(porMedio).reduce((a, x) => a + x, 0) };
     })
