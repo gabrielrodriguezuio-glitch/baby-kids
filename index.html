@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.657";
+const VERSION_APP = "9.659";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -23298,7 +23298,15 @@ function UsuariosView({ data, persist, senalUsuario, senalInvitaciones, senalRol
   const [pagina, setPagina] = useState(1);
   const POR_PAGINA = 8;
 
-  useEffect(() => { if (senalUsuario) { setEditando({}); } }, [senalUsuario]);
+  // Se recuerda cuál fue la última señal atendida: sin esto, si la pantalla
+  // se vuelve a montar, el formulario se abría solo.
+  const ultimaSenal = React.useRef(senalUsuario);
+  useEffect(() => {
+    if (senalUsuario && senalUsuario !== ultimaSenal.current) {
+      ultimaSenal.current = senalUsuario;
+      setEditando({});
+    }
+  }, [senalUsuario]);
   useEffect(() => { if (senalInvitaciones) setVerInvitaciones(true); }, [senalInvitaciones]);
   useEffect(() => { if (senalRoles) setVerRoles(true); }, [senalRoles]);
 
@@ -23468,7 +23476,7 @@ function UsuariosView({ data, persist, senalUsuario, senalInvitaciones, senalRol
                       MenuFila,
                       { ancla: menuAbierto.rect, onClose: () => setMenuAbierto(null) },
                       [
-                        ["Editar usuario", () => { setEditando(u); setMenuAbierto(null); }],
+                        ["Editar usuario", () => { setEditando({ id: u.id }); setMenuAbierto(null); }],
                         [u.esVos ? "Ya sos vos" : "Marcar como vos", () => marcarComoVos(u), false, u.esVos],
                         [sinAcceso ? "Dar acceso" : "Quitar acceso", () => toggleActivo(u)],
                         ["Eliminar", () => eliminar(u), true]
@@ -23517,7 +23525,10 @@ function UsuariosView({ data, persist, senalUsuario, senalInvitaciones, senalRol
     }),
     editando && React.createElement(UsuarioModal, {
       data,
-      inicial: editando.id ? editando : null,
+      // Se busca por id en cada render: si los datos se refrescan mientras el
+      // formulario está abierto, sigue apuntando al integrante correcto.
+      key: editando.id || "nuevo",
+      inicial: editando.id ? (usuarios.find((u) => u.id === editando.id) || null) : null,
       onGuardar: guardarUsuario,
       onClose: () => setEditando(null)
     }),
