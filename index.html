@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.668";
+const VERSION_APP = "9.675";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1557,19 +1557,36 @@ function ControlTienda() {
     // Red de seguridad: cada 20 segundos se revisa si hay algo nuevo. Con la
     // sincronización andando no cuesta nada, y si un aviso se perdió, la
     // venta del otro aparece igual sin tener que recargar.
-    const revisar = setInterval(() => {
+    // Red de seguridad para TODAS las funciones: se consulta un "pulso" que
+    // devuelve una sola fila con la última novedad de cada tabla. Si algo
+    // cambió y el aviso no llegó, se trae sólo eso. Pesa unos 300 bytes
+    // contra las 11.000 filas que costaría revisar tabla por tabla.
+    let ultimoPulso = null;
+    const revisar = async () => {
       if (document.hidden || guardando.current > 0) return;
-      refrescar("ventas");
-    }, 20000);
+      try {
+        const { data: filas, error } = await nube.from("pulso").select("*").limit(1);
+        if (error || !filas || !filas[0]) return;
+        const ahora = filas[0];
+        if (ultimoPulso) {
+          Object.keys(ahora).forEach((tabla) => {
+            if (String(ahora[tabla]) !== String(ultimoPulso[tabla])) refrescar(tabla);
+          });
+        }
+        ultimoPulso = ahora;
+      } catch (e) {}
+    };
+    revisar();
+    const reloj = setInterval(revisar, 15000);
 
     // Al volver a la pestaña también se refresca: si el aviso se perdió
     // porque el teléfono estaba dormido, así se recupera igual.
-    const alVolver = () => { if (!document.hidden) refrescar(); };
+    const alVolver = () => { if (!document.hidden) revisar(); };
     document.addEventListener("visibilitychange", alVolver);
 
     return () => {
       clearTimeout(pendiente);
-      clearInterval(revisar);
+      clearInterval(reloj);
       document.removeEventListener("visibilitychange", alVolver);
       nube.removeChannel(canal);
     };
@@ -27569,7 +27586,27 @@ function CajaReportes({ data, rango }) {
     .map((c) => {
       const negId = c.clave.split("|")[0];
       const neg = listaNegocios(data).find((n) => n.id === negId);
-      return { ...c, negocioNombre: neg ? neg.nombre : "" };
+      // Lo cobrado desde que abrió, por medio de pago: la caja sólo anota el
+      // efectivo, así que sin esto no se ve lo que entró por transferencia.
+      const desde = c.abiertaEn ? new Date(c.abiertaEn).getTime() : 0;
+      const suyas = (data.ventas || []).filter((v) => {
+        if (esDevolucion(v)) return false;
+        if (v.negocioId && v.negocioId !== negId) return false;
+        if (c.abiertaPor && v.usuarioNombre && v.usuarioNombre !== c.abiertaPor) return false;
+        const cuando = momentoDeVenta(v);
+        return cuando == null ? v.fecha === diaLocal(c.abiertaEn) : cuando >= desde - 60000;
+      });
+      const porMedio = {};
+      suyas.forEach((v) => {
+        const partes = (v.pagos && v.pagos.length) ? v.pagos : [{ metodo: v.metodoPago, monto: v.total }];
+        partes.forEach((p) => {
+          const m = p.metodo || "otro";
+          porMedio[m] = (porMedio[m] || 0) + (p.monto || 0);
+        });
+      });
+      return { ...c, negocioNombre: neg ? neg.nombre : "",
+        ventas: suyas.length, porMedio,
+        recaudado: Object.values(porMedio).reduce((a, x) => a + x, 0) };
     })
     .sort((a, b) => String(b.abiertaEn || "").localeCompare(String(a.abiertaEn || "")));
   // Quiénes cerraron caja en el período: sólo se ofrecen esos
@@ -27640,8 +27677,16 @@ function CajaReportes({ data, rango }) {
       abiertas.length > 0 && React.createElement(
         "div",
         { style: { padding: "6px 20px 16px" } },
-        React.createElement("div", { style: { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.07, color: "var(--muted)", fontWeight: 700, marginBottom: 9 } },
-          abiertas.length === 1 ? "Caja abierta ahora" : abiertas.length + " cajas abiertas ahora"),
+        React.createElement(
+          "div",
+          { style: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, marginBottom: 9, flexWrap: "wrap" } },
+          React.createElement("span", { style: { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.07, color: "var(--muted)", fontWeight: 700 } },
+            abiertas.length === 1 ? "Caja abierta ahora" : abiertas.length + " cajas abiertas ahora"),
+          React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)" } },
+            "Llevan ",
+            React.createElement("strong", { style: { fontFamily: "'IBM Plex Mono', monospace", color: "var(--ink)" } },
+              money(abiertas.reduce((a, c) => a + c.recaudado, 0))))
+        ),
         React.createElement(
           "div",
           { style: { display: "flex", flexDirection: "column", gap: 8 } },
@@ -27660,9 +27705,29 @@ function CajaReportes({ data, rango }) {
               "div",
               { style: { textAlign: "right" } },
               React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, fontWeight: 700 } },
-                money(efectivoEnCaja(c))),
+                money(c.recaudado)),
               React.createElement("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 1 } },
-                "abrió con ", money(c.montoInicial || 0))
+                c.ventas, c.ventas === 1 ? " venta" : " ventas")
+            ),
+
+            // Por dónde entró la plata. El efectivo aparte, porque es el que
+            // se cuenta al cerrar.
+            React.createElement(
+              "div",
+              { style: { width: "100%", display: "flex", gap: 14, flexWrap: "wrap", borderTop: "1px solid color-mix(in srgb, var(--sage) 25%, transparent)", paddingTop: 9, marginTop: 2 } },
+              React.createElement(
+                "span",
+                { style: { fontSize: 12 } },
+                React.createElement("span", { style: { color: "var(--muted)" } }, "En caja "),
+                React.createElement("strong", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(efectivoEnCaja(c))),
+                React.createElement("span", { style: { color: "var(--muted)", fontSize: 11 } }, " (abrió con " + money(c.montoInicial || 0) + ")")
+              ),
+              Object.entries(c.porMedio).sort((a, b) => b[1] - a[1]).map(([m, monto]) => React.createElement(
+                "span",
+                { key: m, style: { fontSize: 12 } },
+                React.createElement("span", { style: { color: "var(--muted)" } }, (METODO_LABELS[m] || m) + " "),
+                React.createElement("strong", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(monto))
+              ))
             )
           ))
         )
