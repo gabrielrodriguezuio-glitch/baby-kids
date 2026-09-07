@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.659";
+const VERSION_APP = "9.662";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -17808,9 +17808,17 @@ function FiltrosNegocios({ data, negocios, filtroNegocio, setFiltroNegocio, rang
           "button",
           {
             onClick: () => setAbreNegocios(!abreNegocios),
-            style: { display: "inline-flex", alignItems: "center", gap: 8, height: 40, maxWidth: "min(190px, 32vw)", minWidth: 0, background: "var(--surface-2)", border: "1.5px solid var(--line)", borderRadius: 10, padding: "0 14px", fontSize: 13.5, fontWeight: 600, fontFamily: "'Inter', sans-serif", color: "var(--ink)", cursor: "pointer", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", flexShrink: 1 }
+            // Con el color del local elegido: se ve de un vistazo qué se está
+            // mirando, sin leer. Redondeado, para distinguirlo de los filtros.
+            style: { display: "inline-flex", alignItems: "center", gap: 9, height: 40, maxWidth: "min(200px, 34vw)", minWidth: 0,
+              background: negocioFiltro ? "color-mix(in srgb, " + negocioFiltro.color + " 16%, var(--surface-2))" : "var(--surface-2)",
+              border: "1.5px solid " + (negocioFiltro ? negocioFiltro.color : "var(--line)"),
+              borderRadius: 999, padding: "0 16px", fontSize: 13.5, fontWeight: 650, fontFamily: "'Inter', sans-serif", color: "var(--ink)", cursor: "pointer", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", flexShrink: 1 }
           },
-          React.createElement(LayoutGrid, { size: 15, color: "var(--muted)", strokeWidth: 1.9 }),
+          React.createElement("span", {
+            style: { width: 9, height: 9, borderRadius: "50%", flexShrink: 0,
+              background: negocioFiltro ? negocioFiltro.color : "var(--muted)" }
+          }),
           negocioFiltro ? negocioFiltro.nombre : "Todos los negocios",
           React.createElement(ChevronDown, { size: 15, color: "var(--muted)", style: { transform: abreNegocios ? "rotate(180deg)" : "none", transition: "transform .15s ease" } })
         ),
@@ -17830,38 +17838,60 @@ function FiltrosNegocios({ data, negocios, filtroNegocio, setFiltroNegocio, rang
           ))
         )
       ),
-      setFiltros && React.createElement(
-        "button",
-        {
-          onClick: () => setVerFiltros(true),
-          title: "Filtrar por método de pago, estado o usuario",
-          style: { display: "inline-flex", alignItems: "center", gap: 7, height: 40, padding: "0 12px", borderRadius: 10, border: "1.5px solid " + (activos ? "var(--denim)" : "var(--line)"), background: activos ? "var(--denim-soft)" : "var(--surface-2)", color: "var(--ink)", fontSize: 12.5, fontWeight: 550, fontFamily: "'Inter', sans-serif", cursor: "pointer", flexShrink: 0 }
-        },
-        React.createElement(SlidersHorizontal, { size: 15, color: "var(--muted)", strokeWidth: 1.9 }),
-        // Con filtros puestos se ve el nombre; sin ellos alcanza el ícono, y
-        // así la barra entra completa en el celular.
-        activos ? "Filtros" : "",
-        !!activos && React.createElement("span", { style: { background: "var(--denim)", color: "var(--on-accent)", borderRadius: 999, fontSize: 11, fontWeight: 700, padding: "1px 7px" } }, activos)
-      ),
+
       verFiltros && setFiltros && React.createElement(FiltrosReportesModal, {
         data,
         valores: fs,
         onAplicar: (nf) => { setFiltros(nf); setVerFiltros(false); },
         onClose: () => setVerFiltros(false)
       }),
-      // Cada fecha en su propia caja, con el rótulo arriba: se entiende cuál
-      // es cuál sin tener que deducirlo por la posición.
-      React.createElement(CampoFecha, { label: "Fecha desde", valor: rango.desde, max: rango.hasta, onCambiar: rango.setDesde }),
-      React.createElement(CampoFecha, { label: "Fecha hasta", valor: rango.hasta, min: rango.desde, onCambiar: rango.setHasta }),
-      React.createElement("div", { style: { marginLeft: "auto", display: "flex", gap: 8, alignItems: "center", flexShrink: 0 } },
+      // Las dos fechas en un mismo recuadro: son una sola decisión, el
+      // período que se está mirando.
+      React.createElement(
+        "div",
+        { style: { display: "flex", alignItems: "center", height: 40, background: "var(--surface-2)", border: "1.5px solid var(--line)", borderRadius: 10, overflow: "hidden", flexShrink: 0 } },
+        React.createElement("input", {
+          type: "date", value: rango.desde, max: rango.hasta,
+          onChange: (e) => rango.setDesde(e.target.value),
+          title: "Desde",
+          style: { background: "none", border: "none", outline: "none", color: "var(--ink)", fontSize: 13, fontWeight: 600, padding: "0 12px", height: "100%", fontFamily: "'Inter', sans-serif", colorScheme: "dark" }
+        }),
+        React.createElement("span", { style: { color: "var(--muted)", fontSize: 13, flexShrink: 0 } }, "\u2192"),
+        React.createElement("input", {
+          type: "date", value: rango.hasta, min: rango.desde,
+          onChange: (e) => rango.setHasta(e.target.value),
+          title: "Hasta",
+          style: { background: "none", border: "none", outline: "none", color: "var(--ink)", fontSize: 13, fontWeight: 600, padding: "0 12px", height: "100%", fontFamily: "'Inter', sans-serif", colorScheme: "dark" }
+        })
+      ),
+      // Filtros y acciones juntos, en un mismo recuadro: los dos son "qué
+      // hago con lo que estoy mirando".
+      React.createElement("div", { style: { marginLeft: "auto", display: "flex", alignItems: "stretch", background: "var(--surface-2)", border: "1.5px solid var(--line)", borderRadius: 10, overflow: "hidden", flexShrink: 0, height: 40 } },
+        setFiltros && React.createElement(
+          "button",
+          {
+            onClick: () => setVerFiltros(true),
+            title: "Filtrar por método de pago, estado o usuario",
+            style: { display: "inline-flex", alignItems: "center", gap: 7, background: activos ? "var(--denim-soft)" : "none", border: "none", cursor: "pointer", color: "var(--ink)", fontSize: 12.5, fontWeight: 600, padding: "0 13px", fontFamily: "'Inter', sans-serif" }
+          },
+          React.createElement(SlidersHorizontal, { size: 15, color: "var(--muted)", strokeWidth: 1.9 }),
+          activos ? "Filtros" : "",
+          !!activos && React.createElement("span", { style: { background: "var(--denim)", color: "var(--on-accent)", borderRadius: 999, fontSize: 11, fontWeight: 700, padding: "1px 7px" } }, activos)
+        ),
+        setFiltros && React.createElement("span", { style: { width: 1, background: "var(--line)", flexShrink: 0 } }),
+        verFiltros && setFiltros && React.createElement(FiltrosReportesModal, {
+          data, valores: fs,
+          onAplicar: (nf) => { setFiltros(nf); setVerFiltros(false); },
+          onClose: () => setVerFiltros(false)
+        }),
         React.createElement(
           "div",
-          { style: { position: "relative" } },
+          { style: { position: "relative", display: "flex" } },
           React.createElement(
             "button",
             {
               onClick: () => setAbreMas(!abreMas),
-              style: { border: "1.5px solid var(--line)", background: "var(--surface-2)", borderRadius: 10, width: 40, height: 40, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "var(--ink)" }
+              style: { border: "none", background: "none", width: 42, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "var(--ink)" }
             },
             React.createElement(MoreHorizontal, { size: 17 })
           ),
