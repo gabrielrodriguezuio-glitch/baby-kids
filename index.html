@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.560";
+const VERSION_APP = "9.567";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -4180,7 +4180,7 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
       const fila = { nombre: l.nombre, ajuste_pct: Number(l.ajustePct) || 0 };
       const { error } = previo
         ? await nube.from("listas_precio").update(fila).eq("id", l.id)
-        : await nube.from("listas_precio").insert({ id: l.id, ...fila });
+        : await nube.from("listas_precio").insert(fila);
       if (error) throw new Error(error.message);
     } catch (e) {
       if (avisarProblema) avisarProblema("La lista de precios no se guardó: " + String((e && e.message) || e));
@@ -4263,7 +4263,8 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
     try {
       const fila = {
         numero: n.numero || null,
-        venta_id: n.ventaId || null, venta_fecha: n.ventaFecha || null,
+        venta_id: /^[0-9a-f-]{36}$/i.test(String(n.ventaId || "")) ? n.ventaId : null,
+        venta_fecha: n.ventaFecha || null,
         cliente_id: n.clienteId ? idRealCliente(n.clienteId) : null,
         cliente_nombre: n.clienteNombre || null,
         negocio_id: n.negocioId || null,
@@ -4275,7 +4276,7 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
       };
       const { error } = previo
         ? await nube.from("notas_credito").update(fila).eq("id", n.id)
-        : await nube.from("notas_credito").insert({ id: n.id, ...fila });
+        : await nube.from("notas_credito").insert(fila);
       if (error) throw new Error(error.message);
     } catch (e) {
       if (avisarProblema) avisarProblema("La nota de crédito no se guardó: " + String((e && e.message) || e));
@@ -4285,9 +4286,13 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
   const cambiosAntes = new Set((antes.cambios || []).map((c) => c.id));
   for (const c of (despues.cambios || []).filter((c) => !cambiosAntes.has(c.id))) {
     try {
+      // Sin el id: la app usa el suyo para trabajar en pantalla, pero la base
+      // espera su propio formato y lo genera sola.
       const { error } = await nube.from("cambios").insert({
-        id: c.id, numero: c.numero || null,
-        venta_id: c.ventaId || null,
+        numero: c.numero || null,
+        // Sólo si la venta ya está en la base: una venta recién hecha todavía
+        // puede tener el id temporal de la app.
+        venta_id: /^[0-9a-f-]{36}$/i.test(String(c.ventaId || "")) ? c.ventaId : null,
         cliente_nombre: c.clienteNombre || null,
         negocio_id: c.negocioId || null,
         devuelto: c.devuelto || [], entregado: c.entregado || [],
@@ -4327,7 +4332,7 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
       };
       const { error } = previo
         ? await nube.from("pedidos").update(fila).eq("id", p.id)
-        : await nube.from("pedidos").insert({ id: p.id, ...fila });
+        : await nube.from("pedidos").insert(fila);
       if (error) throw new Error(error.message);
     } catch (e) {
       if (avisarProblema) avisarProblema("El pedido no se guardó: " + String((e && e.message) || e));
@@ -4341,7 +4346,6 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
   for (const d of (despues.devolucionesReparto || []).filter((d) => !devolAntes.has(d.id))) {
     try {
       const { error } = await nube.from("devoluciones_reparto").insert({
-        id: d.id,
         pedido_id: d.pedidoId || null,
         cliente_id: d.clienteId ? idRealCliente(d.clienteId) : null,
         cliente_nombre: d.clienteNombre || null,
@@ -4592,7 +4596,7 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
       };
       const { error } = previo
         ? await nube.from("negocios").update(fila).eq("id", n.id)
-        : await nube.from("negocios").insert({ id: n.id, ...fila });
+        : await nube.from("negocios").insert(fila);
       if (error) throw new Error(error.message);
     } catch (e) {
       if (avisarProblema) avisarProblema("El negocio no se guardó: " + String((e && e.message) || e));
@@ -25980,9 +25984,11 @@ function VentasReportes({ data, rango, persist }) {
   };
   // Se ordena acá y no sólo al traer de la nube: una venta que entra por la
   // sincronización se agrega al final, y sin esto quedaba abajo de todo.
+  // La hora viene como "02:30 p. m.", así que compararla como texto ponía las
+  // de la mañana antes que las de la tarde. Se convierte a un número primero.
   const todas = data.ventas
     .filter((v) => rango.enRango(v.fecha))
-    .sort((a, b) => (b.fecha + " " + (b.horaTexto || "")).localeCompare(a.fecha + " " + (a.horaTexto || "")));
+    .sort((a, b) => (momentoDeVenta(b) || 0) - (momentoDeVenta(a) || 0));
   const [escaneandoVenta, setEscaneandoVenta] = useState(false);
   const q = busqueda.trim().toLowerCase();
   // Cada palabra tiene que aparecer en algún lado de la venta, así se puede
@@ -26024,6 +26030,16 @@ function VentasReportes({ data, rango, persist }) {
     setUltimaTocada(id);
   };
   const idsVisibles = visibles.map((v) => v.id);
+
+  // Paginado: con cientos de ventas la tabla se hacía interminable.
+  const [pagina, setPagina] = useState(1);
+  const [porPagina, setPorPagina] = useState(25);
+  const paginas = Math.max(1, Math.ceil(visibles.length / porPagina));
+  const paginaSegura = Math.min(pagina, paginas);
+  const desde = (paginaSegura - 1) * porPagina;
+  const enPagina = visibles.slice(desde, desde + porPagina);
+  // Al buscar o cambiar el período se vuelve al principio
+  useEffect(() => { setPagina(1); }, [q, rango.desde, rango.hasta, porPagina]);
   const todasMarcadas = idsVisibles.length > 0 && idsVisibles.every(estaSel);
   const alternarTodas = () => {
     setSeleccionadas(todasMarcadas ? [] : idsVisibles);
@@ -26190,7 +26206,7 @@ function VentasReportes({ data, rango, persist }) {
                     style: { cursor: "pointer", width: 15, height: 15, accentColor: "var(--denim)" }
                   })),
                 React.createElement("th", null, "ID"), React.createElement("th", { style: { width: 86 } }, "Fecha"), React.createElement("th", null, "Usuario"), React.createElement("th", null, "Cliente"), React.createElement("th", null, "Productos"), React.createElement("th", null, "M\xE9todo de Pago"), React.createElement("th", { style: { textAlign: "right" } }, "Total"), React.createElement("th", { style: { textAlign: "right" } }, "Estado"))),
-              React.createElement("tbody", null, visibles.map((v) => {
+              React.createElement("tbody", null, enPagina.map((v) => {
                 const dev = esDevolucion(v);
                 const anulada = !dev && ventaTotalmenteDevuelta(data, v);
                 const conDevolucionParcial = !dev && !anulada && Object.keys(devueltoDeVenta(data, v.id)).length > 0;
@@ -26270,7 +26286,59 @@ function VentasReportes({ data, rango, persist }) {
               );
               }))
             )
-          )
+          ),
+
+      // La paginación va dentro de la tarjeta, igual que en Productos y Stock
+      paginas > 1 && React.createElement("div", { style: { height: 1, background: "var(--line)", margin: "0 22px" } }),
+      paginas > 1 && React.createElement(
+        "div",
+        { style: { padding: "14px 22px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" } },
+        React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)" } },
+          "Mostrando ", desde + 1, " a ", Math.min(desde + porPagina, visibles.length),
+          " de ", visibles.length),
+        React.createElement(
+          "div",
+          { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" } },
+          React.createElement("button", {
+            onClick: () => setPagina(Math.max(1, paginaSegura - 1)),
+            disabled: paginaSegura === 1,
+            style: {
+              width: 36, height: 36, borderRadius: 9, cursor: paginaSegura === 1 ? "default" : "pointer",
+              border: "1.5px solid var(--line)", background: "var(--surface-2)",
+              color: paginaSegura === 1 ? "var(--muted)" : "var(--ink)",
+              display: "flex", alignItems: "center", justifyContent: "center", opacity: paginaSegura === 1 ? 0.5 : 1
+            }
+          }, React.createElement(ChevronRight, { size: 17, style: { transform: "rotate(180deg)" } })),
+          numerosDePagina(paginaSegura, paginas).map((n, k) => n === "..."
+            ? React.createElement("span", { key: "p" + k, style: { color: "var(--muted)", padding: "0 4px" } }, "\u2026")
+            : React.createElement("button", {
+                key: "p" + k,
+                onClick: () => setPagina(n),
+                style: {
+                  minWidth: 36, height: 36, borderRadius: 9, cursor: "pointer", padding: "0 10px",
+                  border: "1.5px solid " + (n === paginaSegura ? "var(--denim)" : "var(--line)"),
+                  background: n === paginaSegura ? "var(--denim-soft)" : "var(--surface-2)",
+                  color: "var(--ink)", fontSize: 13, fontWeight: n === paginaSegura ? 700 : 500,
+                  fontFamily: "'Inter', sans-serif"
+                }
+              }, n)),
+          React.createElement("button", {
+            onClick: () => setPagina(Math.min(paginas, paginaSegura + 1)),
+            disabled: paginaSegura === paginas,
+            style: {
+              width: 36, height: 36, borderRadius: 9, cursor: paginaSegura === paginas ? "default" : "pointer",
+              border: "1.5px solid var(--line)", background: "var(--surface-2)",
+              color: paginaSegura === paginas ? "var(--muted)" : "var(--ink)",
+              display: "flex", alignItems: "center", justifyContent: "center", opacity: paginaSegura === paginas ? 0.5 : 1
+            }
+          }, React.createElement(ChevronRight, { size: 17 })),
+          React.createElement("select", {
+            value: porPagina,
+            onChange: (e) => { setPorPagina(Number(e.target.value)); setPagina(1); },
+            style: { ...inputStyle, height: 36, width: "auto", marginLeft: 4, fontSize: 12.5 }
+          }, [10, 25, 50, 100].map((n) => React.createElement("option", { key: n, value: n }, n + " por página")))
+        )
+      )
     ),
     devolviendo && React.createElement(DevolucionModal, { data, venta: devolviendo, onConfirmar: confirmarDevolucion, onClose: () => setDevolviendo(null) }),
     anulando && React.createElement(AnularVentaModal, {
