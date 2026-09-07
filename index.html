@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.620";
+const VERSION_APP = "9.627";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -3025,16 +3025,6 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
           React.createElement("span", { style: { display: "block", fontSize: 11.5, color: "var(--muted)", marginTop: 2 } }, rol)
         )
       ),
-      onOcultar && React.createElement("button", {
-        onClick: onOcultar,
-        title: "Esconder el men\u00FA (Ctrl+B)",
-        style: {
-          flexShrink: 0, width: 34,
-          background: "var(--surface)", border: "none", borderRadius: 10,
-          cursor: "pointer", color: "var(--muted)",
-          display: "flex", alignItems: "center", justifyContent: "center"
-        }
-      }, React.createElement(ChevronLeft, { size: 16 }))
     ),
 
     // Navegación agrupada
@@ -4871,6 +4861,8 @@ async function traerDeLaNube(quienEntro) {
       traerTodo("productos", "nombre"),
       traerTodo("variantes"),
       traerTodo("clientes", "nombre"),
+      // Las ventas de los últimos tres meses: para atrás se consultan por
+      // informe, no hace falta tenerlas todas cargadas todo el tiempo.
       traerTodo("ventas"),
       traerTodo("venta_items"),
       traerTodo("movimientos_cc"),
@@ -4879,7 +4871,9 @@ async function traerDeLaNube(quienEntro) {
       nube.from("cajas_abiertas").select("*"),
       nube.from("caja_cierres").select("*").order("cerrada_en", { ascending: false }).limit(500),
       nube.from("transferencias").select("*").order("creado_en", { ascending: false }).limit(500),
-      nube.from("movimientos_stock").select("*").order("creado_en", { ascending: false }).limit(2000),
+      // Sólo los últimos: el historial completo se usa en una sola pantalla y
+      // 2000 filas hacían más lento el arranque de todas las demás.
+      nube.from("movimientos_stock").select("*").order("creado_en", { ascending: false }).limit(400),
       nube.from("pedidos").select("*").order("creado_en", { ascending: false }).limit(500),
       nube.from("notas_credito").select("*").order("creado_en", { ascending: false }).limit(500),
       nube.from("cambios").select("*").order("creado_en", { ascending: false }).limit(500),
@@ -5234,7 +5228,9 @@ function BuscadorProducto({ valor, onCambiar, onEnter, onEscanear, placeholder, 
   );
 }
 
-function ProductoThumb({ producto, size = 44 }) {
+// Se dibuja de nuevo sólo si cambió el producto o el tamaño: en una lista de
+// cien filas, evitar cien redibujados por tecla se nota.
+const ProductoThumb = React.memo(function ProductoThumb({ producto, size = 44 }) {
   const base = { width: size, height: size, borderRadius: 7, flexShrink: 0, border: "none", objectFit: "cover", background: "var(--surface-2)" };
   const fotos = imagenesDe(producto);
   const foto = imagenPrincipal(producto);
@@ -5267,7 +5263,7 @@ function ProductoThumb({ producto, size = 44 }) {
     { style: { ...base, display: "flex", alignItems: "center", justifyContent: "center" } },
     React.createElement(Package, { size: Math.round(size * 0.42), color: "var(--muted)", strokeWidth: 1.6 })
   );
-}
+});
 
 // Las fotos del producto en grande, con flechas si hay más de una
 function VisorFotosProducto({ producto, fotos, onClose }) {
@@ -5820,7 +5816,9 @@ function InventarioStock({ data, persist }) {
   const totalEnStock = data.productos.reduce((a, p) => a + dineroDe(p), 0);
 
   const q = query.trim().toLowerCase();
-  let productos = data.productos.filter((p) => {
+  // Igual que en Productos: filtrar y ordenar 1173 artículos en cada tecla
+  // se nota, así que sólo se rehace cuando cambia algo que importa.
+  const productos = useMemo(() => data.productos.filter((p) => {
     if (!publicadoEn(p, negId, listaNegocios(data)[0].id)) return false;
     if (q && !((p.nombre || "").toLowerCase().includes(q) || (p.codigoBarras || "").toLowerCase().includes(q))) return false;
     if (filtroCategoria && p.categoria !== filtroCategoria) return false;
@@ -5828,13 +5826,12 @@ function InventarioStock({ data, persist }) {
     if (filtroSituacion === "bajo" && !(enEste(p) > 0 && enEste(p) <= STOCK_MINIMO)) return false;
     if (filtroSituacion === "ok" && enEste(p) <= STOCK_MINIMO) return false;
     return true;
-  });
-  productos = [...productos].sort((a, b) => {
+  }).sort((a, b) => {
     const dir = orden.asc ? 1 : -1;
     if (orden.campo === "stock") return (enEste(a) - enEste(b)) * dir;
     if (orden.campo === "dinero") return (dineroDe(a) - dineroDe(b)) * dir;
     return (a.nombre || "").localeCompare(b.nombre || "", "es") * dir;
-  });
+  }), [data.productos, negId, q, filtroCategoria, filtroSituacion, orden]);
 
   // Con más de mil productos la tabla se vuelve inmanejable y lenta: se
   // muestran de a tandas, igual que en Productos.
@@ -8423,7 +8420,10 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
   const q = query.trim().toLowerCase();
   // Se calcula una sola vez y no dentro del filtro, que corre por producto
   const ultimasVentas = filtros.sinVender ? ultimaVentaPorProducto(data) : {};
-  let productos = data.productos.filter((p) => {
+  // Se recalcula sólo cuando cambia algo que importa, no en cada render.
+  // Con 1173 productos, filtrar y ordenar en cada tecla se nota.
+  const productos = useMemo(() => {
+  const filtrados = data.productos.filter((p) => {
     // Sólo los de este local
     if (!publicadoEn(p, negocioActivo(data).id, listaNegocios(data)[0].id)) return false;
     if (q && !((p.nombre || "").toLowerCase().includes(q) || (p.codigoBarras || "").toLowerCase().includes(q))) return false;
@@ -8444,12 +8444,13 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
     }
     return true;
   });
-  productos = [...productos].sort((a, b) => {
+  return filtrados.sort((a, b) => {
     const dir = orden.asc ? 1 : -1;
     if (orden.campo === "stock") return (a.stock - b.stock) * dir;
     if (orden.campo === "precio") return (a.precioVenta - b.precioVenta) * dir;
     return (a.nombre || "").localeCompare(b.nombre || "", "es") * dir;
   });
+  }, [data.productos, data.negocioActivoId, q, filtros, orden, ultimasVentas]);
 
   // Con más de mil productos, mostrarlos todos hace la tabla lenta e
   // inmanejable. Se muestran de a tandas y se navega por páginas.
@@ -10705,14 +10706,23 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     setClienteId(id);
   };
   // Coincidencias mientras se escribe: por nombre o por código
-  const sugerencias = (() => {
+  // Los nombres en minúscula se calculan una vez y se reusan: antes se
+  // convertían los 1173 productos en cada tecla que se escribía.
+  const buscables = useMemo(() => data.productos
+    .filter((p) => p.activo !== false)
+    .map((p) => ({ p, texto: ((p.nombre || "") + " " + (p.codigoBarras || "")).toLowerCase() })),
+    [data.productos]);
+
+  const sugerencias = useMemo(() => {
     const q = barcode.trim().toLowerCase();
     if (q.length < 2) return [];
-    return data.productos
-      .filter((p) => p.activo !== false)
-      .filter((p) => (p.nombre || "").toLowerCase().includes(q) || (p.codigoBarras || "").toLowerCase().includes(q))
-      .slice(0, 8);
-  })();
+    const salida = [];
+    // Se corta al llegar a ocho en vez de recorrer la lista entera
+    for (let i = 0; i < buscables.length && salida.length < 8; i++) {
+      if (buscables[i].texto.indexOf(q) >= 0) salida.push(buscables[i].p);
+    }
+    return salida;
+  }, [buscables, barcode]);
 
   // Suma el producto al carrito. Sin stock deja vender igual pero avisa: la
   // prenda puede estar en la mano aunque el conteo esté mal, y perder la venta
@@ -22207,8 +22217,8 @@ function TransferenciasView({ data, persist }) {
           style: { background: "var(--mustard)", color: "#0B0D12", borderRadius: 999, fontSize: 10.5, fontWeight: 700, padding: "1px 6px", marginLeft: 4 }
         }, pedidosPendientes)),
 
-      React.createElement(Button, { onClick: () => setNueva(true), title: "Nueva transferencia", style: { padding: "11px 16px" } },
-        React.createElement(Plus, { size: 17, strokeWidth: 2.2 }))
+      React.createElement(Button, { onClick: () => setNueva(true), style: { padding: "11px 18px" } },
+        React.createElement(Plus, { size: 16, strokeWidth: 2.2 }), " Nueva transferencia")
     ),
 
     React.createElement(
@@ -22830,7 +22840,10 @@ function ActividadView({ data, persist, senalMovimiento }) {
     persist(conMovimientos({ ...data, productos }, [mov]));
     setRegistrando(false);
   };
-  const todos = lineaDeTiempo(data, negocioActivo(data).id);
+  // Recorre ventas, cajas, transferencias y movimientos: caro para rehacerlo
+  // en cada render.
+  const todos = useMemo(() => lineaDeTiempo(data, negocioActivo(data).id),
+    [data.ventas, data.cajasCerradas, data.transferencias, data.movimientosStock, data.negocioActivoId]);
   const tipos = [...new Set(todos.map((e) => e.tipo))];
 
   // Resumen por persona: cuántas acciones hizo cada una y de qué tipo
