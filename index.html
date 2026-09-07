@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.522";
+const VERSION_APP = "9.528";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -632,7 +632,8 @@ const migrarDatos = (data) => {
     rolesPersonalizados = rolesPersonalizados.map((r) => ({
       ...r,
       permisos: (r.permisos || []).filter((p) =>
-        p !== "verCostos" && p !== "verGanancia" && p !== "borrarProductos")
+        p !== "verCostos" && p !== "verGanancia" &&
+        p !== "borrarProductos" && p !== "verAlertasStock")
     }));
   }
 
@@ -761,6 +762,8 @@ const PUEDE = {
   hacerDevoluciones: ["Propietario", "Administrador", "Vendedor"],
   // Mirar el arqueo de los demás es control, no operación: por defecto sólo
   // el dueño y los administradores.
+  // Reponer es tarea de quien compra: el vendedor no necesita el aviso.
+  verAlertasStock: ["Propietario", "Administrador", "Encargado de stock"],
   verCajasDelEquipo: ["Propietario", "Administrador"],
   gestionarUsuarios: ["Propietario"]
 };
@@ -790,6 +793,7 @@ const PERMISOS_EXPLICADOS = [
   ["verCostos", "Ver los costos", "Cuánto costó cada producto."],
   ["editarPrecios", "Cambiar precios", "Editar el precio de venta de los productos."],
   ["borrarProductos", "Borrar productos", "Eliminar del catálogo, con su historial de ventas."],
+  ["verAlertasStock", "Ver alertas de stock", "Los avisos de sin stock y stock bajo, para reponer."],
   ["verCajasDelEquipo", "Ver las cajas del equipo", "Los cierres pasados y las cajas abiertas de los demás."],
   ["gestionarUsuarios", "Manejar el equipo", "Crear, editar y dar de baja integrantes."]
 ];
@@ -1615,7 +1619,11 @@ function ControlTienda() {
       )
     );
   }
-  const lowStockCount = data.productos.filter((p) => stockNegocio(p, negocioActivo(data).id) <= STOCK_MINIMO).length;
+  // El número rojo del menú también es un aviso de reposición: si no puede
+  // verlos, no tiene sentido mostrarle el contador.
+  const lowStockCount = puede(data, "verAlertasStock")
+    ? data.productos.filter((p) => stockNegocio(p, negocioActivo(data).id) <= STOCK_MINIMO).length
+    : 0;
   const tareasHoy = tareasPendientesHoy(data, usuarioActualId(data), negocioActivo(data).id).length;
   const paradasHoy = (elReparto(data).paradas || []).filter((x) => x.estado === "pendiente").length;
   const usuario = (data.usuarios || []).find((u) => u.esVos) || (data.usuarios || []).find((u) => u.activo !== false) || (data.usuarios || [])[0] || null;
@@ -2722,18 +2730,10 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
     { titulo: "Cat\u00E1logo", items: [
       { id: "inventario", label: "Productos", labelCorto: "Productos", icon: Package },
       { id: "catalogo", label: "Cat\u00E1logo Online", labelCorto: "Cat\u00E1logo", icon: Share2 },
-      {
-        id: "inventario-grupo",
-        label: "Inventario",
-        icon: Boxes,
-        badge: lowStockCount,
-        hijos: [
-          { id: "stock", label: "Stock", labelCorto: "Stock", icon: Boxes },
-          // Mover mercadería entre locales es parte de manejar el stock, no
-          // de mirar los negocios: va acá, al lado de donde se lo consulta.
-          { id: "transferencias", label: "Transferencias", labelCorto: "Transfer.", icon: Truck }
-        ]
-      }
+      // Stock y Transferencias a la vista, sin desplegar nada: son de las
+      // pantallas que más se abren en el día.
+      { id: "stock", label: "Stock", labelCorto: "Stock", icon: Boxes, badge: lowStockCount },
+      { id: "transferencias", label: "Transferencias", labelCorto: "Transfer.", icon: Truck }
     ] },
     { titulo: "Personas", items: [
       { id: "tareas", label: "Tareas", labelCorto: "Tareas", icon: Check, badge: tareasHoy },
@@ -5907,6 +5907,7 @@ function MovimientosStock({ data, persist, senalMovimiento }) {
 function InventarioStock({ data, persist }) {
   // El dinero en stock y el proveedor son datos de compra: sólo el dueño
   const verCostos = puede(data, "verCostos");
+  const verAlertas = puede(data, "verAlertasStock");
   const [query, setQuery] = useState("");
   const [mostrarFiltros, setMostrarFiltros] = useState(false);
   const [filtroCategoria, setFiltroCategoria] = useState("");
@@ -5996,7 +5997,8 @@ function InventarioStock({ data, persist }) {
     null,
 
     // Cabeceras de alerta
-    React.createElement(
+    // Los avisos de reposición sólo para quien compra
+    verAlertas && React.createElement(
       Card,
       { style: { padding: 0, overflow: "hidden", marginBottom: 20 } },
       React.createElement(PanelAlerta, {
@@ -21138,15 +21140,36 @@ function TransferenciasView({ data, persist }) {
       { style: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16, alignItems: "center" } },
       selectFiltro(filtroEstado, setFiltroEstado, Object.keys(ESTADOS_TRANSFER).map((k) => ({ id: k, label: ESTADOS_TRANSFER[k].label })), "Todos"),
       selectFiltro(filtroNegocio, setFiltroNegocio, negocios.map((n) => ({ id: n.id, label: n.nombre })), "Todos los negocios"),
-      // Los pedidos de clientes: mercadería reservada que viaja con el reparto
-      React.createElement(Button, { tone: "ghost", onClick: () => setModo("pedidos"), style: { marginLeft: "auto", padding: "12px 18px" } },
-        React.createElement(ShoppingBag, { size: 16 }), " Pedidos",
-        pedidosPendientes > 0 && React.createElement("span", { style: { background: "var(--mustard)", color: "#0B0D12", borderRadius: 999, fontSize: 11, fontWeight: 700, padding: "1px 7px", marginLeft: 2 } }, pedidosPendientes)),
-      React.createElement(Button, { tone: "ghost", onClick: () => setModo("reposicion"), style: { padding: "12px 18px" } },
-        React.createElement(Check, { size: 16 }), " Lista de reposición",
-        pendientesReposicion > 0 && React.createElement("span", { style: { background: "var(--mustard)", color: "#0B0D12", borderRadius: 999, fontSize: 11, fontWeight: 700, padding: "1px 7px", marginLeft: 2 } }, pendientesReposicion)),
-      React.createElement(Button, { onClick: () => setNueva(true), style: { padding: "12px 20px" } },
-        React.createElement(Plus, { size: 16 }), " Nueva transferencia")
+
+      // Pedidos y reposición van juntos y chicos: son atajos, no la acción
+      // principal. Antes eran tres botones grandes compitiendo entre sí.
+      React.createElement(
+        "div",
+        { style: { marginLeft: "auto", display: "flex", gap: 6, background: "var(--surface-2)", borderRadius: 10, padding: 4 } },
+        [["pedidos", ShoppingBag, "Pedidos", pedidosPendientes],
+         ["reposicion", Check, "Reposición", pendientesReposicion]]
+          .map(([id, Icono, label, cuantos]) => React.createElement(
+            "button",
+            {
+              key: id,
+              onClick: () => setModo(id),
+              style: {
+                display: "inline-flex", alignItems: "center", gap: 6,
+                background: "none", border: "none", cursor: "pointer",
+                color: "var(--ink)", fontSize: 13, fontWeight: 600,
+                padding: "8px 12px", borderRadius: 8,
+                fontFamily: "'Inter', sans-serif"
+              }
+            },
+            React.createElement(Icono, { size: 15, color: "var(--muted)" }),
+            label,
+            cuantos > 0 && React.createElement("span", {
+              style: { background: "var(--mustard)", color: "#0B0D12", borderRadius: 999, fontSize: 10.5, fontWeight: 700, padding: "1px 6px" }
+            }, cuantos)
+          ))
+      ),
+      React.createElement(Button, { onClick: () => setNueva(true), style: { padding: "11px 18px" } },
+        React.createElement(Plus, { size: 16 }), " Nueva")
     ),
 
     React.createElement(
