@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.477";
+const VERSION_APP = "9.482";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -4868,14 +4868,93 @@ function ListaComprobantes({ ventas, lista, onCambiar }) {
 
 function ProductoThumb({ producto, size = 44 }) {
   const base = { width: size, height: size, borderRadius: 7, flexShrink: 0, border: "none", objectFit: "cover", background: "var(--surface-2)" };
+  const fotos = imagenesDe(producto);
   const foto = imagenPrincipal(producto);
+  // Se abre en grande al tocarla: en una miniatura de 44 píxeles no se
+  // distingue una prenda de otra, y abrir el producto entero es más lento.
+  const [ampliada, setAmpliada] = useState(false);
+
   if (foto) {
-    return React.createElement("img", { src: foto, alt: producto.nombre, style: base });
+    return React.createElement(
+      React.Fragment,
+      null,
+      React.createElement("img", {
+        src: foto, alt: producto.nombre,
+        onClick: (e) => { e.stopPropagation(); setAmpliada(true); },
+        title: "Ver la foto en grande",
+        style: { ...base, cursor: "zoom-in" }
+      }),
+      ampliada && React.createElement(VisorFotosProducto, {
+        producto, fotos, onClose: () => setAmpliada(false)
+      })
+    );
   }
   return React.createElement(
     "div",
     { style: { ...base, display: "flex", alignItems: "center", justifyContent: "center" } },
     React.createElement(Package, { size: Math.round(size * 0.42), color: "var(--muted)", strokeWidth: 1.6 })
+  );
+}
+
+// Las fotos del producto en grande, con flechas si hay más de una
+function VisorFotosProducto({ producto, fotos, onClose }) {
+  const [i, setI] = useState(0);
+  const total = fotos.length;
+  const mover = (d) => setI((x) => (x + d + total) % total);
+
+  useEffect(() => {
+    const tecla = (e) => {
+      if (e.key === "Escape") onClose();
+      if (e.key === "ArrowRight") mover(1);
+      if (e.key === "ArrowLeft") mover(-1);
+    };
+    document.addEventListener("keydown", tecla);
+    return () => document.removeEventListener("keydown", tecla);
+  }, [total]);
+
+  const flecha = (lado, d) => total > 1 && React.createElement("button", {
+    onClick: (e) => { e.stopPropagation(); mover(d); },
+    style: {
+      position: "fixed", top: "50%", [lado]: 14, transform: "translateY(-50%)",
+      width: 46, height: 46, borderRadius: 999, cursor: "pointer", border: "none",
+      background: "rgba(255,255,255,.14)", color: "#fff",
+      display: "flex", alignItems: "center", justifyContent: "center"
+    }
+  }, React.createElement(ChevronRight, { size: 22, style: d < 0 ? { transform: "rotate(180deg)" } : null }));
+
+  return React.createElement(
+    "div",
+    {
+      onClick: onClose,
+      style: {
+        position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,.9)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 16, cursor: "zoom-out"
+      }
+    },
+    React.createElement("img", {
+      src: fotos[i],
+      alt: producto.nombre,
+      onClick: (e) => e.stopPropagation(),
+      style: { maxWidth: "100%", maxHeight: "84vh", objectFit: "contain", borderRadius: 12, cursor: "default" }
+    }),
+    flecha("left", -1),
+    flecha("right", 1),
+    React.createElement("button", {
+      onClick: onClose, title: "Cerrar",
+      style: {
+        position: "fixed", top: 16, right: 16, width: 42, height: 42, borderRadius: 999,
+        cursor: "pointer", border: "none", background: "rgba(255,255,255,.14)", color: "#fff",
+        display: "flex", alignItems: "center", justifyContent: "center"
+      }
+    }, React.createElement(X, { size: 20 })),
+    React.createElement(
+      "div",
+      { style: { position: "fixed", bottom: 20, left: 0, right: 0, textAlign: "center", color: "rgba(255,255,255,.75)", fontSize: 13, padding: "0 16px" } },
+      React.createElement("div", { style: { fontWeight: 600 } }, producto.nombre),
+      total > 1 && React.createElement("div", { style: { fontSize: 11.5, marginTop: 3, color: "rgba(255,255,255,.5)" } },
+        (i + 1) + " de " + total)
+    )
   );
 }
 
@@ -25867,6 +25946,26 @@ const imprimirCierre = (c) => {
   abrirImpresion("Cierre de caja", estilos, cuerpo);
 };
 
+// La hora del ticket viene como "08:22 p. m.", que no sirve para armar una
+// fecha. Se convierte a 24 horas antes de comparar: sin esto, las ventas del
+// turno nunca se encontraban y el cierre salía sin detalle.
+const momentoDeVenta = (v) => {
+  const txt = String(v.horaTexto || "").trim().toLowerCase();
+  if (!v.fecha || !txt) return null;
+  const m = txt.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  let h = Number(m[1]);
+  const min = Number(m[2]);
+  const tarde = /p\.?\s*m\.?/.test(txt);
+  const manana = /a\.?\s*m\.?/.test(txt);
+  if (tarde && h < 12) h += 12;
+  if (manana && h === 12) h = 0;
+  const d = new Date(v.fecha + "T00:00:00");
+  if (isNaN(d.getTime())) return null;
+  d.setHours(h, min, 0, 0);
+  return d.getTime();
+};
+
 function DetalleCierreModal({ cierre, onClose, data }) {
   const dif = Number(cierre.diferencia) || 0;
   const movs = cierre.movimientos || [];
@@ -25882,8 +25981,12 @@ function DetalleCierreModal({ cierre, onClose, data }) {
     return (data.ventas || []).filter((v) => {
       if (esDevolucion(v)) return false;
       if (cierre.negocioId && (v.negocioId || "") !== cierre.negocioId) return false;
-      // La hora viene en el texto del ticket; si no está, se usa la fecha
-      const cuando = new Date(v.fecha + "T" + (v.horaTexto || "00:00") + ":00").getTime();
+      const cuando = momentoDeVenta(v);
+      if (cuando == null) {
+        // Sin hora usable se compara sólo por día: mejor mostrarla que perderla
+        return v.fecha === (cierre.abiertaEn || "").slice(0, 10) ||
+               v.fecha === (cierre.cerradaEn || "").slice(0, 10);
+      }
       return cuando >= desde - 60000 && cuando <= hasta + 60000;
     });
   })();
