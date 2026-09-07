@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.507";
+const VERSION_APP = "9.514";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -622,8 +622,23 @@ const migrarDatos = (data) => {
   const negocios = listaNegocios(data);
   const principalId = negocios[0].id;
   const idsValidos = negocios.map((n) => n.id);
+
+  // El costo pasó a ser sólo del dueño. A los roles propios que ya existían se
+  // les saca ese permiso una sola vez, para no tener que editarlos a mano. Se
+  // deja la marca para que, si después se vuelve a dar, no se saque de nuevo.
+  let rolesPersonalizados = data.rolesPersonalizados;
+  if (rolesPersonalizados && rolesPersonalizados.length && !data.costoSoloDueno) {
+    rolesPersonalizados = rolesPersonalizados.map((r) => ({
+      ...r,
+      permisos: (r.permisos || []).filter((p) => p !== "verCostos" && p !== "verGanancia")
+    }));
+  }
+
   return {
     ...data,
+    // Van después de ...data para que no las pise la copia original
+    costoSoloDueno: true,
+    rolesPersonalizados,
     productos: (data.productos || []).map((p) =>
       reasignarHuerfanos(migrarProducto(p, principalId), idsValidos, principalId))
   };
@@ -730,8 +745,12 @@ const TABS_POR_ROL = {
 // Permisos finos, más allá de a qué pantalla entra
 const PUEDE = {
   verGanancia: ["Propietario", "Administrador"],
-  verCostos: ["Propietario", "Administrador"],
-  editarPrecios: ["Propietario", "Administrador"],
+  // Sólo el dueño: el costo es lo que revela cuánto se gana, y no hace falta
+  // para vender ni para reponer.
+  verCostos: ["Propietario"],
+  // El precio de venta lo pueden poner los vendedores: es parte de atender.
+  // El costo, en cambio, sólo el dueño (ver verCostos).
+  editarPrecios: ["Propietario", "Administrador", "Vendedor"],
   borrarProductos: ["Propietario", "Administrador"],
   // Cada uno cierra la suya: con locales separados el dueño no puede estar
   // presente en todos los cierres. La diferencia queda registrada con el
@@ -3409,7 +3428,8 @@ async function migrarANube(data, avisarPaso) {
     datos: {
       negocio: data.negocio || {}, catalogo: data.catalogo || {},
       rolesPersonalizados: data.rolesPersonalizados || [],
-      soporteTelefono: data.soporteTelefono || ""
+      soporteTelefono: data.soporteTelefono || "",
+      costoSoloDueno: !!data.costoSoloDueno
     },
     actualizado_en: new Date().toISOString()
   }).eq("id", 1);
@@ -4547,7 +4567,9 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
         negocio: despues.negocio || {},
         catalogo: despues.catalogo || {},
         rolesPersonalizados: despues.rolesPersonalizados || [],
-        soporteTelefono: despues.soporteTelefono || ""
+        soporteTelefono: despues.soporteTelefono || "",
+        // Que el ajuste de los costos no se rehaga en cada dispositivo
+        costoSoloDueno: !!despues.costoSoloDueno
       },
       actualizado_en: new Date().toISOString()
     }).eq("id", 1);
@@ -4938,7 +4960,8 @@ async function traerDeLaNube(quienEntro) {
     negocio: extra.negocio || {},
     catalogo: extra.catalogo || {},
     rolesPersonalizados: extra.rolesPersonalizados || [],
-    soporteTelefono: extra.soporteTelefono || ""
+    soporteTelefono: extra.soporteTelefono || "",
+    costoSoloDueno: !!extra.costoSoloDueno
   };
 }
 
@@ -5879,6 +5902,8 @@ function MovimientosStock({ data, persist, senalMovimiento }) {
 }
 
 function InventarioStock({ data, persist }) {
+  // El dinero en stock y el proveedor son datos de compra: sólo el dueño
+  const verCostos = puede(data, "verCostos");
   const [query, setQuery] = useState("");
   const [mostrarFiltros, setMostrarFiltros] = useState(false);
   const [filtroCategoria, setFiltroCategoria] = useState("");
@@ -6045,7 +6070,7 @@ function InventarioStock({ data, persist }) {
           "div",
           { style: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" } },
           React.createElement(SectionTitle, null, "Productos"),
-          React.createElement(SwingTag, { tone: "ink" }, "Total en stock: ", money(totalEnStock))
+          verCostos && React.createElement(SwingTag, { tone: "ink" }, "Total en stock: ", money(totalEnStock))
         ),
         React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: 6 } }, "Control y seguimiento de inventario de productos")
       ),
@@ -6070,11 +6095,13 @@ function InventarioStock({ data, persist }) {
                   React.createElement("th", null, "Categoría"),
                   React.createElement("th", { style: { width: 78 } }, "Estado"),
                   React.createElement(Th, { campo: "stock", style: { width: 130 } }, "Stock"),
-                  React.createElement(Th, { campo: "dinero", style: { width: 150 } },
+                  // Dinero en stock sale del costo, así que va con ese permiso.
+                  // El proveedor tampoco: es información de compra.
+                  verCostos && React.createElement(Th, { campo: "dinero", style: { width: 150 } },
                     React.createElement("span", { title: "Costo del producto multiplicado por las unidades en stock: lo que tenés inmovilizado en mercadería.", style: { display: "inline-flex", alignItems: "center", gap: 5 } },
                       "Dinero en stock",
                       React.createElement("span", { style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 13, height: 13, borderRadius: "50%", border: "1px solid currentColor", fontSize: 9, fontWeight: 700, opacity: 0.6, cursor: "help" } }, "?"))),
-                  React.createElement("th", null, "Proveedor"),
+                  verCostos && React.createElement("th", null, "Proveedor"),
                   React.createElement("th", { style: { width: 52 } })
                 )
               ),
@@ -6097,8 +6124,8 @@ function InventarioStock({ data, persist }) {
                     React.createElement("td", null, React.createElement(SwingTag, { tone: "denim", small: true }, (p.categoria || "Sin categoría").toUpperCase())),
                     React.createElement("td", null, React.createElement(Switch, { on: activo, onChange: () => toggleActivo(p), title: activo ? "A la venta" : "Pausado" })),
                     React.createElement("td", null, React.createElement(CeldaStock, { producto: p, negocioId: negocioActivo(data).id })),
-                    React.createElement("td", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 13.5, color: dinero ? "var(--ink)" : "var(--muted)" } }, dinero ? money(dinero) : "–"),
-                    React.createElement("td", { style: { color: "var(--muted)" } }, p.proveedor || "Sin proveedor"),
+                    verCostos && React.createElement("td", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 13.5, color: dinero ? "var(--ink)" : "var(--muted)" } }, dinero ? money(dinero) : "–"),
+                    verCostos && React.createElement("td", { style: { color: "var(--muted)" } }, p.proveedor || "Sin proveedor"),
                     // Tres puntos: la columna queda angosta y la fila se lee
                     // sin un botón con texto compitiendo con los datos.
                     React.createElement("td", { style: { textAlign: "right" } },
@@ -8677,6 +8704,7 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
         onClose: () => setParaImprimir(null)
       }),
       React.createElement(ProductoForm, {
+        data,
         // Al saltar de "producto nuevo" al que ya existe, el formulario tiene
         // que empezar de cero: sin esto seguía mostrando lo que se estaba
         // cargando y parecía que no había pasado nada.
@@ -9496,7 +9524,10 @@ function CampoEditor({ label, requerido, ayuda, children, style }) {
 
 const inputEditor = { ...inputStyle, width: "100%", height: 40, padding: "0 13px", fontSize: 14, background: "var(--surface-2)", borderRadius: 9 };
 
-function ProductoForm({ initial, onSave, onCancel, categorias, proveedores, listasPrecio, negocios, negocioId, productosExistentes, onGestionCategorias, onGestionProveedores, onCrearCategoria, onEditarExistente, imprimirAlGuardar, onAlternarImprimir }) {
+function ProductoForm({ data, initial, onSave, onCancel, categorias, proveedores, listasPrecio, negocios, negocioId, productosExistentes, onGestionCategorias, onGestionProveedores, onCrearCategoria, onEditarExistente, imprimirAlGuardar, onAlternarImprimir }) {
+  // Quién puede ver y cargar el costo. Sin datos se asume que sí, para no
+  // romper si el formulario se usa desde otro lado.
+  const puedeVerCosto = data ? puede(data, "verCostos") : true;
   const listas = listasPrecio && listasPrecio.length ? listasPrecio : [];
   const locales = negocios && negocios.length ? negocios : [{ id: negocioId || "principal", nombre: "Mi Tienda" }];
 
@@ -9749,7 +9780,9 @@ function ProductoForm({ initial, onSave, onCancel, categorias, proveedores, list
       descripcion: f.descripcion.trim(),
       categoria: f.categoria,
       unidad: f.unidad,
-      costo: Number(f.costo) || 0,
+      // Si no puede ver el costo, se conserva el que ya tenía en vez de
+      // ponerlo en cero sin querer.
+      costo: puedeVerCosto ? (Number(f.costo) || 0) : (initial ? Number(initial.costo) || 0 : 0),
       precioVenta: Number(f.precioVenta),
       precios,
       stockMinimo: STOCK_MINIMO,
@@ -10067,8 +10100,10 @@ function ProductoForm({ initial, onSave, onCancel, categorias, proveedores, list
                   )
                 )
               )),
-          // Costo y listas comparten la fila con nombre y categoría
-          React.createElement(CampoEditor, { label: "Costo" },
+          // Costo y listas comparten la fila con nombre y categoría. El costo
+          // sólo lo ve y lo carga el dueño; para el resto ni aparece, y al
+          // guardar se conserva el que ya tenía.
+          puedeVerCosto && React.createElement(CampoEditor, { label: "Costo" },
             React.createElement("input", {
               type: "number", style: { ...inputEditor, textAlign: "right" },
               value: f.costo,
@@ -11491,6 +11526,9 @@ function PuntoDeVenta({ data, persist }) {
       }),
       escaneando && React.createElement(EscanerModal, {
         titulo: "Escanear producto",
+        // Sin campo a mano: en el mostrador el código se escanea, y si hace
+        // falta escribirlo está el buscador de la pantalla.
+        sinManual: true,
         onLeer: (codigo) => {
           setEscaneando(false);
           const code = String(codigo || "").trim();
@@ -18050,7 +18088,7 @@ const hayCamara = () => typeof navigator !== "undefined" &&
 
 const FORMATOS_ESCANER = ["ean_13", "ean_8", "code_128", "code_39", "upc_a", "upc_e", "itf", "codabar"];
 
-function EscanerModal({ titulo, onLeer, onClose }) {
+function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
   const videoRef = React.useRef(null);
   // El lector alterno se guarda para poder apagarlo al cerrar: si queda vivo,
   // la cámara sigue prendida.
@@ -18256,7 +18294,9 @@ function EscanerModal({ titulo, onLeer, onClose }) {
             "Acercá el código y mantenelo derecho, llenando el ancho de la pantalla. Se lee solo.")
         ),
 
-    React.createElement(
+    // El campo a mano se puede ocultar: en el mostrador estorba, porque lo que
+    // se quiere es apuntar y que entre solo.
+    !sinManual && React.createElement(
       "div",
       { style: { marginTop: 18, paddingTop: 16, borderTop: "1px solid var(--line)" } },
       React.createElement("div", { style: { fontSize: 13.5, fontWeight: 650, marginBottom: 9 } }, "O escribilo a mano"),
