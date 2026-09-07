@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.640";
+const VERSION_APP = "9.643";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -165,6 +165,11 @@ const diaLocal = (marca) => {
 const isoLocal = (d) =>
   new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 const todayISO = () => isoLocal(/* @__PURE__ */ new Date());
+
+// La base usa identificadores de un formato propio. Los que genera la app son
+// más cortos: mandarlos hace que rechace la consulta entera.
+const esIdDeLaBase = (x) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(x || ""));
 
 // La fecha de hace N meses, para no traer el historial entero cada vez
 const haceMeses = (n) => {
@@ -4199,7 +4204,9 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
   const idsListas = new Set((despues.listasPrecio || []).map((l) => l.id));
   for (const l of (antes.listasPrecio || [])) {
     if (!idsListas.has(l.id)) {
-      try { await nube.from("listas_precio").delete().eq("id", l.id); } catch (e) {}
+      if (esIdDeLaBase(l.id)) {
+        try { await nube.from("listas_precio").delete().eq("id", l.id); } catch (e) {}
+      }
     }
   }
 
@@ -4471,8 +4478,14 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
   }
 
   if (prods.borrados.length) {
-    const { error } = await nube.from("productos").delete().in("id", prods.borrados);
-    if (error) throw new Error("Al borrar productos: " + error.message);
+    // Sólo los que existen en la base. Un producto creado en la app y borrado
+    // antes de que subiera tiene un id que la base no reconoce, y ese id
+    // hacía que rechazara el borrado completo.
+    const enLaBase = prods.borrados.filter(esIdDeLaBase);
+    if (enLaBase.length) {
+      const { error } = await nube.from("productos").delete().in("id", enLaBase);
+      if (error) throw new Error("Al borrar productos: " + error.message);
+    }
   }
 
   // ── Ventas ────────────────────────────────────────────────
@@ -4589,7 +4602,9 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
       nota: c.nota || null, email: c.email || null, documento: c.documento || null
     }).eq("id", c.id);
   }
-  if (clis.borrados.length) await nube.from("clientes").delete().in("id", clis.borrados);
+  // Mismo cuidado que con los productos: sólo los que la base conoce
+  const clisEnLaBase = clis.borrados.filter(esIdDeLaBase);
+  if (clisEnLaBase.length) await nube.from("clientes").delete().in("id", clisEnLaBase);
 
   // ── Negocios ──────────────────────────────────────────────
   // Editar el nombre o los datos de un local no llegaba a la base.
@@ -15250,7 +15265,9 @@ const totalBilletes = (conteo) =>
 
 function CerrarCajaModal({ caja, onCerrar, onClose }) {
   const esperado = efectivoEnCaja(caja);
-  const [modo, setModo] = useState("contar");
+  // Se escribe el total contado: la planilla de billetes agregaba pasos y en
+  // el mostrador se cuenta con la mano, no con el teléfono.
+  const [modo, setModo] = useState("manual");
   const [conteo, setConteo] = useState({});
   const [manual, setManual] = useState("");
 
@@ -15327,12 +15344,6 @@ function CerrarCajaModal({ caja, onCerrar, onClose }) {
       React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 21, fontWeight: 700 } }, money(esperado))
     ),
 
-    React.createElement(
-      "div",
-      { style: { display: "flex", gap: 4, padding: 4, marginBottom: 14, background: "var(--surface-2)", border: "none", borderRadius: 9 } },
-      boton("contar", "Contar billetes"),
-      boton("manual", "Escribir el total")
-    ),
 
     modo === "contar"
       ? React.createElement(
