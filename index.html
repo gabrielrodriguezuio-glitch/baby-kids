@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.662";
+const VERSION_APP = "9.668";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1543,7 +1543,24 @@ function ControlTienda() {
       .on("postgres_changes", { event: "*", schema: "public", table: "movimientos_stock" }, (ev) => refrescar("movimientos_stock", ev))
       .on("postgres_changes", { event: "*", schema: "public", table: "gastos" }, (ev) => refrescar("gastos", ev))
       .on("postgres_changes", { event: "*", schema: "public", table: "compras" }, (ev) => refrescar("compras", ev))
-      .subscribe();
+      .subscribe((estado) => {
+        // Si la conexión se cae, el navegador no avisa: la app se queda
+        // esperando avisos que no llegan. Al recuperarla se traen los datos
+        // por las dudas.
+        if (estado === "SUBSCRIBED") {
+          if (canal._estuvoCaido) { canal._estuvoCaido = false; refrescar(); }
+        } else if (estado === "CHANNEL_ERROR" || estado === "TIMED_OUT" || estado === "CLOSED") {
+          canal._estuvoCaido = true;
+        }
+      });
+
+    // Red de seguridad: cada 20 segundos se revisa si hay algo nuevo. Con la
+    // sincronización andando no cuesta nada, y si un aviso se perdió, la
+    // venta del otro aparece igual sin tener que recargar.
+    const revisar = setInterval(() => {
+      if (document.hidden || guardando.current > 0) return;
+      refrescar("ventas");
+    }, 20000);
 
     // Al volver a la pestaña también se refresca: si el aviso se perdió
     // porque el teléfono estaba dormido, así se recupera igual.
@@ -1552,6 +1569,7 @@ function ControlTienda() {
 
     return () => {
       clearTimeout(pendiente);
+      clearInterval(revisar);
       document.removeEventListener("visibilitychange", alVolver);
       nube.removeChannel(canal);
     };
@@ -27542,6 +27560,18 @@ function CajaReportes({ data, rango }) {
   // Greenwich, así que un cierre de las 23:00 quedaba con la fecha del día
   // siguiente y no aparecía en el historial.
   const enPeriodo = (data.cajasCerradas || []).filter((c) => rango.enRango(diaLocal(c.cerradaEn)));
+
+  // Las cajas abiertas ahora mismo: se muestran arriba del historial para ver
+  // quién está trabajando sin tener que esperar a que cierre.
+  const abiertas = Object.keys(data.cajas || {})
+    .map((clave) => ({ clave, ...(data.cajas[clave] || {}) }))
+    .filter((c) => c.abierta)
+    .map((c) => {
+      const negId = c.clave.split("|")[0];
+      const neg = listaNegocios(data).find((n) => n.id === negId);
+      return { ...c, negocioNombre: neg ? neg.nombre : "" };
+    })
+    .sort((a, b) => String(b.abiertaEn || "").localeCompare(String(a.abiertaEn || "")));
   // Quiénes cerraron caja en el período: sólo se ofrecen esos
   const usuarios = [...new Set(enPeriodo.map((c) => c.usuarioNombre).filter(Boolean))];
   const cierres = quien ? enPeriodo.filter((c) => c.usuarioNombre === quien) : enPeriodo;
@@ -27604,6 +27634,38 @@ function CajaReportes({ data, rango }) {
         { style: { padding: "18px 20px 4px" } },
         React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, React.createElement(Archive, { size: 16, color: "var(--denim)" }), React.createElement(SectionTitle, null, "Historial de Caja")),
         React.createElement("div", { style: { fontSize: 12, color: "var(--muted)", marginTop: 4 } }, "Lista de sesiones de caja en el per\xEDodo seleccionado.")
+      ),
+
+      // Las que están abiertas ahora, antes del historial
+      abiertas.length > 0 && React.createElement(
+        "div",
+        { style: { padding: "6px 20px 16px" } },
+        React.createElement("div", { style: { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.07, color: "var(--muted)", fontWeight: 700, marginBottom: 9 } },
+          abiertas.length === 1 ? "Caja abierta ahora" : abiertas.length + " cajas abiertas ahora"),
+        React.createElement(
+          "div",
+          { style: { display: "flex", flexDirection: "column", gap: 8 } },
+          abiertas.map((c) => React.createElement(
+            "div",
+            { key: c.clave, style: { display: "flex", alignItems: "center", gap: 11, background: "color-mix(in srgb, var(--sage) 10%, transparent)", border: "1px solid color-mix(in srgb, var(--sage) 35%, transparent)", borderRadius: 10, padding: "11px 13px", flexWrap: "wrap" } },
+            React.createElement("span", { style: { width: 9, height: 9, borderRadius: 999, background: "var(--sage)", flexShrink: 0 } }),
+            React.createElement(
+              "div",
+              { style: { flex: 1, minWidth: 120 } },
+              React.createElement("div", { style: { fontSize: 13.5, fontWeight: 650 } }, c.abiertaPor || "Sin nombre"),
+              React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 2 } },
+                c.negocioNombre, c.abiertaEn ? " \u00B7 desde " + hora24(c.abiertaEn) : "")
+            ),
+            React.createElement(
+              "div",
+              { style: { textAlign: "right" } },
+              React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, fontWeight: 700 } },
+                money(efectivoEnCaja(c))),
+              React.createElement("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 1 } },
+                "abrió con ", money(c.montoInicial || 0))
+            )
+          ))
+        )
       ),
       cierres.length === 0
         ? React.createElement("div", { style: { padding: "40px 20px" } },
