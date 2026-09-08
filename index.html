@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.752";
+const VERSION_APP = "9.753";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -10897,6 +10897,12 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
   // sin autoFocus, que en el celular hacía saltar el cursor y desordenaba las
   // letras ("Reme" salía "emRe").
   const inputBusquedaRef = React.useRef(null);
+  // Limpia el buscador: el estado Y el campo real. Como el input es no
+  // controlado, borrar sólo el estado dejaría el texto en pantalla.
+  const limpiarBusqueda = () => {
+    setBarcode("");
+    if (inputBusquedaRef.current) inputBusquedaRef.current.value = "";
+  };
   useEffect(() => {
     // Sólo en pantallas grandes conviene el foco automático; en el celular
     // molesta (abre el teclado solo) y es justo donde daba el problema.
@@ -10923,7 +10929,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
         if (cart.length) setShowCheckout(true);
         else avisar("El carrito está vacío", { tono: "info" });
       }
-      if (e.key === "Escape" && barcode) setBarcode("");
+      if (e.key === "Escape" && barcode) limpiarBusqueda();
     };
     document.addEventListener("keydown", tecla);
     return () => document.removeEventListener("keydown", tecla);
@@ -11148,7 +11154,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     }
     setBarcodeError("");
     addToCart(prod);
-    setBarcode("");
+    limpiarBusqueda();
     setResaltado(0);
   };
 
@@ -11164,7 +11170,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     }
     setBarcodeError("");
     addToCart(prod, listaActual, claveVariante(v));
-    setBarcode("");
+    limpiarBusqueda();
     setResaltado(0);
   };
 
@@ -11399,7 +11405,15 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
             React.createElement("input", {
               ref: inputBusquedaRef,
               placeholder: isMobilePos ? "Buscar producto\u2026" : "Buscar producto... (Enter para agregar)",
-              value: barcode,
+              // Campo NO controlado: el navegador maneja el texto directamente,
+              // así el cursor nunca salta ni se desordenan las letras en el
+              // celular ("Reme" ya no sale "emRe"). El estado se actualiza
+              // desde onChange, pero no vuelve a imponer el value al campo.
+              defaultValue: "",
+              autoComplete: "off",
+              autoCorrect: "off",
+              autoCapitalize: "off",
+              spellCheck: false,
               onChange: (e) => {
                 setBarcode(e.target.value);
                 setResaltado(0);
@@ -11416,7 +11430,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
             // patrón que en Consultar precio: lupa, texto y escáner adentro
             // del mismo recuadro.
             barcode && React.createElement("button", {
-              onClick: () => { setBarcode(""); setBarcodeError(""); },
+              onClick: () => { limpiarBusqueda(); setBarcodeError(""); },
               title: "Borrar",
               style: { background: "none", border: "none", cursor: "pointer", color: posColors.muted, display: "flex", padding: 4, flexShrink: 0 }
             }, React.createElement(X, { size: 16 })),
@@ -11880,6 +11894,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
           if (prod) { pitido(true); return sumarAlCarrito(prod); }
           pitido(false);
           setBarcode(code);
+          if (inputBusquedaRef.current) inputBusquedaRef.current.value = code;
           setBarcodeError("Ningún producto tiene el código " + code + ".");
         },
         onClose: () => setEscaneando(false)
