@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.761";
+const VERSION_APP = "9.762";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -2317,6 +2317,14 @@ function Wrapper({ children, mobile, tema = "oscuro" }) {
         }
         .ct-buscador input:focus,
         .ct-buscador input:focus-visible { outline: none !important; box-shadow: none !important; }
+        /* El texto del buscador siempre visible: en algunos Android con
+           autocompletado el texto quedaba pintado transparente (se veía el
+           campo vacío aunque hubiera texto). Esto lo fuerza a mostrarse. */
+        .ct-buscador input {
+          -webkit-text-fill-color: var(--ink) !important;
+          opacity: 1 !important;
+        }
+        .ct-buscador input::placeholder { -webkit-text-fill-color: var(--muted) !important; opacity: 1 !important; }
         /* Al apretar un botón se hunde y se ilumina: confirma el toque */
         .ct-pos-btn { transition: transform .08s ease, box-shadow .12s ease, filter .12s ease; }
         .ct-pos-btn:active { transform: scale(.96); filter: brightness(1.12); }
@@ -10850,7 +10858,7 @@ const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ valor, onCambiar
       onKeyDown: (e) => {
         if (e.key === "Enter") { e.preventDefault(); onEnter(); }
       },
-      style: { flex: 1, minWidth: 0, height: "100%", background: "transparent", border: "none", outline: "none", color: posColors.text, fontSize: isMobilePos ? 16 : 15, padding: 0 }
+      style: { flex: 1, minWidth: 0, height: "100%", background: "transparent", border: "none", outline: "none", color: "var(--ink)", WebkitTextFillColor: "var(--ink)", caretColor: "var(--denim-light)", fontSize: isMobilePos ? 16 : 15, padding: 0 }
     }),
     valor && React.createElement("button", {
       onClick: onLimpiar,
