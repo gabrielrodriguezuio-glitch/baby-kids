@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.774-DIAG4";
+const VERSION_APP = "9.780";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -10856,65 +10856,86 @@ const nuevoCarrito = (n, listaId) => ({
 // en pleno medio, las letras se corrompen (salían "aremre" en vez de
 // "remera", de la 3ª letra en adelante). Al no controlarlo, el teclado nunca
 // se interrumpe. Sólo leemos lo que hay para filtrar, sin devolvérselo.
+// Teclado propio en pantalla para el buscador. Los teclados de Android de
+// algunos equipos entregaban las letras desordenadas ("remera" -> "aremre") y
+// ninguna configuración del campo lo arreglaba. Este teclado no usa el de
+// Android: son botones que se tocan con el dedo, así que las letras entran
+// siempre en el orden real. El campo es de sólo lectura (readOnly) para que
+// el teclado del sistema no aparezca.
+const FILAS_TECLADO = [
+  ["Q","W","E","R","T","Y","U","I","O","P"],
+  ["A","S","D","F","G","H","J","K","L","Ñ"],
+  ["Z","X","C","V","B","N","M"]
+];
 const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ onCambiar, onEnter, onEscanear, isMobilePos, posColors, registrarLimpiador }) {
-  const ref = React.useRef(null);
-  const [tieneTexto, setTieneTexto] = useState(false);
-  const [diag, setDiag] = useState({ montajes: 0, teclas: 0, ultimo: "" });
+  const [texto, setTexto] = useState("");
+  const [abierto, setAbierto] = useState(false);
+  const textoRef = React.useRef("");
+  const fijar = (v) => { textoRef.current = v; setTexto(v); onCambiar(v); };
   useEffect(() => {
-    if (!isMobilePos && ref.current) ref.current.focus();
-    // Contar cada vez que este input se MONTA (se crea de nuevo). Si sube al
-    // escribir, es que el campo se está destruyendo y recreando por tecla.
-    setDiag((d) => ({ ...d, montajes: (window.__ctMontajes = (window.__ctMontajes || 0) + 1) }));
-    // Le damos al padre una forma de fijar/limpiar el texto sin controlarlo
-    if (registrarLimpiador) registrarLimpiador((texto) => {
-      if (ref.current) ref.current.value = texto || "";
-      setTieneTexto(!!texto);
-    });
+    if (registrarLimpiador) registrarLimpiador((t) => fijar(t || ""));
   }, []);
-  const leer = () => {
-    const v = ref.current ? ref.current.value : "";
-    setTieneTexto(!!v);
-    setDiag((d) => ({ montajes: window.__ctMontajes || 0, teclas: d.teclas + 1, ultimo: v }));
-    onCambiar(v);
-  };
+  const tecla = (c) => fijar(textoRef.current + c);
+  const borrar = () => fijar(textoRef.current.slice(0, -1));
+  const btnTecla = (c) => React.createElement("button", {
+    key: c,
+    onClick: () => tecla(c),
+    style: { flex: 1, minWidth: 0, height: 42, borderRadius: 7, border: "1px solid " + posColors.inputBorder, background: posColors.input, color: posColors.text, fontSize: 16, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter', sans-serif", padding: 0 }
+  }, c);
   return React.createElement(
     "div",
     null,
+    // El "campo" que muestra lo escrito. Al tocarlo abre el teclado propio.
     React.createElement(
     "div",
-    { className: "ct-buscador", style: { flex: isMobilePos ? "1 0 100%" : 1, minWidth: isMobilePos ? "100%" : 190, display: "flex", alignItems: "center", gap: 12, background: "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "1.5px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: RADIO.control, padding: isMobilePos ? "0 18px" : "0 17px", height: 56, minHeight: 56, boxSizing: "border-box", transition: "border-color .12s ease, box-shadow .12s ease" } },
+    { onClick: () => setAbierto(true), className: "ct-buscador", style: { flex: isMobilePos ? "1 0 100%" : 1, minWidth: isMobilePos ? "100%" : 190, display: "flex", alignItems: "center", gap: 12, background: "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "1.5px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: RADIO.control, padding: isMobilePos ? "0 18px" : "0 17px", height: 56, minHeight: 56, boxSizing: "border-box", cursor: "text" } },
     React.createElement(Search, { size: 18, color: "var(--denim-light)" }),
-    React.createElement("input", {
-      ref,
-      type: "text",
-      placeholder: isMobilePos ? "Buscar producto\u2026" : "Buscar producto... (Enter para agregar)",
-      defaultValue: "",
-      // Campo lo más normal posible: dejamos que el teclado trabaje como en
-      // cualquier app (WhatsApp, notas), sin prohibirle corregir ni predecir.
-      // Prohibírselo hacía que algunos teclados desordenaran las letras.
-      onInput: leer,
-      onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); onEnter(); } },
-      style: { flex: 1, minWidth: 0, height: "100%", background: "transparent", border: "none", outline: "none", color: "var(--ink)", WebkitTextFillColor: "var(--ink)", caretColor: "var(--denim-light)", fontSize: isMobilePos ? 16 : 15, padding: 0 }
-    }),
-    tieneTexto && React.createElement("button", {
-      onClick: () => { if (ref.current) { ref.current.value = ""; ref.current.focus(); } setTieneTexto(false); onCambiar(""); },
+    React.createElement("div", { style: { flex: 1, minWidth: 0, fontSize: isMobilePos ? 16 : 15, color: texto ? "var(--ink)" : posColors.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } },
+      texto || (isMobilePos ? "Buscar producto\u2026" : "Buscar producto...")),
+    texto && React.createElement("button", {
+      onClick: (e) => { e.stopPropagation(); fijar(""); },
       title: "Borrar",
       style: { background: "none", border: "none", cursor: "pointer", color: posColors.muted, display: "flex", padding: 4, flexShrink: 0 }
     }, React.createElement(X, { size: 16 })),
     React.createElement("button", {
-      onClick: onEscanear,
+      onClick: (e) => { e.stopPropagation(); onEscanear(); },
       title: "Escanear con la cámara",
       style: { display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", borderLeft: "1px solid color-mix(in srgb, var(--denim) 30%, transparent)", cursor: "pointer", color: "var(--denim-light)", width: 42, flex: "0 0 42px", flexShrink: 0, padding: "8px 0 8px 12px", marginLeft: 4, boxSizing: "content-box" }
     }, React.createElement(ScanBarcode, { size: 18 }))
     ),
-    React.createElement("div", { style: { marginTop: 8, padding: "8px 10px", background: "#1a1a2e", border: "1px solid #4a4aff", borderRadius: 8, fontSize: 12, fontFamily: "monospace", lineHeight: 1.5 } },
-      React.createElement("div", { style: { color: "#8888ff", fontWeight: 700 } }, "DIAGNÓSTICO v2:"),
-      React.createElement("div", { style: { color: "#ffaaaa" } }, "Veces que se recreó el campo: " + diag.montajes),
-      React.createElement("div", { style: { color: "#fff" } }, "Teclas escritas: " + diag.teclas),
-      React.createElement("div", { style: { color: "#aaffaa" } }, "Texto actual: [" + diag.ultimo + "]")
+    // El teclado propio: aparece al tocar el campo
+    abierto && React.createElement(
+      "div",
+      { style: { marginTop: 10, padding: 10, background: posColors.card, border: "1px solid " + posColors.inputBorder, borderRadius: 12, display: "flex", flexDirection: "column", gap: 7 } },
+      FILAS_TECLADO.map((fila, i) => React.createElement(
+        "div",
+        { key: i, style: { display: "flex", gap: 5, justifyContent: "center" } },
+        fila.map(btnTecla)
+      )),
+      // Fila de acciones: espacio, borrar, buscar, cerrar
+      React.createElement(
+        "div",
+        { style: { display: "flex", gap: 5, marginTop: 2 } },
+        React.createElement("button", {
+          onClick: () => tecla(" "),
+          style: { flex: 3, height: 44, borderRadius: 7, border: "1px solid " + posColors.inputBorder, background: posColors.input, color: posColors.text, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter', sans-serif" }
+        }, "Espacio"),
+        React.createElement("button", {
+          onClick: borrar,
+          style: { flex: 1, height: 44, borderRadius: 7, border: "1px solid " + posColors.inputBorder, background: posColors.input, color: posColors.text, fontSize: 18, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }
+        }, "\u232B"),
+        React.createElement("button", {
+          onClick: () => { onEnter(); },
+          style: { flex: 1.5, height: 44, borderRadius: 7, border: "none", background: "var(--denim)", color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }
+        }, "Buscar"),
+        React.createElement("button", {
+          onClick: () => setAbierto(false),
+          style: { flex: 1, height: 44, borderRadius: 7, border: "1px solid " + posColors.inputBorder, background: "none", color: posColors.muted, fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif" }
+        }, "Cerrar")
+      )
     )
   );
-}, () => true);  // nunca se re-renderiza por el padre: queda aislado del todo
+}, () => true);
 
 function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambios }) {
   const isMobilePos = useIsMobile();
