@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.710";
+const VERSION_APP = "9.720";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -17686,20 +17686,32 @@ function UsuarioModal({ data, inicial, onGuardar, onClose }) {
   // puede no tener todos los campos que el formulario usa.
   const [f, setF] = useState(inicial ? { ...vacio, ...inicial } : vacio);
   const [error, setError] = useState("");
+  const [guardando, setGuardando] = useState(false);
   const set = (k, v) => setF({ ...f, [k]: v });
   const editando = !!(inicial && inicial.id);
 
-  const guardar = () => {
+  const guardar = async () => {
     // Los usuarios que vienen de la nube no traen todos los campos, así que
     // se usa una cadena vacía como respaldo: sin esto la app se rompía al
     // guardar un integrante creado desde el panel de la base.
     const nombre = String(f.nombre || "");
     const email = String(f.email || "");
     if (!nombre.trim()) return setError("Ingresá el nombre del integrante.");
-    if (f.invitar && !email.trim()) return setError("Para invitar hace falta un email.");
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return setError("Revisá el email: no parece válido.");
+    // Al crear uno nuevo hacen falta mail y contraseña: con eso va a entrar
+    if (!editando) {
+      if (!email.trim()) return setError("Ingresá el mail con el que va a entrar.");
+      if (!String(f.password || "").trim()) return setError("Ponele una contraseña para que pueda entrar.");
+      if (String(f.password || "").length < 6) return setError("La contraseña necesita al menos 6 caracteres.");
+    }
     setError("");
-    onGuardar({ ...f });
+    setGuardando(true);
+    try {
+      await onGuardar({ ...f, email: email.trim() });
+    } catch (e) {
+      setError(String((e && e.message) || e));
+      setGuardando(false);
+    }
   };
 
   return React.createElement(
@@ -17719,7 +17731,20 @@ function UsuarioModal({ data, inicial, onGuardar, onClose }) {
           placeholder: "cristina@gmail.com"
         }),
         React.createElement("p", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 5, lineHeight: 1.5 } },
-          "La cuenta y la contraseña se crean en Supabase \u2192 Authentication. Acá se completa solo al enlazarla.")),
+          editando
+            ? "El mail identifica la cuenta. Para cambiar la contraseña, hacelo desde Supabase."
+            : "Con este mail y la contraseña de abajo la persona entra a la app.")),
+
+      // Contraseña: sólo al crear. La cuenta de acceso se crea en el
+      // servidor (función crear-usuario), así que la contraseña se fija acá.
+      !editando && React.createElement(Field, { label: "Contraseña" },
+        React.createElement("input", {
+          style: inputStyle, type: "text", value: f.password || "",
+          onChange: (e) => set("password", e.target.value),
+          placeholder: "Mínimo 6 caracteres"
+        }),
+        React.createElement("p", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 5, lineHeight: 1.5 } },
+          "Anotala y pasásela a la persona. Después se puede cambiar.")),
 
       // A qué locales entra. Se muestra siempre: antes desaparecía al elegir
       // Propietario y lo tildado se perdía sin aviso.
@@ -17851,24 +17876,13 @@ function UsuarioModal({ data, inicial, onGuardar, onClose }) {
               : "Puede entrar y trabajar normalmente.")
         )
       ),
-      !editando && React.createElement(
-        "label",
-        { style: { display: "flex", alignItems: "center", gap: 11, fontSize: 13, cursor: "pointer", background: "var(--surface-2)", border: "none", borderRadius: 9, padding: "12px 14px" } },
-        React.createElement(Switch, { on: f.invitar, onChange: () => set("invitar", !f.invitar) }),
-        React.createElement(
-          "span",
-          null,
-          React.createElement("span", { style: { display: "block", fontWeight: 600 } }, "Guardar como invitación"),
-          React.createElement("span", { style: { display: "block", fontSize: 11.5, color: "var(--muted)", marginTop: 2 } }, "Queda pendiente hasta que la persona acepte.")
-        )
-      )
+      error && React.createElement("p", { style: { color: "var(--rose)", fontSize: 12.5, marginTop: 12 } }, error)
     ),
-    error && React.createElement("p", { style: { color: "var(--rose)", fontSize: 12.5, marginTop: 12 } }, error),
     React.createElement(
       "div",
       { style: { display: "flex", gap: 8, marginTop: 18 } },
-      React.createElement(Button, { onClick: guardar, style: { flex: 1, justifyContent: "center" } }, editando ? "Guardar cambios" : "Agregar usuario"),
-      React.createElement(Button, { tone: "ghost", onClick: onClose, style: { flex: 1, justifyContent: "center" } }, "Cancelar")
+      React.createElement(Button, { onClick: guardar, disabled: guardando, style: { flex: 1, justifyContent: "center", opacity: guardando ? 0.6 : 1 } }, guardando ? (editando ? "Guardando\u2026" : "Creando\u2026") : (editando ? "Guardar cambios" : "Agregar usuario")),
+      React.createElement(Button, { tone: "ghost", onClick: onClose, disabled: guardando, style: { flex: 1, justifyContent: "center" } }, "Cancelar")
     )
   );
 }
@@ -23635,20 +23649,42 @@ function UsuariosView({ data, persist, senalUsuario, senalInvitaciones, senalRol
   const paginaSegura = Math.min(pagina, totalPaginas);
   const visibles = filtrados.slice((paginaSegura - 1) * POR_PAGINA, paginaSegura * POR_PAGINA);
 
-  const guardarUsuario = (f) => {
-    if (f.invitar && !f.id) {
-      const inv = { id: uid(), nombre: f.nombre, usuario: f.usuario, email: f.email, rol: f.rol, fecha: todayISO() };
-      persist({ ...data, invitaciones: [inv, ...invitaciones] });
-    } else if (f.id) {
-      persist({ ...data, usuarios: usuarios.map((u) => u.id === f.id ? { ...u, ...f } : u) });
-    } else {
-      // Los locales viajan también: sin esto un usuario nuevo quedaba en todos
-      const nuevo = { id: uid(), nombre: f.nombre, usuario: f.usuario, email: f.email,
-        rol: f.rol, negocios: f.negocios || [], telefono: f.telefono || "",
-        activo: true, ultimoAcceso: todayISO(), esVos: usuarios.length === 0 };
-      persist({ ...data, usuarios: [...usuarios, nuevo] });
+  const guardarUsuario = async (f) => {
+    if (f.id) {
+      // Editar: sólo cambia la ficha local (nombre, rol, locales, etc.)
+      const { password, ...resto } = f;
+      persist({ ...data, usuarios: usuarios.map((u) => u.id === f.id ? { ...u, ...resto } : u) });
+      setEditando(null);
+      return;
     }
+    // Crear: el servidor arma la cuenta de acceso Y la ficha, enganchadas.
+    const { data: sesion } = await nube.auth.getSession();
+    const token = sesion && sesion.session ? sesion.session.access_token : "";
+    const resp = await fetch(NUBE_URL + "/functions/v1/crear-usuario", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + token,
+        "apikey": NUBE_KEY,
+      },
+      body: JSON.stringify({
+        email: f.email, password: f.password, nombre: f.nombre,
+        rol: f.rol, usuario: f.usuario || handleDesde(f.nombre),
+        telefono: f.telefono || "", negocios: f.negocios || [],
+      }),
+    });
+    const r = await resp.json().catch(() => ({}));
+    if (!resp.ok || r.error) {
+      throw new Error(r.error || "No se pudo crear el usuario. Probá de nuevo.");
+    }
+    // Reflejar el nuevo en la lista local, ya con su auth_id del servidor
+    const nuevo = { id: uid(), auth_id: r.auth_id, nombre: f.nombre,
+      usuario: f.usuario || handleDesde(f.nombre), email: f.email,
+      rol: f.rol, negocios: f.negocios || [], telefono: f.telefono || "",
+      activo: true, ultimoAcceso: todayISO(), esVos: false };
+    persist({ ...data, usuarios: [...usuarios, nuevo] });
     setEditando(null);
+    avisar(f.nombre + " ya puede entrar con su mail y contraseña");
   };
 
   const aceptarInvitacion = (inv) => {
