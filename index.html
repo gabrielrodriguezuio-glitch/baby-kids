@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.755";
+const VERSION_APP = "9.760";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1544,6 +1544,16 @@ function ControlTienda() {
         // Si hay un guardado en curso se reintenta después: traer datos a
         // mitad de una escritura pisaría lo que se acaba de hacer.
         if (guardando.current > 0) return refrescar();
+        // Si el usuario está escribiendo en un campo, NO redibujamos: un
+        // setData en pleno tipeo le roba el foco al campo y desordena las
+        // letras (en el celular sobre todo). Se reintenta en 1 segundo, y
+        // así hasta que suelte el teclado.
+        const escribiendo = document.activeElement && (
+          document.activeElement.tagName === "INPUT" ||
+          document.activeElement.tagName === "TEXTAREA" ||
+          document.activeElement.isContentEditable
+        );
+        if (escribiendo) { pendiente = setTimeout(() => refrescar(), 1000); return; }
         const cuales = new Set(tocadas);
         tocadas = new Set();
         try {
@@ -1593,6 +1603,14 @@ function ControlTienda() {
     let ultimoPulso = null;
     const revisar = async () => {
       if (document.hidden || guardando.current > 0) return;
+      // No consultar novedades mientras se escribe: si detecta un cambio,
+      // dispararía un refresco que roba el foco del campo.
+      const esc = document.activeElement && (
+        document.activeElement.tagName === "INPUT" ||
+        document.activeElement.tagName === "TEXTAREA" ||
+        document.activeElement.isContentEditable
+      );
+      if (esc) return;
       try {
         const { data: filas, error } = await nube.from("pulso").select("*").limit(1);
         if (error || !filas || !filas[0]) return;
