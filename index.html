@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.763-DIAG";
+const VERSION_APP = "9.770";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -10839,37 +10839,45 @@ const nuevoCarrito = (n, listaId) => ({
 // celular. Al vivir en su propio componente con React.memo, los refrescos de
 // la pantalla de afuera no lo tocan: el texto se maneja acá adentro y sólo se
 // avisa hacia afuera cuando cambia, sin re-montar el input.
-const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ valor, onCambiar, onEnter, onEscanear, onLimpiar, isMobilePos, posColors }) {
+// Campo de búsqueda del punto de venta. NO CONTROLADO a propósito: el
+// navegador maneja el texto solo, con defaultValue, y React nunca le reimpone
+// el "value". Esto es clave en Android: los teclados con predicción arman la
+// palabra en un estado temporal ("composing"), y si React reescribe el value
+// en pleno medio, las letras se corrompen (salían "aremre" en vez de
+// "remera", de la 3ª letra en adelante). Al no controlarlo, el teclado nunca
+// se interrumpe. Sólo leemos lo que hay para filtrar, sin devolvérselo.
+const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ onCambiar, onEnter, onEscanear, isMobilePos, posColors, registrarLimpiador }) {
   const ref = React.useRef(null);
-  const [diag, setDiag] = useState("(escribí algo)");
-  // Foco automático sólo en pantallas grandes; en el celular molesta
+  const [tieneTexto, setTieneTexto] = useState(false);
   useEffect(() => {
     if (!isMobilePos && ref.current) ref.current.focus();
+    // Le damos al padre una forma de fijar/limpiar el texto sin controlarlo
+    if (registrarLimpiador) registrarLimpiador((texto) => {
+      if (ref.current) ref.current.value = texto || "";
+      setTieneTexto(!!texto);
+    });
   }, []);
+  const leer = () => {
+    const v = ref.current ? ref.current.value : "";
+    setTieneTexto(!!v);
+    onCambiar(v);
+  };
   return React.createElement(
-    "div",
-    null,
-    React.createElement(
     "div",
     { className: "ct-buscador", style: { flex: isMobilePos ? "1 0 100%" : 1, minWidth: isMobilePos ? "100%" : 190, display: "flex", alignItems: "center", gap: 12, background: "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "1.5px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: RADIO.control, padding: isMobilePos ? "0 18px" : "0 17px", height: 56, minHeight: 56, boxSizing: "border-box", transition: "border-color .12s ease, box-shadow .12s ease" } },
     React.createElement(Search, { size: 18, color: "var(--denim-light)" }),
     React.createElement("input", {
       ref,
+      type: "text",
       placeholder: isMobilePos ? "Buscar producto\u2026" : "Buscar producto... (Enter para agregar)",
-      value: valor,
+      defaultValue: "",
       autoComplete: "off", autoCorrect: "off", autoCapitalize: "off", spellCheck: false,
-      onChange: (e) => {
-        const campo = e.target.value;
-        setDiag("Campo real: [" + campo + "] (" + campo.length + " letras)");
-        onCambiar(campo);
-      },
-      onKeyDown: (e) => {
-        if (e.key === "Enter") { e.preventDefault(); onEnter(); }
-      },
+      onInput: leer,
+      onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); onEnter(); } },
       style: { flex: 1, minWidth: 0, height: "100%", background: "transparent", border: "none", outline: "none", color: "var(--ink)", WebkitTextFillColor: "var(--ink)", caretColor: "var(--denim-light)", fontSize: isMobilePos ? 16 : 15, padding: 0 }
     }),
-    valor && React.createElement("button", {
-      onClick: onLimpiar,
+    tieneTexto && React.createElement("button", {
+      onClick: () => { if (ref.current) { ref.current.value = ""; ref.current.focus(); } setTieneTexto(false); onCambiar(""); },
       title: "Borrar",
       style: { background: "none", border: "none", cursor: "pointer", color: posColors.muted, display: "flex", padding: 4, flexShrink: 0 }
     }, React.createElement(X, { size: 16 })),
@@ -10878,16 +10886,8 @@ const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ valor, onCambiar
       title: "Escanear con la cámara",
       style: { display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", borderLeft: "1px solid color-mix(in srgb, var(--denim) 30%, transparent)", cursor: "pointer", color: "var(--denim-light)", width: 42, flex: "0 0 42px", flexShrink: 0, padding: "8px 0 8px 12px", marginLeft: 4, boxSizing: "content-box" }
     }, React.createElement(ScanBarcode, { size: 18 }))
-    ),
-    // RECUADRO DE DIAGNÓSTICO (temporal): muestra qué recibe el campo y qué
-    // guarda la app, para encontrar el origen del problema del buscador.
-    React.createElement("div", { style: { marginTop: 8, padding: "8px 10px", background: "#1a1a2e", border: "1px solid #4a4aff", borderRadius: 8, fontSize: 12, fontFamily: "monospace", lineHeight: 1.5 } },
-      React.createElement("div", { style: { color: "#8888ff", fontWeight: 700, marginBottom: 4 } }, "DIAGNÓSTICO (temporal):"),
-      React.createElement("div", { style: { color: "#fff" } }, diag),
-      React.createElement("div", { style: { color: "#aaffaa", marginTop: 2 } }, "App guardó: [" + valor + "] (" + (valor || "").length + " letras)")
-    )
   );
-});
+}, () => true);  // nunca se re-renderiza por el padre: queda aislado del todo
 
 function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambios }) {
   const isMobilePos = useIsMobile();
@@ -10980,11 +10980,17 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
   // (diferido, para no recalcular en cada tecla).
   const [busca, setBusca] = useState("");
   const debounceRef = React.useRef(null);
+  // El campo es no controlado; guardamos su texto actual en un ref y una
+  // función para limpiarlo desde afuera (al agregar producto, Escape, etc.).
+  const textoActualRef = React.useRef("");
+  const limpiadorCampoRef = React.useRef(null);
   // Limpia el buscador. El campo se controla por "value", así que alcanza
   // con vaciar el estado; el componente aislado refleja el cambio.
   const limpiarBusqueda = () => {
     setBarcode("");
     setBusca("");
+    textoActualRef.current = "";
+    if (limpiadorCampoRef.current) limpiadorCampoRef.current();
     if (debounceRef.current) clearTimeout(debounceRef.current);
   };
   // Aviso naranja: se vendió algo que figura sin stock
@@ -11261,8 +11267,8 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     setResaltado(0);
   };
 
-  const buscarPorCodigo = () => {
-    const code = barcode.trim();
+  const buscarPorCodigo = (textoDirecto) => {
+    const code = String(textoDirecto != null ? textoDirecto : barcode).trim();
     if (!code) return;
     // Primero las variantes: si el código es de un talle y color puntual,
     // entra derecho al carrito sin preguntar nada
@@ -11477,18 +11483,18 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
           // alto de su contenido y la altura fijada no se respetaba.
           { className: "ct-pos-buscar", style: { display: "flex", alignItems: "stretch", gap: 10, flexWrap: "wrap" } },
           React.createElement(CampoBusquedaPOS, {
-            valor: barcode,
             isMobilePos, posColors,
+            registrarLimpiador: (fn) => { limpiadorCampoRef.current = fn; },
             onCambiar: (v) => {
+              textoActualRef.current = v;
               setBarcode(v);
               setResaltado(0);
               if (barcodeError) setBarcodeError("");
               if (debounceRef.current) clearTimeout(debounceRef.current);
               debounceRef.current = setTimeout(() => setBusca(v), 250);
             },
-            onEnter: () => { if (debounceRef.current) clearTimeout(debounceRef.current); setBusca(barcode); buscarPorCodigo(); },
-            onEscanear: () => setEscaneando(true),
-            onLimpiar: () => { limpiarBusqueda(); setBarcodeError(""); }
+            onEnter: () => { if (debounceRef.current) clearTimeout(debounceRef.current); setBusca(textoActualRef.current); buscarPorCodigo(textoActualRef.current); },
+            onEscanear: () => setEscaneando(true)
           }),
           // Sólo el ícono: con la pistola casi no se usan, y con texto le
           // comían la mitad del ancho al buscador, que es lo que más se toca.
@@ -11936,6 +11942,8 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
           pitido(false);
           setBarcode(code);
           setBusca(code);
+          textoActualRef.current = code;
+          if (limpiadorCampoRef.current) limpiadorCampoRef.current(code);
           setBarcodeError("Ningún producto tiene el código " + code + ".");
         },
         onClose: () => setEscaneando(false)
