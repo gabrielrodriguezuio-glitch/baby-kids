@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.751";
+const VERSION_APP = "9.752";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -10893,6 +10893,17 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
   const [categoria, setCategoria] = useState("Todas");
   const [barcode, setBarcode] = useState("");
   const [barcodeError, setBarcodeError] = useState("");
+  // Referencia al campo de búsqueda: se enfoca una sola vez al abrir el POS,
+  // sin autoFocus, que en el celular hacía saltar el cursor y desordenaba las
+  // letras ("Reme" salía "emRe").
+  const inputBusquedaRef = React.useRef(null);
+  useEffect(() => {
+    // Sólo en pantallas grandes conviene el foco automático; en el celular
+    // molesta (abre el teclado solo) y es justo donde daba el problema.
+    if (!isMobilePos && inputBusquedaRef.current) {
+      inputBusquedaRef.current.focus();
+    }
+  }, []);
   // Aviso naranja: se vendió algo que figura sin stock
   const [avisoStock, setAvisoStock] = useState("");
   const [showConsulta, setShowConsulta] = useState(false);
@@ -11386,7 +11397,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
             { className: "ct-buscador", style: { flex: isMobilePos ? "1 0 100%" : 1, minWidth: isMobilePos ? "100%" : 190, display: "flex", alignItems: "center", gap: 12, background: "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "1.5px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: RADIO.control, padding: isMobilePos ? "0 18px" : "0 17px", height: 56, minHeight: 56, boxSizing: "border-box", transition: "border-color .12s ease, box-shadow .12s ease" } },
             React.createElement(Search, { size: 18, color: "var(--denim-light)" }),
             React.createElement("input", {
-              autoFocus: true,
+              ref: inputBusquedaRef,
               placeholder: isMobilePos ? "Buscar producto\u2026" : "Buscar producto... (Enter para agregar)",
               value: barcode,
               onChange: (e) => {
