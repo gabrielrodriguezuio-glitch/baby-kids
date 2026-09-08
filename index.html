@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.770";
+const VERSION_APP = "9.771";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -297,7 +297,17 @@ const efectivoEnCaja = (caja) => {
 function useIsMobile(bp = 700) {
   const [mobile, setMobile] = useState(typeof window !== "undefined" && window.innerWidth <= bp);
   useEffect(() => {
-    const onResize = () => setMobile(window.innerWidth <= bp);
+    // Sólo miramos el ANCHO. En el celular en vertical, cuando aparece el
+    // teclado la ventana se achica de ALTO y eso disparaba un "resize" en
+    // cada tecla, redibujando toda la app y corrompiendo lo que se escribía
+    // (las letras salían desordenadas, sólo en vertical). Guardando el ancho
+    // anterior, ignoramos los resize que sólo cambian el alto.
+    let anchoPrevio = window.innerWidth;
+    const onResize = () => {
+      if (window.innerWidth === anchoPrevio) return; // sólo cambió el alto (teclado): no hacemos nada
+      anchoPrevio = window.innerWidth;
+      setMobile(window.innerWidth <= bp);
+    };
     window.addEventListener("resize", onResize);
     window.addEventListener("orientationchange", onResize);
     return () => {
