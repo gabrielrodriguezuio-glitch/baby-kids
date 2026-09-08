@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.760";
+const VERSION_APP = "9.761";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -10824,6 +10824,47 @@ const nuevoCarrito = (n, listaId) => ({
   extras: { ...EXTRAS_VACIOS }
 });
 
+// Campo de búsqueda del punto de venta, AISLADO en su propio componente.
+// La pantalla del punto de venta se redibuja cada vez que llega una
+// sincronización de la nube (una venta de otro dispositivo, etc.), y ese
+// redibujado le robaba el foco al campo y desordenaba las letras en el
+// celular. Al vivir en su propio componente con React.memo, los refrescos de
+// la pantalla de afuera no lo tocan: el texto se maneja acá adentro y sólo se
+// avisa hacia afuera cuando cambia, sin re-montar el input.
+const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ valor, onCambiar, onEnter, onEscanear, onLimpiar, isMobilePos, posColors }) {
+  const ref = React.useRef(null);
+  // Foco automático sólo en pantallas grandes; en el celular molesta
+  useEffect(() => {
+    if (!isMobilePos && ref.current) ref.current.focus();
+  }, []);
+  return React.createElement(
+    "div",
+    { className: "ct-buscador", style: { flex: isMobilePos ? "1 0 100%" : 1, minWidth: isMobilePos ? "100%" : 190, display: "flex", alignItems: "center", gap: 12, background: "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "1.5px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: RADIO.control, padding: isMobilePos ? "0 18px" : "0 17px", height: 56, minHeight: 56, boxSizing: "border-box", transition: "border-color .12s ease, box-shadow .12s ease" } },
+    React.createElement(Search, { size: 18, color: "var(--denim-light)" }),
+    React.createElement("input", {
+      ref,
+      placeholder: isMobilePos ? "Buscar producto\u2026" : "Buscar producto... (Enter para agregar)",
+      value: valor,
+      autoComplete: "off", autoCorrect: "off", autoCapitalize: "off", spellCheck: false,
+      onChange: (e) => onCambiar(e.target.value),
+      onKeyDown: (e) => {
+        if (e.key === "Enter") { e.preventDefault(); onEnter(); }
+      },
+      style: { flex: 1, minWidth: 0, height: "100%", background: "transparent", border: "none", outline: "none", color: posColors.text, fontSize: isMobilePos ? 16 : 15, padding: 0 }
+    }),
+    valor && React.createElement("button", {
+      onClick: onLimpiar,
+      title: "Borrar",
+      style: { background: "none", border: "none", cursor: "pointer", color: posColors.muted, display: "flex", padding: 4, flexShrink: 0 }
+    }, React.createElement(X, { size: 16 })),
+    React.createElement("button", {
+      onClick: onEscanear,
+      title: "Escanear con la cámara",
+      style: { display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", borderLeft: "1px solid color-mix(in srgb, var(--denim) 30%, transparent)", cursor: "pointer", color: "var(--denim-light)", width: 42, flex: "0 0 42px", flexShrink: 0, padding: "8px 0 8px 12px", marginLeft: 4, boxSizing: "content-box" }
+    }, React.createElement(ScanBarcode, { size: 18 }))
+  );
+});
+
 function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambios }) {
   const isMobilePos = useIsMobile();
   // Todo el punto de venta trabaja sobre el stock del negocio activo
@@ -10911,32 +10952,17 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
   const [categoria, setCategoria] = useState("Todas");
   const [barcode, setBarcode] = useState("");
   const [barcodeError, setBarcodeError] = useState("");
-  // Referencia al campo de búsqueda: se enfoca una sola vez al abrir el POS,
-  // sin autoFocus, que en el celular hacía saltar el cursor y desordenaba las
-  // letras ("Reme" salía "emRe").
-  const inputBusquedaRef = React.useRef(null);
-  // "barcode" es lo que se ve mientras se escribe; "busca" es lo que realmente
-  // dispara el filtrado. En el celular, filtrar en cada tecla hacía que el
-  // teclado con predicción desordenara las letras. Con esto, el filtrado
-  // espera a que se deje de escribir un instante (o se toque Enter), y el
-  // tipeo queda libre y en orden.
+  // "barcode" es lo que se ve al escribir; "busca" dispara el filtrado
+  // (diferido, para no recalcular en cada tecla).
   const [busca, setBusca] = useState("");
   const debounceRef = React.useRef(null);
-  // Limpia el buscador: el estado Y el campo real. Como el input es no
-  // controlado, borrar sólo el estado dejaría el texto en pantalla.
+  // Limpia el buscador. El campo se controla por "value", así que alcanza
+  // con vaciar el estado; el componente aislado refleja el cambio.
   const limpiarBusqueda = () => {
     setBarcode("");
     setBusca("");
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (inputBusquedaRef.current) inputBusquedaRef.current.value = "";
   };
-  useEffect(() => {
-    // Sólo en pantallas grandes conviene el foco automático; en el celular
-    // molesta (abre el teclado solo) y es justo donde daba el problema.
-    if (!isMobilePos && inputBusquedaRef.current) {
-      inputBusquedaRef.current.focus();
-    }
-  }, []);
   // Aviso naranja: se vendió algo que figura sin stock
   const [avisoStock, setAvisoStock] = useState("");
   const [showConsulta, setShowConsulta] = useState(false);
@@ -11426,72 +11452,20 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
           // "stretch" en vez de "center": con center cada hijo tomaba sólo el
           // alto de su contenido y la altura fijada no se respetaba.
           { className: "ct-pos-buscar", style: { display: "flex", alignItems: "stretch", gap: 10, flexWrap: "wrap" } },
-          React.createElement(
-            "div",
-            // Es lo que más se toca del punto de venta: va grande y con el
-            // texto legible sin acercar el teléfono.
-            // Misma altura que los botones de al lado, pero teñido con el
-            // color de acento: se distingue como el campo principal sin
-            // romper la alineación de la fila.
-            // En celular ocupa el ancho completo y los tres botones quedan
-            // debajo repartidos: así el bloque entero mide lo mismo.
-            // Sin tope de ancho: con el menú fuera del camino hay lugar de
-            // sobra y el buscador es lo que más se usa en el mostrador.
-            { className: "ct-buscador", style: { flex: isMobilePos ? "1 0 100%" : 1, minWidth: isMobilePos ? "100%" : 190, display: "flex", alignItems: "center", gap: 12, background: "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "1.5px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: RADIO.control, padding: isMobilePos ? "0 18px" : "0 17px", height: 56, minHeight: 56, boxSizing: "border-box", transition: "border-color .12s ease, box-shadow .12s ease" } },
-            React.createElement(Search, { size: 18, color: "var(--denim-light)" }),
-            React.createElement("input", {
-              ref: inputBusquedaRef,
-              placeholder: isMobilePos ? "Buscar producto\u2026" : "Buscar producto... (Enter para agregar)",
-              // Campo NO controlado: el navegador maneja el texto directamente,
-              // así el cursor nunca salta ni se desordenan las letras en el
-              // celular ("Reme" ya no sale "emRe"). El estado se actualiza
-              // desde onChange, pero no vuelve a imponer el value al campo.
-              defaultValue: "",
-              autoComplete: "off",
-              autoCorrect: "off",
-              autoCapitalize: "off",
-              spellCheck: false,
-              onChange: (e) => {
-                const v = e.target.value;
-                setBarcode(v);
-                setResaltado(0);
-                if (barcodeError) setBarcodeError("");
-                // El filtrado espera 250ms tras la última tecla: mientras se
-                // escribe, el campo no se re-renderiza y el teclado no
-                // desordena las letras. Al frenar, recién ahí busca.
-                if (debounceRef.current) clearTimeout(debounceRef.current);
-                debounceRef.current = setTimeout(() => setBusca(v), 250);
-              },
-              onKeyDown: (e) => {
-              if (e.key === "Enter") { e.preventDefault(); if (debounceRef.current) clearTimeout(debounceRef.current); setBusca(e.target.value); buscarPorCodigo(); }
-              else if (e.key === "ArrowDown") { e.preventDefault(); setResaltado((i) => Math.min(sugerencias.length - 1, i + 1)); }
-              else if (e.key === "ArrowUp") { e.preventDefault(); setResaltado((i) => Math.max(0, i - 1)); }
+          React.createElement(CampoBusquedaPOS, {
+            valor: barcode,
+            isMobilePos, posColors,
+            onCambiar: (v) => {
+              setBarcode(v);
+              setResaltado(0);
+              if (barcodeError) setBarcodeError("");
+              if (debounceRef.current) clearTimeout(debounceRef.current);
+              debounceRef.current = setTimeout(() => setBusca(v), 250);
             },
-              style: { flex: 1, minWidth: 0, height: "100%", background: "transparent", border: "none", outline: "none", color: posColors.text, fontSize: isMobilePos ? 16 : 15, padding: 0 }
-            }),
-            // Borrar lo escrito y escanear, al final del campo. Es el mismo
-            // patrón que en Consultar precio: lupa, texto y escáner adentro
-            // del mismo recuadro.
-            barcode && React.createElement("button", {
-              onClick: () => { limpiarBusqueda(); setBarcodeError(""); },
-              title: "Borrar",
-              style: { background: "none", border: "none", cursor: "pointer", color: posColors.muted, display: "flex", padding: 4, flexShrink: 0 }
-            }, React.createElement(X, { size: 16 })),
-            React.createElement("button", {
-              onClick: () => setEscaneando(true),
-              title: "Escanear con la cámara",
-              style: {
-                display: "flex", alignItems: "center", justifyContent: "center",
-                background: "none", border: "none",
-                borderLeft: "1px solid color-mix(in srgb, var(--denim) 30%, transparent)",
-                cursor: "pointer", color: "var(--denim-light)",
-                // Ancho fijo: cuando el buscador ocupa toda la fila, como en
-                // la tablet vertical, sin esto el botón se lleva el sobrante.
-                width: 42, flex: "0 0 42px", flexShrink: 0,
-                padding: "8px 0 8px 12px", marginLeft: 4, boxSizing: "content-box"
-              }
-            }, React.createElement(ScanBarcode, { size: 18 }))
-          ),
+            onEnter: () => { if (debounceRef.current) clearTimeout(debounceRef.current); setBusca(barcode); buscarPorCodigo(); },
+            onEscanear: () => setEscaneando(true),
+            onLimpiar: () => { limpiarBusqueda(); setBarcodeError(""); }
+          }),
           // Sólo el ícono: con la pistola casi no se usan, y con texto le
           // comían la mitad del ancho al buscador, que es lo que más se toca.
           // En el celular va el nombre debajo del ícono: el globito sólo
@@ -11938,7 +11912,6 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
           pitido(false);
           setBarcode(code);
           setBusca(code);
-          if (inputBusquedaRef.current) inputBusquedaRef.current.value = code;
           setBarcodeError("Ningún producto tiene el código " + code + ".");
         },
         onClose: () => setEscaneando(false)
