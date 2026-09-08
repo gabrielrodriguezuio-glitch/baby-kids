@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.773-DIAG3";
+const VERSION_APP = "9.774-DIAG4";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -10887,40 +10887,11 @@ const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ onCambiar, onEnt
     React.createElement("input", {
       ref,
       type: "text",
-      inputMode: "text",
-      name: "buscar-prod-" + Math.random().toString(36).slice(2, 8),
       placeholder: isMobilePos ? "Buscar producto\u2026" : "Buscar producto... (Enter para agregar)",
       defaultValue: "",
-      autoComplete: "off", autoCorrect: "off", autoCapitalize: "off", spellCheck: false,
-      // El teclado con predicción reordena el texto. Para evitarlo, en vez de
-      // dejar que el teclado arme la palabra, reconstruimos el texto nosotros
-      // caracter por caracter con beforeinput: cada tecla se agrega al final,
-      // en el orden real en que se tocó, sin que la predicción lo altere.
-      onBeforeInput: (e) => {
-        if (e.inputType === "insertText" && e.data != null) {
-          e.preventDefault();
-          const el = ref.current;
-          const ini = el.selectionStart, fin = el.selectionEnd;
-          const v = el.value;
-          el.value = v.slice(0, ini) + e.data + v.slice(fin);
-          const pos = ini + e.data.length;
-          el.setSelectionRange(pos, pos);
-          leer();
-        } else if (e.inputType === "deleteContentBackward") {
-          e.preventDefault();
-          const el = ref.current;
-          const ini = el.selectionStart, fin = el.selectionEnd;
-          const v = el.value;
-          if (ini === fin && ini > 0) {
-            el.value = v.slice(0, ini - 1) + v.slice(fin);
-            el.setSelectionRange(ini - 1, ini - 1);
-          } else {
-            el.value = v.slice(0, ini) + v.slice(fin);
-            el.setSelectionRange(ini, ini);
-          }
-          leer();
-        }
-      },
+      // Campo lo más normal posible: dejamos que el teclado trabaje como en
+      // cualquier app (WhatsApp, notas), sin prohibirle corregir ni predecir.
+      // Prohibírselo hacía que algunos teclados desordenaran las letras.
       onInput: leer,
       onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); onEnter(); } },
       style: { flex: 1, minWidth: 0, height: "100%", background: "transparent", border: "none", outline: "none", color: "var(--ink)", WebkitTextFillColor: "var(--ink)", caretColor: "var(--denim-light)", fontSize: isMobilePos ? 16 : 15, padding: 0 }
