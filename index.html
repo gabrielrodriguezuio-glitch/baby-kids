@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.780";
+const VERSION_APP = "9.781";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -10890,7 +10890,7 @@ const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ onCambiar, onEnt
     "div",
     { onClick: () => setAbierto(true), className: "ct-buscador", style: { flex: isMobilePos ? "1 0 100%" : 1, minWidth: isMobilePos ? "100%" : 190, display: "flex", alignItems: "center", gap: 12, background: "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "1.5px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: RADIO.control, padding: isMobilePos ? "0 18px" : "0 17px", height: 56, minHeight: 56, boxSizing: "border-box", cursor: "text" } },
     React.createElement(Search, { size: 18, color: "var(--denim-light)" }),
-    React.createElement("div", { style: { flex: 1, minWidth: 0, fontSize: isMobilePos ? 16 : 15, color: texto ? "var(--ink)" : posColors.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } },
+    React.createElement("div", { style: { flex: 1, minWidth: 0, fontSize: isMobilePos ? 17 : 15, fontWeight: 600, color: texto ? "#ffffff" : posColors.muted, WebkitTextFillColor: texto ? "#ffffff" : posColors.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } },
       texto || (isMobilePos ? "Buscar producto\u2026" : "Buscar producto...")),
     texto && React.createElement("button", {
       onClick: (e) => { e.stopPropagation(); fijar(""); },
