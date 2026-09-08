@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.720";
+const VERSION_APP = "9.740";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -2115,10 +2115,11 @@ function Wrapper({ children, mobile, tema = "oscuro" }) {
         .ct-listafila:hover { background: var(--hover); }
         @media (hover: none) { .ct-listafila .ct-accion { opacity: 1; } }
         /* El buscador del punto de venta ya viene teñido: al enfocarlo se
-           intensifica en vez de cambiar de color. */
+           intensifica en vez de cambiar de color. El aro va hacia adentro
+           (inset) para que no se derrame fuera de la pantalla en móviles. */
         .ct-buscador:focus-within {
           border-color: var(--denim) !important;
-          box-shadow: 0 0 0 3px color-mix(in srgb, var(--denim) 18%, transparent);
+          box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--denim) 30%, transparent);
         }
         .ct-busq-ventas.ct-busq-activo {
           border-color: var(--denim);
@@ -2290,10 +2291,11 @@ function Wrapper({ children, mobile, tema = "oscuro" }) {
         .ct-esqueleto { border-radius: 8px; background: linear-gradient(90deg, var(--surface-2) 25%, var(--hover) 37%, var(--surface-2) 63%);
           background-size: 240% 100%; animation: ct-brillo 1.3s ease-in-out infinite; }
         /* El buscador se enciende cuando el cursor está adentro.
-           El input de adentro no dibuja su propio contorno: quedaban dos aros. */
+           El input de adentro no dibuja su propio contorno: quedaban dos aros.
+           El aro va hacia adentro (inset) para que no se salga de la pantalla. */
         .ct-buscador:focus-within {
           border-color: var(--denim) !important;
-          box-shadow: 0 0 0 3px var(--denim-soft);
+          box-shadow: inset 0 0 0 2px var(--denim-soft);
         }
         .ct-buscador input:focus,
         .ct-buscador input:focus-visible { outline: none !important; box-shadow: none !important; }
@@ -23668,6 +23670,7 @@ function UsuariosView({ data, persist, senalUsuario, senalInvitaciones, senalRol
         "apikey": NUBE_KEY,
       },
       body: JSON.stringify({
+        accion: "crear",
         email: f.email, password: f.password, nombre: f.nombre,
         rol: f.rol, usuario: f.usuario || handleDesde(f.nombre),
         telefono: f.telefono || "", negocios: f.negocios || [],
@@ -23682,7 +23685,14 @@ function UsuariosView({ data, persist, senalUsuario, senalInvitaciones, senalRol
       usuario: f.usuario || handleDesde(f.nombre), email: f.email,
       rol: f.rol, negocios: f.negocios || [], telefono: f.telefono || "",
       activo: true, ultimoAcceso: todayISO(), esVos: false };
-    persist({ ...data, usuarios: [...usuarios, nuevo] });
+    // Reflejar el nuevo en la lista local, sin duplicar: si por lo que sea
+    // ya figura una ficha con ese acceso o mail, la reemplazamos en lugar
+    // de sumar otra.
+    const sinRepetir = usuarios.filter((u) =>
+      u.auth_id !== r.auth_id &&
+      (u.email || "").toLowerCase() !== (f.email || "").toLowerCase()
+    );
+    persist({ ...data, usuarios: [...sinRepetir, nuevo] });
     setEditando(null);
     avisar(f.nombre + " ya puede entrar con su mail y contraseña");
   };
@@ -23711,20 +23721,43 @@ function UsuariosView({ data, persist, senalUsuario, senalInvitaciones, senalRol
     avisar(quitando ? u.nombre + " ya no puede entrar" : u.nombre + " puede entrar de nuevo", { tono: "info" });
   };
   const marcarComoVos = (u) => { persist({ ...data, usuarios: usuarios.map((x) => ({ ...x, esVos: x.id === u.id })) }); setMenuAbierto(null); };
-  const eliminar = (u) => {
+  const eliminar = async (u) => {
     if (u.esVos) { setMenuAbierto(null); return avisar("No podés borrar tu propia cuenta.", { tono: "error" }); }
-    if (!window.confirm("¿Borrar a " + u.nombre + " del equipo?\n\nSus ventas anteriores siguen figurando a su nombre. La cuenta de acceso se borra aparte, en Supabase.")) {
+    if (!window.confirm("¿Borrar a " + u.nombre + " del equipo?\n\nSe borra su acceso por completo. Sus ventas anteriores siguen figurando a su nombre.")) {
       setMenuAbierto(null);
       return;
     }
+    setMenuAbierto(null);
     const anterior = data;
-    // También se le cierra la caja, para que no quede abierta la de alguien
-    // que ya no está en el equipo
+    // Sacar la ficha y cerrarle la caja en la vista, para que responda al toque
     const cajas = { ...(data.cajas || {}) };
     Object.keys(cajas).forEach((k) => { if (k.split("|")[1] === u.id) delete cajas[k]; });
     persist({ ...data, cajas, usuarios: usuarios.filter((x) => x.id !== u.id) });
-    setMenuAbierto(null);
-    avisar(u.nombre + " se borró del equipo", { deshacer: () => persist(anterior) });
+    // Y borrar de verdad las dos partes (ficha + cuenta de acceso) en el servidor
+    try {
+      const { data: sesion } = await nube.auth.getSession();
+      const token = sesion && sesion.session ? sesion.session.access_token : "";
+      const resp = await fetch(NUBE_URL + "/functions/v1/crear-usuario", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + token,
+          "apikey": NUBE_KEY,
+        },
+        body: JSON.stringify({ accion: "eliminar", auth_id: u.auth_id || "", email: u.email || "" }),
+      });
+      const r = await resp.json().catch(() => ({}));
+      if (!resp.ok || r.error) {
+        // Si el servidor falló, devolvemos la ficha para no engañar al ojo
+        persist(anterior);
+        avisar("No se pudo borrar del todo: " + (r.error || "probá de nuevo"), { tono: "error" });
+        return;
+      }
+      avisar(u.nombre + " se borró del equipo");
+    } catch (e) {
+      persist(anterior);
+      avisar("No se pudo borrar: revisá la conexión", { tono: "error" });
+    }
   };
 
   return React.createElement(
