@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.740";
+const VERSION_APP = "9.751";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -10902,7 +10902,9 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
   const [resaltado, setResaltado] = useState(0);
   const [escaneando, setEscaneando] = useState(false);
 
-  // Atajos: F2 cobra, Escape vacía el buscador
+  // Atajos: F2 cobra, Escape vacía el buscador.
+  // Las dependencias evitan que el detector se rearme en cada tecla: sin
+  // ellas, en el celular llegaba a comerse las letras del buscador.
   useEffect(() => {
     const tecla = (e) => {
       if (e.key === "F2") {
@@ -10914,7 +10916,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     };
     document.addEventListener("keydown", tecla);
     return () => document.removeEventListener("keydown", tecla);
-  });
+  }, [cart.length, barcode]);
   const [ventaProcesada, setVentaProcesada] = useState(null);
   const [confirmado, setConfirmado] = useState(null);
   const [errorStock, setErrorStock] = useState("");
@@ -18638,10 +18640,27 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
   // El lector alterno se guarda para poder apagarlo al cerrar: si queda vivo,
   // la cámara sigue prendida.
   const alternoRef = React.useRef(null);
+  // La pista de video de la cámara: por acá se prende la linterna y se pide
+  // enfoque continuo. Se guarda para poder tocarla desde los botones.
+  const trackRef = React.useRef(null);
   const [estado, setEstado] = useState("iniciando");
   const [detalle, setDetalle] = useState("");
   const [ultimo, setUltimo] = useState("");
   const [manual, setManual] = useState("");
+  // Si la cámara de este equipo permite prender la luz, mostramos el botón
+  const [hayLinterna, setHayLinterna] = useState(false);
+  const [linternaOn, setLinternaOn] = useState(false);
+
+  // Prende o apaga la linterna del teléfono, si la cámara lo permite
+  const alternarLinterna = async () => {
+    const track = trackRef.current;
+    if (!track) return;
+    try {
+      const nuevo = !linternaOn;
+      await track.applyConstraints({ advanced: [{ torch: nuevo }] });
+      setLinternaOn(nuevo);
+    } catch (e) { /* algunas cámaras no dejan: se ignora */ }
+  };
 
   useEffect(() => {
     let cancelado = false;
@@ -18655,6 +18674,11 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
       if (alternoRef.current) {
         try { alternoRef.current.reset(); } catch (e) {}
         alternoRef.current = null;
+      }
+      // Apagar la linterna antes de soltar la cámara, si quedó prendida
+      if (trackRef.current) {
+        try { trackRef.current.applyConstraints({ advanced: [{ torch: false }] }); } catch (e) {}
+        trackRef.current = null;
       }
       if (stream) stream.getTracks().forEach((t) => t.stop());
     };
@@ -18679,6 +18703,21 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           await videoRef.current.play().catch(() => {});
+        }
+        // Guardar la pista para la linterna, y pedir enfoque continuo: los
+        // códigos chicos o de cerca quedaban borrosos con foco fijo.
+        const track = stream.getVideoTracks()[0];
+        trackRef.current = track;
+        if (track) {
+          try {
+            const caps = track.getCapabilities ? track.getCapabilities() : {};
+            // Enfoque automático continuo, si la cámara lo permite
+            if (caps.focusMode && caps.focusMode.indexOf("continuous") >= 0) {
+              await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {});
+            }
+            // ¿Tiene linterna? Mostramos el botón sólo si sí
+            if (caps.torch) setHayLinterna(true);
+          } catch (e) { /* si no soporta capacidades, seguimos igual */ }
         }
       } catch (e) {
         setEstado("permiso");
@@ -18833,10 +18872,28 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
               "div",
               { style: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 13.5 } },
               "Abriendo la cámara…"
+            ),
+            // Botón de linterna, sobre el video, sólo si la cámara la tiene
+            hayLinterna && estado === "leyendo" && React.createElement(
+              "button",
+              {
+                onClick: alternarLinterna,
+                title: linternaOn ? "Apagar la luz" : "Prender la luz",
+                style: {
+                  position: "absolute", right: 12, bottom: 12,
+                  display: "inline-flex", alignItems: "center", justifyContent: "center",
+                  width: 44, height: 44, borderRadius: "50%", cursor: "pointer",
+                  background: linternaOn ? "var(--mustard)" : "rgba(0,0,0,0.55)",
+                  border: "1.5px solid rgba(255,255,255,0.7)",
+                  color: linternaOn ? "#1a1a1a" : "#fff"
+                }
+              },
+              React.createElement(linternaOn ? Sun : Moon, { size: 20 })
             )
           ),
           React.createElement("div", { style: { fontSize: 13, color: "var(--muted)", textAlign: "center", marginTop: 12, lineHeight: 1.55 } },
-            "Acercá el código y mantenelo derecho, llenando el ancho de la pantalla. Se lee solo.")
+            "Acercá el código y mantenelo derecho, llenando el ancho de la pantalla. Se lee solo." +
+            (hayLinterna ? " Si hay poca luz, tocá la luz." : ""))
         ),
 
     // El campo a mano se puede ocultar: en el mostrador estorba, porque lo que
