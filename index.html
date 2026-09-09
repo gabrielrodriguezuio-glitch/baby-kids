@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.792";
+const VERSION_APP = "9.793";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -10939,7 +10939,7 @@ const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ onCambiar, onEnt
           React.createElement("span", { style: { flex: 1, minWidth: 0 } },
             React.createElement("span", { style: { display: "block", fontSize: 14, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, prod.nombre),
             React.createElement("span", { style: { display: "block", fontSize: 11.5, color: "#9aa0a6", marginTop: 1 } }, prod.codigoBarras || "sin código")),
-          React.createElement(ArrowRight, { size: 16, color: "#8ab4f8", style: { flexShrink: 0 } })
+          React.createElement("span", { style: { color: "#8ab4f8", fontSize: 18, flexShrink: 0, fontWeight: 700 } }, "+")
         ))
       ),
       // Lo que vas escribiendo, arriba del teclado
