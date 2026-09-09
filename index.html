@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.803-DIAG";
+const VERSION_APP = "9.804";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -4859,8 +4859,8 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
   }
 
   // ── Ajustes del negocio ───────────────────────────────────
-  const ajusteAntes = JSON.stringify([antes.negocio, antes.catalogo, antes.rolesPersonalizados, antes.soporteTelefono]);
-  const ajusteAhora = JSON.stringify([despues.negocio, despues.catalogo, despues.rolesPersonalizados, despues.soporteTelefono]);
+  const ajusteAntes = JSON.stringify([antes.negocio, antes.catalogo, antes.rolesPersonalizados, antes.soporteTelefono, antes.repoPendiente, antes.repoVentasVistas, antes.repoDivision, antes.reparto, antes.reposicion]);
+  const ajusteAhora = JSON.stringify([despues.negocio, despues.catalogo, despues.rolesPersonalizados, despues.soporteTelefono, despues.repoPendiente, despues.repoVentasVistas, despues.repoDivision, despues.reparto, despues.reposicion]);
   if (ajusteAntes !== ajusteAhora) {
     await nube.from("ajustes").update({
       datos: {
@@ -4869,7 +4869,15 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
         rolesPersonalizados: despues.rolesPersonalizados || [],
         soporteTelefono: despues.soporteTelefono || "",
         // Que el ajuste de los costos no se rehaga en cada dispositivo
-        costoSoloDueno: !!despues.costoSoloDueno
+        costoSoloDueno: !!despues.costoSoloDueno,
+        // La reposición y el reparto viajan a la nube: sin esto, reponer no
+        // sobrevivía al cerrar la app (volvía a bajar la lista sin el descuento)
+        // y no se podían compartir entre dispositivos.
+        repoPendiente: despues.repoPendiente || [],
+        repoVentasVistas: despues.repoVentasVistas || [],
+        repoDivision: despues.repoDivision || null,
+        reparto: despues.reparto || null,
+        reposicion: despues.reposicion || null
       },
       actualizado_en: new Date().toISOString()
     }).eq("id", 1);
@@ -5176,6 +5184,11 @@ async function traerEsencial(quienEntro) {
     rolesPersonalizados: extra.rolesPersonalizados || [],
     soporteTelefono: extra.soporteTelefono || "",
     costoSoloDueno: !!extra.costoSoloDueno,
+    repoPendiente: extra.repoPendiente || [],
+    repoVentasVistas: extra.repoVentasVistas || [],
+    repoDivision: extra.repoDivision || null,
+    reparto: extra.reparto || null,
+    reposicion: extra.reposicion || null,
     _parcial: true
   };
 }
@@ -5382,7 +5395,14 @@ async function traerDeLaNube(quienEntro) {
     catalogo: extra.catalogo || {},
     rolesPersonalizados: extra.rolesPersonalizados || [],
     soporteTelefono: extra.soporteTelefono || "",
-    costoSoloDueno: !!extra.costoSoloDueno
+    costoSoloDueno: !!extra.costoSoloDueno,
+    // La reposición y el reparto se bajan de la nube: así el descuento de lo
+    // repuesto sobrevive al cerrar la app y se comparte entre dispositivos.
+    repoPendiente: extra.repoPendiente || [],
+    repoVentasVistas: extra.repoVentasVistas || [],
+    repoDivision: extra.repoDivision || null,
+    reparto: extra.reparto || null,
+    reposicion: extra.reposicion || null
   };
 }
 
@@ -20569,14 +20589,11 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
         talle: x.talle || "", color: x.color || "",
         cantidad: hechos[CLAVE_REPO(x)], productoId: x.productoId
       }));
-    // DIAGNÓSTICO temporal: ver cuántos se marcaron y cuántos se van a descontar
-    const marcadasCant = Object.keys(hechos).filter((k) => hechos[k] > 0).length;
     const quedan = pendiente.map((x) => {
       const k = CLAVE_REPO(x);
       const repuesto = hechos[k] || 0;
       return repuesto > 0 ? { ...x, cantidad: x.cantidad - repuesto } : x;
     }).filter((x) => x.cantidad > 0);
-    avisar("Marcados: " + marcadasCant + " · Antes: " + pendiente.length + " prod · Después: " + quedan.length + " prod", { tono: "info" });
 
     // Mover la mercadería del local de origen a la camioneta (este negocio).
     // Sin origen elegido, sólo se registra el remito sin tocar stock (como antes).
