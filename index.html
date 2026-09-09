@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.840";
+const VERSION_APP = "9.860";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1589,6 +1589,7 @@ function ControlTienda() {
       .on("postgres_changes", { event: "*", schema: "public", table: "variantes" }, (ev) => refrescar("variantes", ev))
       .on("postgres_changes", { event: "*", schema: "public", table: "productos" }, (ev) => refrescar("productos", ev))
       .on("postgres_changes", { event: "*", schema: "public", table: "reposicion_pendiente" }, (ev) => refrescar("reposicion_pendiente", ev))
+      .on("postgres_changes", { event: "*", schema: "public", table: "reposiciones_hechas" }, (ev) => refrescar("reposiciones_hechas", ev))
       .on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, (ev) => refrescar("clientes", ev))
       .on("postgres_changes", { event: "*", schema: "public", table: "movimientos_cc" }, (ev) => refrescar("movimientos_cc", ev))
       .on("postgres_changes", { event: "*", schema: "public", table: "cajas_abiertas" }, (ev) => refrescar("cajas_abiertas", ev))
@@ -4915,6 +4916,25 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
     }
   }
 
+  // ── Historial de reposiciones (remitos) ──────────────────
+  // Cada reposición confirmada se sube como una fila propia, así se ve
+  // desde cualquier dispositivo quién repuso, cuándo y qué.
+  const repoHechasAntes = new Set((antes.reposiciones || []).map((r) => r.id));
+  const repoHechasNuevas = (despues.reposiciones || []).filter((r) => !repoHechasAntes.has(r.id));
+  if (repoHechasNuevas.length) {
+    const { error } = await nube.from("reposiciones_hechas").insert(repoHechasNuevas.map((r) => ({
+      id: r.id, remito: r.remito, fecha: r.fecha, hora: r.hora || "",
+      negocio_id: r.negocioId || null, negocio_nombre: r.negocioNombre || "",
+      origen: r.origen || null, origen_nombre: r.origenNombre || "",
+      usuario: r.usuario || "", items: r.items || [],
+      unidades: r.unidades || 0, pendiente_despues: r.pendienteDespues || 0
+    })));
+    if (error) {
+      console.error("No se pudo guardar el remito de reposición:", error.message);
+      if (avisarProblema) avisarProblema("El remito de reposición no se guardó en la nube: " + error.message);
+    }
+  }
+
   // ── Ajustes del negocio ───────────────────────────────────
   const ajusteAntes = JSON.stringify([antes.negocio, antes.catalogo, antes.rolesPersonalizados, antes.soporteTelefono, antes.reparto, antes.reposicion]);
   const ajusteAhora = JSON.stringify([despues.negocio, despues.catalogo, despues.rolesPersonalizados, despues.soporteTelefono, despues.reparto, despues.reposicion]);
@@ -5097,7 +5117,7 @@ async function traerParcial(tablas, quienEntro) {
   // La comprobación va PRIMERO: antes estaba al final y ya se había armado
   // una respuesta incompleta, así que los cierres de caja nunca llegaban.
   const conocidas = ["variantes", "productos", "ventas", "venta_items", "clientes",
-                     "movimientos_cc", "cajas_abiertas", "caja_cierres", "reposicion_pendiente"];
+                     "movimientos_cc", "cajas_abiertas", "caja_cierres", "reposicion_pendiente", "reposiciones_hechas"];
   for (const t of tablas) if (conocidas.indexOf(t) < 0) return null;
 
   const salida = {};
@@ -5133,6 +5153,11 @@ async function traerParcial(tablas, quienEntro) {
     // Otro dispositivo vendió o repuso: se baja la lista tal cual quedó
     const repoNube = await nube.from("reposicion_pendiente").select("*");
     Object.assign(salida, repoDesdeNube(repoNube, null));
+  }
+
+  if (tablas.has("reposiciones_hechas")) {
+    const res = await nube.from("reposiciones_hechas").select("*").order("fecha", { ascending: false }).limit(500);
+    salida.reposiciones = reposicionesDesdeNube(res);
   }
 
   if (tablas.has("clientes")) {
@@ -5180,7 +5205,7 @@ async function traerParcial(tablas, quienEntro) {
 // cajas. Con esto la app ya se puede usar para vender. El historial llega
 // después, por detrás, sin que se note.
 async function traerEsencial(quienEntro) {
-  const [negs, cats, provs, listas, prods, vars, clis, ajustes, usuarios, cajasNube, repoNube] =
+  const [negs, cats, provs, listas, prods, vars, clis, ajustes, usuarios, cajasNube, repoNube, repoHechasNube] =
     await Promise.all([
       nube.from("negocios").select("*").order("principal", { ascending: false }),
       nube.from("categorias").select("nombre").order("nombre"),
@@ -5192,7 +5217,8 @@ async function traerEsencial(quienEntro) {
       nube.from("ajustes").select("datos").eq("id", 1).maybeSingle(),
       nube.from("usuarios").select("*").order("creado_en"),
       nube.from("cajas_abiertas").select("*"),
-      nube.from("reposicion_pendiente").select("*")
+      nube.from("reposicion_pendiente").select("*"),
+      nube.from("reposiciones_hechas").select("*").order("fecha", { ascending: false }).limit(500)
     ]);
 
   const primerError = [negs, cats, provs, listas, ajustes, usuarios, cajasNube]
@@ -5244,6 +5270,7 @@ async function traerEsencial(quienEntro) {
     soporteTelefono: extra.soporteTelefono || "",
     costoSoloDueno: !!extra.costoSoloDueno,
     ...repoDesdeNube(repoNube, extra),
+    reposiciones: reposicionesDesdeNube(repoHechasNube),
     reparto: extra.reparto || null,
     reposicion: extra.reposicion || null,
     _parcial: true
@@ -5253,7 +5280,7 @@ async function traerEsencial(quienEntro) {
 // Trae todo lo que la app necesita. Se piden las tablas en paralelo, que es
 // bastante más rápido que una tras otra.
 async function traerDeLaNube(quienEntro) {
-  const [negs, cats, provs, listas, prods, vars, clis, ventas, items, movsCC, ajustes, usuarios, cajasNube, cierresNube, transfNube, movStockNube, pedidosNube, notasNube, cambiosNube, devolNube, gastosNube, comprasNube, repoNube] =
+  const [negs, cats, provs, listas, prods, vars, clis, ventas, items, movsCC, ajustes, usuarios, cajasNube, cierresNube, transfNube, movStockNube, pedidosNube, notasNube, cambiosNube, devolNube, gastosNube, comprasNube, repoNube, repoHechasNube] =
     await Promise.all([
       nube.from("negocios").select("*").order("principal", { ascending: false }),
       nube.from("categorias").select("nombre").order("nombre"),
@@ -5292,7 +5319,8 @@ async function traerDeLaNube(quienEntro) {
       nube.from("devoluciones_reparto").select("*").order("creado_en", { ascending: false }).limit(500),
       nube.from("gastos").select("*").order("fecha", { ascending: false }).limit(1000),
       nube.from("compras").select("*").order("fecha", { ascending: false }).limit(1000),
-      nube.from("reposicion_pendiente").select("*")
+      nube.from("reposicion_pendiente").select("*"),
+      nube.from("reposiciones_hechas").select("*").order("fecha", { ascending: false }).limit(500)
     ]);
 
   // Las variantes y los renglones se agrupan por su dueño
@@ -5455,6 +5483,7 @@ async function traerDeLaNube(quienEntro) {
     soporteTelefono: extra.soporteTelefono || "",
     costoSoloDueno: !!extra.costoSoloDueno,
     ...repoDesdeNube(repoNube, extra),
+    reposiciones: reposicionesDesdeNube(repoHechasNube),
     reparto: extra.reparto || null,
     reposicion: extra.reposicion || null
   };
@@ -20279,6 +20308,20 @@ const pendienteRepo = (data) => (data.repoPendiente || []);
 // Arma repoPendiente/repoDivision a partir de la tabla "reposicion_pendiente".
 // Si la tabla todavía no existe (o vino vacía), se usa lo que pudiera haber
 // quedado en "ajustes" de versiones anteriores, para no perder la lista.
+// Historial de reposiciones desde la nube (si la tabla no existe, lista vacía)
+const reposicionesDesdeNube = (res) => {
+  const filas = (res && !res.error && Array.isArray(res.data)) ? res.data : [];
+  return filas
+    .map((f) => ({
+      id: f.id, remito: f.remito, fecha: f.fecha, hora: f.hora || "",
+      negocioId: f.negocio_id || "", negocioNombre: f.negocio_nombre || "",
+      origen: f.origen || "", origenNombre: f.origen_nombre || "",
+      usuario: f.usuario || "", items: f.items || [],
+      unidades: f.unidades || 0, pendienteDespues: f.pendiente_despues || 0
+    }))
+    .sort((a, b) => (b.fecha + " " + b.hora).localeCompare(a.fecha + " " + a.hora));
+};
+
 const repoDesdeNube = (repoNube, extra) => {
   const filas = (repoNube && !repoNube.error && Array.isArray(repoNube.data)) ? repoNube.data : null;
   if (!filas || !filas.length) {
@@ -23849,90 +23892,250 @@ const lineaDeTiempo = (data, negocioId) => {
   const ev = [];
   const principal = (listaNegocios(data)[0] || {}).id;
   const esDeAca = (id) => !negocioId || (id || principal) === negocioId;
+  const n = (id) => (listaNegocios(data).find((x) => x.id === id) || {}).nombre || "\u2014";
+  // "Remera M azul \u00D72, Pantal\u00F3n 40 \u00D71 y 3 m\u00E1s"
+  const resumenItems = (items, max) => {
+    const lista = items || [];
+    const uno = (x) => (x.nombre || "\u2014") +
+      ((x.talle || x.talla) ? " " + (x.talle || x.talla) : "") + (x.color ? " " + x.color : "") +
+      " \u00D7" + (x.cantidad || 0);
+    const top = Math.max(1, max || 6);
+    return lista.slice(0, top).map(uno).join(", ") + (lista.length > top ? " y " + (lista.length - top) + " m\u00E1s" : "");
+  };
+  const unidades = (items) => (items || []).reduce((a, x) => a + (Number(x.cantidad) || 0), 0);
+  const horaDe = (iso) => String(iso || "").slice(11, 16);
+  const fechaDe = (iso) => String(iso || "").slice(0, 10);
 
+  // ── Ventas y devoluciones ──
   (data.ventas || []).forEach((v) => {
     if (!esDeAca(v.negocioId)) return;
     const dev = esDevolucion(v);
-    const u = (v.items || []).reduce((a, it) => a + it.cantidad, 0);
+    const u = unidades(v.items);
     ev.push({
-      fecha: v.fecha, hora: v.horaTexto || "", tipo: dev ? "Devolución" : "Venta",
+      fecha: v.fecha, hora: v.horaTexto || "", tipo: dev ? "Devoluci\u00F3n" : "Venta",
       tono: dev ? "mustard" : "sage", icono: dev ? ArrowRightLeft : ShoppingBag,
-      titulo: (dev ? "Devolución" : "Venta") + " de " + Math.abs(u) + " u",
-      detalle: (v.clienteNombre || "Consumidor final") +
-        (v.metodoPago ? " · " + (METODO_LABELS[v.metodoPago] || v.metodoPago) : ""),
+      titulo: (dev ? "Devoluci\u00F3n" : "Venta") + " de " + Math.abs(u) + " u \u00B7 " + (v.clienteNombre || "Consumidor final"),
+      detalle: resumenItems(v.items) + (v.metodoPago ? " \u00B7 " + (METODO_LABELS[v.metodoPago] || v.metodoPago) : ""),
       monto: v.total, usuario: v.usuarioNombre || ""
     });
   });
 
+  // ── Ajustes de stock a mano (las ventas ya figuran arriba) ──
   (data.movimientosStock || []).forEach((m) => {
-    // Las ventas ya figuran arriba: acá sólo los ajustes hechos a mano
     if (m.origen === "venta" || m.origen === "devolucion") return;
+    if (m.negocioId && !esDeAca(m.negocioId)) return;
+    const t = m.talle || m.talla || "";
     ev.push({
       fecha: m.fecha, hora: m.hora || "", tipo: "Stock",
       tono: m.cantidad >= 0 ? "sage" : "rose", icono: Boxes,
-      titulo: (m.cantidad >= 0 ? "+" : "") + m.cantidad + " u  " + m.nombre +
-        (m.talla ? " · " + m.talla : ""),
-      detalle: m.motivo || "Ajuste manual", usuario: m.usuario || ""
+      titulo: (m.cantidad >= 0 ? "+" : "") + m.cantidad + " u  " + m.nombre + (t ? " \u00B7 " + t : ""),
+      detalle: (m.motivo || m.origen || "Ajuste manual") +
+        (m.stockResultante != null ? " \u00B7 qued\u00F3 en " + m.stockResultante : "") +
+        (m.negocioId ? " \u00B7 " + n(m.negocioId) : ""),
+      usuario: m.usuario || ""
     });
   });
 
-  ((data.caja || {}).movimientos || []).forEach((m) => {
-    const f = String(m.fecha || "").slice(0, 10);
-    if (m.tipo === "venta") return; // ya está como venta
+  // ── Caja: aperturas, cierres y movimientos (de todas las cajas) ──
+  const cajaMovs = (movs, quien, negId) => (movs || []).forEach((m) => {
+    if (m.tipo === "venta") return;
+    const f = fechaDe(m.fecha) || m.fecha;
     ev.push({
-      fecha: f, hora: String(m.fecha || "").slice(11, 16), tipo: "Caja",
-      tono: "denim", icono: DollarSign,
-      titulo: m.concepto || m.tipo, detalle: "Movimiento de caja",
+      fecha: f, hora: horaDe(m.fecha), tipo: "Caja",
+      tono: (m.tipo === "egreso" || m.tipo === "retiro") ? "rose" : "denim", icono: DollarSign,
+      titulo: (m.tipo === "ingreso" ? "Ingreso a caja" : m.tipo === "egreso" ? "Egreso de caja" : m.tipo === "retiro" ? "Retiro de caja" : (m.tipo || "Movimiento")) +
+        (m.concepto ? " \u00B7 " + m.concepto : ""),
+      detalle: negId ? n(negId) : "Caja", monto: m.monto, usuario: m.usuario || quien || ""
+    });
+  });
+  (data.cajasCerradas || []).forEach((c) => {
+    if (!esDeAca(c.negocioId)) return;
+    if (c.abiertaEn) ev.push({
+      fecha: fechaDe(c.abiertaEn), hora: horaDe(c.abiertaEn), tipo: "Caja",
+      tono: "denim", icono: Archive,
+      titulo: "Abri\u00F3 la caja con " + money(c.montoInicial || 0),
+      detalle: n(c.negocioId), usuario: c.usuarioNombre || ""
+    });
+    if (c.cerradaEn) ev.push({
+      fecha: fechaDe(c.cerradaEn), hora: horaDe(c.cerradaEn), tipo: "Caja",
+      tono: c.diferencia === 0 ? "sage" : "rose", icono: Archive,
+      titulo: "Cerr\u00F3 la caja" + (c.forzado ? " (forzada)" : "") + " \u00B7 cont\u00F3 " + money(c.efectivoContado || 0),
+      detalle: "Esperado " + money(c.efectivoEsperado || 0) +
+        (c.diferencia ? " \u00B7 diferencia " + money(c.diferencia) : " \u00B7 sin diferencia") + " \u00B7 " + n(c.negocioId),
+      usuario: c.usuarioNombre || ""
+    });
+    cajaMovs(c.movimientos, c.usuarioNombre, c.negocioId);
+  });
+  Object.keys(data.cajas || {}).forEach((k) => {
+    const c = data.cajas[k];
+    const negId = k.split("|")[0];
+    if (!c || !esDeAca(negId)) return;
+    if (c.abierta && c.abiertaEn) ev.push({
+      fecha: fechaDe(c.abiertaEn), hora: horaDe(c.abiertaEn), tipo: "Caja",
+      tono: "denim", icono: Archive,
+      titulo: "Abri\u00F3 la caja con " + money(c.montoInicial || 0) + " (sigue abierta)",
+      detalle: n(negId), usuario: c.abiertaPor || nombreUsuario(data, k.split("|")[1])
+    });
+    cajaMovs(c.movimientos, c.abiertaPor, negId);
+  });
+
+  // ── Notas de cr\u00E9dito: emitidas y usadas ──
+  (data.notasCredito || []).forEach((nc) => {
+    if (!esDeAca(nc.negocioId)) return;
+    ev.push({
+      fecha: nc.fecha, hora: nc.hora || "", tipo: "Nota de cr\u00E9dito",
+      tono: "mustard", icono: Receipt,
+      titulo: "Emiti\u00F3 nota de cr\u00E9dito " + (nc.numero || "") + " \u00B7 " + unidades(nc.items) + " u \u00B7 " + (nc.clienteNombre || "Consumidor final"),
+      detalle: resumenItems(nc.items) + (nc.motivo ? " \u00B7 " + nc.motivo : ""),
+      monto: nc.monto, usuario: nc.usuario || ""
+    });
+    if (nc.usadaEn) ev.push({
+      fecha: nc.usadaEn, hora: nc.usadaHora || "", tipo: "Nota de cr\u00E9dito",
+      tono: "sage", icono: Receipt,
+      titulo: "Us\u00F3 nota de cr\u00E9dito " + (nc.numero || "") + " \u00B7 " + (nc.clienteNombre || "Consumidor final"),
+      detalle: "Se descont\u00F3 en una venta" + (nc.estado ? " \u00B7 " + nc.estado : ""),
+      monto: nc.monto, usuario: nc.usadaPor || ""
+    });
+  });
+
+  // ── Cambios de prendas ──
+  (data.cambios || []).forEach((c) => {
+    if (!esDeAca(c.negocioId)) return;
+    ev.push({
+      fecha: c.fecha, hora: c.hora || "", tipo: "Cambio",
+      tono: "mustard", icono: ArrowRightLeft,
+      titulo: "Cambio " + (c.numero || "") + " \u00B7 " + (c.clienteNombre || "Consumidor final"),
+      detalle: "Devolvi\u00F3: " + (resumenItems(c.devuelto, 4) || "\u2014") + " \u2192 Se llev\u00F3: " + (resumenItems(c.entregado, 4) || "\u2014") +
+        (c.diferencia ? " \u00B7 diferencia " + money(c.diferencia) : "") + (c.motivo ? " \u00B7 " + c.motivo : ""),
+      usuario: c.usuario || ""
+    });
+  });
+
+  // ── Gastos ──
+  (data.gastos || []).forEach((g) => {
+    if (!esDeAca(g.negocioId)) return;
+    ev.push({
+      fecha: g.fecha, hora: horaDe(g.fecha) || "", tipo: "Gasto",
+      tono: "rose", icono: DollarSign,
+      titulo: "Gasto: " + (g.concepto || g.categoria || "sin concepto"),
+      detalle: [g.categoria, g.metodo ? (METODO_LABELS[g.metodo] || g.metodo) : "", g.nota].filter(Boolean).join(" \u00B7 ") || "Gasto",
+      monto: -Math.abs(g.monto || 0), usuario: g.usuario || ""
+    });
+  });
+
+  // ── Compras / ingreso de mercader\u00EDa ──
+  (data.compras || []).forEach((c) => {
+    if (!esDeAca(c.negocioId)) return;
+    ev.push({
+      fecha: c.fecha, hora: horaDe(c.fecha) || "", tipo: "Compra",
+      tono: "sage", icono: Package,
+      titulo: "Compra a " + (c.proveedor || "proveedor") + " \u00B7 " + unidades(c.items) + " u" + (c.comprobante ? " \u00B7 " + c.comprobante : ""),
+      detalle: resumenItems(c.items) + (c.nota ? " \u00B7 " + c.nota : ""),
+      monto: c.total, usuario: c.usuario || ""
+    });
+  });
+
+  // ── Pedidos: creados y entregados ──
+  (data.pedidos || []).forEach((pd) => {
+    if (!esDeAca(pd.negocioId)) return;
+    ev.push({
+      fecha: pd.fecha, hora: pd.hora || "", tipo: "Pedido",
+      tono: "denim", icono: Truck,
+      titulo: "Pedido " + (pd.numero || "") + " \u00B7 " + unidades(pd.items) + " u \u00B7 " + (pd.clienteNombre || "sin cliente"),
+      detalle: resumenItems(pd.items) + " \u00B7 " + (pd.estado || "pendiente"),
+      usuario: pd.usuario || ""
+    });
+    if (pd.entregadoEn) ev.push({
+      fecha: pd.entregadoEn, hora: pd.entregadoHora || "", tipo: "Pedido",
+      tono: "sage", icono: Truck,
+      titulo: "Entreg\u00F3 el pedido " + (pd.numero || "") + " \u00B7 " + (pd.clienteNombre || ""),
+      detalle: pd.recibidoPor ? "Recibi\u00F3 " + pd.recibidoPor : "Entregado",
+      usuario: pd.entregadoPor || ""
+    });
+  });
+
+  // ── Devoluciones del reparto ──
+  (data.devolucionesReparto || []).forEach((d) => {
+    if (!esDeAca(d.negocioId)) return;
+    ev.push({
+      fecha: d.fecha, hora: d.hora || "", tipo: "Devoluci\u00F3n",
+      tono: "mustard", icono: ArrowRightLeft,
+      titulo: "Devoluci\u00F3n en reparto \u00B7 " + (d.unidades || unidades(d.items)) + " u \u00B7 " + (d.clienteNombre || ""),
+      detalle: resumenItems(d.items) + (d.motivo ? " \u00B7 " + d.motivo : "") + (d.recibidaPor ? " \u00B7 recibi\u00F3 " + d.recibidaPor : ""),
+      usuario: d.devueltaPor || d.recibidaPor || ""
+    });
+  });
+
+  // ── Cuenta corriente de clientes ──
+  (data.movimientosCC || []).forEach((m) => {
+    const cli = (data.clientes || []).find((c) => c.id === m.clienteId);
+    ev.push({
+      fecha: fechaDe(m.fecha) || m.fecha, hora: horaDe(m.fecha), tipo: "Cuenta corriente",
+      tono: m.tipo === "pago" ? "sage" : "mustard", icono: CreditCard,
+      titulo: (m.tipo === "pago" ? "Pago de " : "Cargo a ") + ((cli && cli.nombre) || "cliente") +
+        (m.metodo ? " \u00B7 " + (METODO_LABELS[m.metodo] || m.metodo) : ""),
+      detalle: m.concepto || (m.tipo || "Movimiento de cuenta"),
       monto: m.monto, usuario: m.usuario || ""
     });
   });
 
+  // ── Reposiciones de la camioneta ──
   (data.reposiciones || []).forEach((r) => {
-    if (!esDeAca(r.negocioId)) return;
+    if (!esDeAca(r.negocioId) && !(r.origen && esDeAca(r.origen))) return;
     ev.push({
-      fecha: r.fecha, hora: r.hora || "", tipo: "Reposición",
+      fecha: r.fecha, hora: r.hora || "", tipo: "Reposici\u00F3n",
       tono: "denim", icono: Truck,
-      titulo: "Reposición " + r.remito + " · " + r.unidades + " u",
-      detalle: (r.items || []).length + " artículo" + ((r.items || []).length === 1 ? "" : "s"),
+      titulo: "Repuso " + r.unidades + " u en " + (r.negocioNombre || "la camioneta") +
+        (r.origenNombre ? " desde " + r.origenNombre : "") + " \u00B7 " + r.remito,
+      detalle: resumenItems(r.items) || "Sin detalle",
       usuario: r.usuario || ""
     });
   });
 
+  // ── Transferencias entre locales ──
   (data.transferencias || []).forEach((t) => {
-    const n = (id) => (listaNegocios(data).find((x) => x.id === id) || {}).nombre || "—";
+    if (!esDeAca(t.origen) && !esDeAca(t.destino)) return;
     ev.push({
       fecha: t.fecha, hora: t.hora || "", tipo: "Transferencia",
       tono: "mustard", icono: ArrowRightLeft,
-      titulo: n(t.origen) + " → " + n(t.destino),
-      detalle: (t.items || []).reduce((a, x) => a + x.cantidad, 0) + " u · remito " + (t.remito || "s/n"),
-      usuario: t.usuario || ""
+      titulo: n(t.origen) + " \u2192 " + n(t.destino) + " \u00B7 " + unidades(t.items) + " u \u00B7 remito " + (t.remito || "s/n"),
+      detalle: resumenItems(t.items) + (t.recibidaPor ? " \u00B7 recibi\u00F3 " + t.recibidaPor : ""),
+      usuario: t.usuarioNombre || t.usuario || ""
+    });
+    if (t.recibidaEn) ev.push({
+      fecha: t.recibidaEn, hora: t.recibidaHora || "", tipo: "Transferencia",
+      tono: "sage", icono: ArrowRightLeft,
+      titulo: "Recibi\u00F3 la transferencia " + (t.remito || "") + " en " + n(t.destino),
+      detalle: unidades(t.items) + " u", usuario: t.recibidaPor || ""
     });
   });
 
+  // ── Productos cargados ──
   (data.productos || []).forEach((p) => {
     if (!p.creadoEn) return;
     ev.push({
-      fecha: p.creadoEn, hora: "", tipo: "Producto",
+      fecha: fechaDe(p.creadoEn) || p.creadoEn, hora: horaDe(p.creadoEn), tipo: "Producto",
       tono: "denim", icono: Package,
-      titulo: "Cargó " + p.nombre,
-      detalle: (p.categoria || "Sin categoría") + " · " + money(p.precioVenta || 0),
+      titulo: "Carg\u00F3 " + p.nombre,
+      detalle: (p.categoria || "Sin categor\u00EDa") + " \u00B7 " + money(p.precioVenta || 0),
       usuario: p.creadoPor || ""
     });
   });
 
+  // ── Recorridos de reparto ──
   (data.repartos || []).forEach((r) => {
     if (!esDeAca(r.negocioId)) return;
     ev.push({
       fecha: r.fecha, hora: "", tipo: "Reparto",
       tono: "sage", icono: Truck,
-      titulo: "Recorrido terminado · " + r.entregadas + " entregada" + (r.entregadas === 1 ? "" : "s"),
+      titulo: "Recorrido terminado \u00B7 " + r.entregadas + " entregada" + (r.entregadas === 1 ? "" : "s"),
       detalle: r.noEntregadas ? r.noEntregadas + " sin entregar" : "Todo entregado",
       usuario: r.usuarioNombre || ""
     });
   });
 
-  // Lo más nuevo primero
-  return ev.sort((a, b) =>
+  // Lo m\u00E1s nuevo primero
+  return ev.filter((e) => e.fecha).sort((a, b) =>
     (b.fecha + " " + (b.hora || "")).localeCompare(a.fecha + " " + (a.hora || "")));
 };
 
@@ -23962,7 +24165,9 @@ function ActividadView({ data, persist, senalMovimiento }) {
   // Recorre ventas, cajas, transferencias y movimientos: caro para rehacerlo
   // en cada render.
   const todos = useMemo(() => lineaDeTiempo(data, negocioActivo(data).id),
-    [data.ventas, data.cajasCerradas, data.transferencias, data.movimientosStock, data.negocioActivoId]);
+    [data.ventas, data.cajasCerradas, data.cajas, data.transferencias, data.movimientosStock, data.reposiciones,
+     data.notasCredito, data.cambios, data.gastos, data.compras, data.pedidos, data.devolucionesReparto,
+     data.movimientosCC, data.productos, data.repartos, data.negocioActivoId]);
   const tipos = [...new Set(todos.map((e) => e.tipo))];
 
   // Resumen por persona: cuántas acciones hizo cada una y de qué tipo
@@ -24099,7 +24304,11 @@ function ActividadView({ data, persist, senalMovimiento }) {
                   { style: { flex: 1, minWidth: 0 } },
                   React.createElement("span", { style: { display: "block", fontSize: 13.5, fontWeight: 600 } }, e.titulo),
                   React.createElement("span", { style: { display: "block", fontSize: 12, color: "var(--muted)", marginTop: 2 } },
-                    e.detalle, e.usuario ? " · " + e.usuario : "")
+                    e.detalle),
+                  // Quién lo hizo, resaltado y en su propio renglón
+                  React.createElement("span", { style: { display: "block", fontSize: 12, marginTop: 2, color: "var(--ink)" } },
+                    React.createElement(UserCog, { size: 11, style: { verticalAlign: "-1px", marginRight: 4 } }),
+                    React.createElement("strong", null, e.usuario || "Sin identificar"))
                 ),
                 React.createElement(
                   "span",
