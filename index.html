@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.794";
+const VERSION_APP = "9.795";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -9870,6 +9870,7 @@ function ProductoForm({ data, initial, onSave, onCancel, categorias, proveedores
     setCreandoCat(false); setCatNueva(""); setErrorCat("");
   };
   const imagenRef = React.useRef(null);
+  const camaraRef = React.useRef(null);
 
   // Nombres ya cargados, para no repetir un producto sin darse cuenta
   // Aviso de nombre repetido. Ignora tildes, mayúsculas y espacios de más, que
@@ -10204,6 +10205,7 @@ function ProductoForm({ data, initial, onSave, onCancel, categorias, proveedores
           "div",
           { style: { flexShrink: 0 } },
           React.createElement("input", { ref: imagenRef, type: "file", accept: "image/*", onChange: subirImagen, style: { display: "none" } }),
+          React.createElement("input", { ref: camaraRef, type: "file", accept: "image/*", capture: "environment", onChange: subirImagen, style: { display: "none" } }),
           f.imagenes.length > 0
             ? React.createElement(
                 "div",
@@ -10225,15 +10227,21 @@ function ProductoForm({ data, initial, onSave, onCancel, categorias, proveedores
                   style: { position: "absolute", bottom: 6, right: 6, height: 24, padding: "0 8px", borderRadius: 999, border: "none", background: "rgba(0,0,0,0.6)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 11.5, fontFamily: "'Inter', sans-serif" }
                 }, React.createElement(Plus, { size: 12 }), f.imagenes.length)
               )
-            : React.createElement("button", {
-                onClick: () => imagenRef.current && imagenRef.current.click(),
+            : React.createElement("div", {
                 style: {
-                  width: 150, height: 150, borderRadius: 12, cursor: "pointer",
-                  border: "1px dashed var(--line)", background: "var(--surface-2)", color: "var(--muted)",
-                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 7,
-                  fontSize: 12.5, fontFamily: "'Inter', sans-serif"
+                  width: 150, height: 150, borderRadius: 12,
+                  border: "1px dashed var(--line)", background: "var(--surface-2)",
+                  display: "flex", flexDirection: "column", alignItems: "stretch", justifyContent: "center", gap: 8, padding: 10
                 }
-              }, React.createElement(Package, { size: 24, strokeWidth: 1.7 }), "Foto")
+              },
+              React.createElement("button", {
+                onClick: () => camaraRef.current && camaraRef.current.click(),
+                style: { flex: 1, borderRadius: 9, cursor: "pointer", border: "none", background: "var(--denim)", color: "#fff", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 5, fontSize: 12.5, fontWeight: 600, fontFamily: "'Inter', sans-serif" }
+              }, React.createElement(QrCode, { size: 20, strokeWidth: 1.8 }), "Sacar foto"),
+              React.createElement("button", {
+                onClick: () => imagenRef.current && imagenRef.current.click(),
+                style: { flex: 1, borderRadius: 9, cursor: "pointer", border: "1px solid var(--line)", background: "var(--surface)", color: "var(--muted)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 5, fontSize: 12.5, fontFamily: "'Inter', sans-serif" }
+              }, React.createElement(LayoutGrid, { size: 18, strokeWidth: 1.8 }), "Galería"))
         ),
         React.createElement(
           "div",
