@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.863";
+const VERSION_APP = "9.870";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1141,8 +1141,44 @@ async function subirFoto(dataUrl, nombreBase) {
     contentType: tipo, cacheControl: "31536000", upsert: false
   });
   if (error) throw new Error(error.message);
+
+  // Miniatura para las listas: la misma foto a 112px, con "-mini" en el nombre.
+  // Las listas con cientos de productos bajan así una décima parte de los
+  // bytes. Es opcional: si falla, la lista usa la foto normal.
+  try {
+    const mini = await achicarDataUrl(dataUrl, 112);
+    const comaM = mini.indexOf(",");
+    const binM = atob(mini.slice(comaM + 1));
+    const bytesM = new Uint8Array(binM.length);
+    for (let i = 0; i < binM.length; i++) bytesM[i] = binM.charCodeAt(i);
+    await nube.storage.from("fotos").upload(rutaMini(ruta), new Blob([bytesM], { type: "image/jpeg" }), {
+      contentType: "image/jpeg", cacheControl: "31536000", upsert: false
+    });
+  } catch (e) { /* sin miniatura: se ver\u00E1 la foto normal */ }
+
   return nube.storage.from("fotos").getPublicUrl(ruta).data.publicUrl;
 }
+
+// "foto-123.jpg" -> "foto-123-mini.jpg" (funciona sobre la ruta o la URL)
+const rutaMini = (ruta) => String(ruta).replace(/(\.[a-z0-9]+)(\?.*)?$/i, "-mini$1$2");
+// La miniatura sólo existe para fotos subidas a nuestro almacenamiento
+const miniDe = (url) => (typeof url === "string" && url.indexOf("/storage/v1/object/public/fotos/") >= 0) ? rutaMini(url) : "";
+
+// Achica una imagen en dataURL a un lado máximo, en JPEG
+const achicarDataUrl = (dataUrl, lado) => new Promise((resolve, reject) => {
+  const img = new Image();
+  img.onerror = () => reject(new Error("imagen inv\u00E1lida"));
+  img.onload = () => {
+    const escala = Math.min(1, lado / Math.max(img.width, img.height));
+    const w = Math.max(1, Math.round(img.width * escala));
+    const h = Math.max(1, Math.round(img.height * escala));
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    c.getContext("2d").drawImage(img, 0, 0, w, h);
+    resolve(c.toDataURL("image/jpeg", 0.8));
+  };
+  img.src = dataUrl;
+});
 
 // Sube las que hagan falta y devuelve la lista de direcciones
 async function subirFotosDe(producto) {
@@ -5082,10 +5118,10 @@ async function guardarVariantesEnTanda(items) {
 // de a páginas hasta que no venga nada más.
 // Trae una tabla entera, de a mil filas. El filtro opcional sirve para
 // acotar por fecha sin perder el paginado.
-async function traerTodo(tabla, orden, filtro) {
+async function traerTodo(tabla, orden, filtro, seleccion) {
   const TAM = 1000;
   const armar = (desde) => {
-    let q = nube.from(tabla).select("*").range(desde, desde + TAM - 1);
+    let q = nube.from(tabla).select(seleccion || "*").range(desde, desde + TAM - 1);
     if (filtro) q = q.gte(filtro.campo, filtro.desde);
     if (orden) q = q.order(orden);
     return q;
@@ -5094,7 +5130,7 @@ async function traerTodo(tabla, orden, filtro) {
   // La primera página trae además cuántas filas hay en total, así se sabe de
   // una cuántas faltan. Antes se pedía una, se esperaba, se pedía la
   // siguiente: con 6361 variantes eso son siete idas y vueltas en fila.
-  let cuenta = nube.from(tabla).select("*", { count: "exact" }).range(0, TAM - 1);
+  let cuenta = nube.from(tabla).select(seleccion || "*", { count: "exact" }).range(0, TAM - 1);
   if (filtro) cuenta = cuenta.gte(filtro.campo, filtro.desde);
   if (orden) cuenta = cuenta.order(orden);
   const { data, error, count } = await cuenta;
@@ -5136,6 +5172,23 @@ const cajasLocales = () => {
 
 // Trae sólo las tablas que cambiaron. Es la diferencia entre esperar a que
 // bajen 11.000 filas y ver la venta del otro casi al instante.
+// Ventas de un período con sus renglones en UNA consulta, usando la relación
+// venta_items.venta_id. Antes se bajaban TODOS los renglones de la historia y
+// se descartaban los viejos: cada arranque era más lento que el anterior.
+// Si la base no tiene la relación armada, se cae al método viejo.
+async function traerVentasConRenglones(desde) {
+  try {
+    const ventas = await traerTodo("ventas", null, { campo: "fecha", desde }, "*, venta_items(*)");
+    if (ventas.length && !ventas.some((v) => Array.isArray(v.venta_items))) throw new Error("sin relaci\u00F3n");
+    const items = [];
+    ventas.forEach((v) => { (v.venta_items || []).forEach((it) => items.push(it)); delete v.venta_items; });
+    return [ventas, items];
+  } catch (e) {
+    console.warn("Renglones embebidos no disponibles, se usa el m\u00E9todo completo:", e && e.message);
+    return Promise.all([traerTodo("ventas", null, { campo: "fecha", desde }), traerTodo("venta_items")]);
+  }
+}
+
 async function traerParcial(tablas, quienEntro) {
   if (!tablas || !tablas.size) return null;
 
@@ -5164,7 +5217,7 @@ async function traerParcial(tablas, quienEntro) {
   }
 
   if (tablas.has("ventas") || tablas.has("venta_items")) {
-    const [ventas, items] = await Promise.all([traerTodo("ventas"), traerTodo("venta_items")]);
+    const [ventas, items] = await traerVentasConRenglones(haceMeses(6));
     const porVenta = {};
     (items || []).forEach((it) => {
       (porVenta[it.venta_id] = porVenta[it.venta_id] || []).push(it);
@@ -5305,7 +5358,7 @@ async function traerEsencial(quienEntro) {
 // Trae todo lo que la app necesita. Se piden las tablas en paralelo, que es
 // bastante más rápido que una tras otra.
 async function traerDeLaNube(quienEntro) {
-  const [negs, cats, provs, listas, prods, vars, clis, ventas, items, movsCC, ajustes, usuarios, cajasNube, cierresNube, transfNube, movStockNube, pedidosNube, notasNube, cambiosNube, devolNube, gastosNube, comprasNube, repoNube, repoHechasNube] =
+  const [negs, cats, provs, listas, prods, vars, clis, ventasEItems, movsCC, ajustes, usuarios, cajasNube, cierresNube, transfNube, movStockNube, pedidosNube, notasNube, cambiosNube, devolNube, gastosNube, comprasNube, repoNube, repoHechasNube] =
     await Promise.all([
       nube.from("negocios").select("*").order("principal", { ascending: false }),
       nube.from("categorias").select("nombre").order("nombre"),
@@ -5317,11 +5370,7 @@ async function traerDeLaNube(quienEntro) {
       // Los últimos seis meses: alcanza para el trabajo diario, los informes
       // y los cambios. Sin este corte, al año serían 50.000 filas al abrir la
       // app y cada arranque se haría más lento que el anterior.
-      traerTodo("ventas", null, { campo: "fecha", desde: haceMeses(6) }),
-      // Los renglones no tienen fecha propia. Se traen todos y después se
-      // descartan los de ventas viejas: es más simple y no depende de cómo
-      // estén armadas las relaciones en la base.
-      traerTodo("venta_items"),
+      traerVentasConRenglones(haceMeses(6)),
       traerTodo("movimientos_cc"),
       nube.from("ajustes").select("datos").eq("id", 1).maybeSingle(),
       nube.from("usuarios").select("*").order("creado_en"),
@@ -5347,6 +5396,7 @@ async function traerDeLaNube(quienEntro) {
       nube.from("reposicion_pendiente").select("*"),
       nube.from("reposiciones_hechas").select("*").order("fecha", { ascending: false }).limit(500)
     ]);
+  const [ventas, items] = ventasEItems;
 
   // Las variantes y los renglones se agrupan por su dueño
   const varsPorProd = {};
@@ -5769,13 +5819,18 @@ const ProductoThumb = React.memo(function ProductoThumb({ producto, size = 44 })
   // Se abre en grande al tocarla: en una miniatura de 44 píxeles no se
   // distingue una prenda de otra, y abrir el producto entero es más lento.
   const [ampliada, setAmpliada] = useState(false);
+  // Primero la miniatura (112px); si no existe (foto vieja o externa), la normal
+  const mini = miniDe(foto);
+  const [src, setSrc] = useState(mini || foto);
+  useEffect(() => { setSrc(miniDe(foto) || foto); }, [foto]);
 
   if (foto) {
     return React.createElement(
       React.Fragment,
       null,
       React.createElement("img", { loading: "lazy", decoding: "async",
-        src: foto, alt: producto.nombre,
+        src, alt: producto.nombre, width: size, height: size,
+        onError: () => { if (src !== foto) setSrc(foto); },
         // El navegador baja la foto recién cuando entra en pantalla: con mil
         // productos en la lista, eso es la diferencia entre bajar diez
         // imágenes y bajarlas todas.
