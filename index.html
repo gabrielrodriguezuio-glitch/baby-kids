@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.876";
+const VERSION_APP = "9.881";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1794,6 +1794,10 @@ function ControlTienda() {
               // a subirse en el próximo guardado.
               salida = { ...salida, productos: salida.productos.map((p) =>
                 p.id === c.id ? { ...p, imagenes: c.imagenes, imagen: c.imagenes[0] || "" } : p) };
+            } else if (c.tipo === "nota") {
+              salida = { ...salida,
+                notasCredito: (salida.notasCredito || []).map((n) => n.id === c.viejo ? { ...n, id: c.nuevo } : n),
+                cambios: (salida.cambios || []).map((x) => x.notaCreditoId === c.viejo ? { ...x, notaCreditoId: c.nuevo } : x) };
             } else if (c.tipo === "venta") {
               salida = { ...salida, ventas: salida.ventas.map((v) =>
                 v.id === c.viejo ? { ...v, id: c.nuevo } : v) };
@@ -4542,6 +4546,7 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
   // ── Notas de crédito y cambios ────────────────────────────
   // La nota se crea una vez y después sólo cambia su estado al usarse.
   const notasPrevias = {};
+  const idsNotas = {}; // id de la app -> id de la base, para el cambio que la gener\u00F3
   (antes.notasCredito || []).forEach((n) => { notasPrevias[n.id] = n; });
   for (const n of (despues.notasCredito || [])) {
     const previo = notasPrevias[n.id];
@@ -4558,12 +4563,23 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
         estado: n.estado || "activa", motivo: n.motivo || null,
         usuario: n.usuario || null, fecha: n.fecha, hora: n.hora || null,
         usada_en: n.usadaEn || null, usada_hora: n.usadaHora || null,
-        usada_por: n.usadaPor || null, usada_venta_id: n.usadaVentaId || null
+        usada_por: n.usadaPor || null,
+        // La venta donde se us\u00F3 puede tener todav\u00EDa el id temporal de la app
+        usada_venta_id: /^[0-9a-f-]{36}$/i.test(String(n.usadaVentaId || "")) ? n.usadaVentaId : null
       };
-      const { error } = (previo && esIdDeLaBase(n.id))
-        ? await nube.from("notas_credito").update(fila).eq("id", n.id)
-        : await nube.from("notas_credito").insert(fila);
-      if (error) throw new Error(error.message);
+      if (previo && esIdDeLaBase(n.id)) {
+        const { error } = await nube.from("notas_credito").update(fila).eq("id", n.id);
+        if (error) throw new Error(error.message);
+      } else {
+        // Se pide el id que asign\u00F3 la base: el cambio que la genera lo
+        // necesita (la columna es uuid y el id de la app no lo es).
+        const { data: creada, error } = await nube.from("notas_credito").insert(fila).select("id").single();
+        if (error) throw new Error(error.message);
+        if (creada && creada.id) {
+          idsNotas[n.id] = creada.id;
+          cambios.push({ tipo: "nota", viejo: n.id, nuevo: creada.id });
+        }
+      }
     } catch (e) {
       if (avisarProblema) avisarProblema("La nota de crédito no se guardó: " + String((e && e.message) || e));
     }
@@ -4583,7 +4599,7 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
         negocio_id: c.negocioId || null,
         devuelto: c.devuelto || [], entregado: c.entregado || [],
         diferencia: Number(c.diferencia) || 0,
-        nota_credito_id: c.notaCreditoId || null,
+        nota_credito_id: (idsNotas[c.notaCreditoId] || (/^[0-9a-f-]{36}$/i.test(String(c.notaCreditoId || "")) ? c.notaCreditoId : null)),
         motivo: c.motivo || null, usuario: c.usuario || null,
         fecha: c.fecha, hora: c.hora || null
       });
@@ -13995,6 +14011,128 @@ async function imprimirTicketComoImagen(data, venta, fuente) {
   await enviarALaImpresora(imagenARaster(imagen));
 }
 
+// La nota de cr\u00E9dito dibujada como ticket de 58 mm, con el mismo motor que
+// el ticket de venta, para mandarla a la impresora Bluetooth.
+function dibujarNotaCredito(data, nota, fuente) {
+  const negocio = data.negocio || {};
+  const neg = listaNegocios(data).find((n) => n.id === nota.negocioId) || {};
+  const F = fuente || "Arial";
+  const M = 12;
+  const ANCHO = ANCHO_PUNTOS;
+  const util = ANCHO - M * 2;
+
+  const lienzo = document.createElement("canvas");
+  lienzo.width = ANCHO;
+  lienzo.height = 2400;
+  const g = lienzo.getContext("2d");
+  g.fillStyle = "#fff";
+  g.fillRect(0, 0, ANCHO, lienzo.height);
+  g.fillStyle = "#000";
+  g.textBaseline = "top";
+  let y = 14;
+
+  const escribir = (texto, o) => {
+    o = o || {};
+    g.font = (o.negrita ? "bold " : "") + (o.tam || 20) + "px " + F;
+    g.textAlign = o.alinear || "left";
+    const x = o.alinear === "center" ? ANCHO / 2 : o.alinear === "right" ? ANCHO - M : M;
+    g.fillText(texto, x, y);
+    y += (o.tam || 20) + (o.aire != null ? o.aire : 6);
+  };
+  const renglon = (izq, der, o) => {
+    o = o || {};
+    const tam = o.tam || 19;
+    g.font = (o.negrita ? "bold " : "") + tam + "px " + F;
+    g.textAlign = "left"; g.fillText(izq, M, y);
+    g.textAlign = "right"; g.fillText(der, ANCHO - M, y);
+    y += tam + (o.aire != null ? o.aire : 6);
+  };
+  const raya = (punteada) => {
+    if (punteada) { for (let x = M; x < ANCHO - M; x += 8) g.fillRect(x, y, 4, 1); }
+    else g.fillRect(M, y, util, 1);
+    y += 11;
+  };
+  const partir = (texto, tam, ancho) => {
+    g.font = tam + "px " + F;
+    const palabras = String(texto || "").split(" ");
+    const lineas = []; let actual = "";
+    palabras.forEach((pal) => {
+      const prueba = actual ? actual + " " + pal : pal;
+      if (g.measureText(prueba).width <= ancho || !actual) actual = prueba;
+      else { lineas.push(actual); actual = pal; }
+    });
+    if (actual) lineas.push(actual);
+    return lineas;
+  };
+
+  escribir("NOTA DE CR\u00C9DITO", { tam: 26, negrita: true, alinear: "center", aire: 4 });
+  escribir((neg.nombre || negocio.nombre || "Mi negocio").toUpperCase(), { tam: 19, negrita: true, alinear: "center", aire: 2 });
+  if (negocio.direccion) escribir(negocio.direccion, { tam: 16, alinear: "center", aire: 2 });
+  if (negocio.telefono) escribir(negocio.telefono, { tam: 16, alinear: "center", aire: 2 });
+  y += 8;
+  raya(true);
+  renglon("Nro", String(nota.numero || ""), { negrita: true });
+  renglon("Fecha", fecha(nota.fecha) + (nota.hora ? " " + nota.hora : ""));
+  partir("Cliente: " + (nota.clienteNombre || "Consumidor final"), 18, util).forEach((l) => escribir(l, { tam: 18, aire: 3 }));
+  if (nota.ventaFecha) renglon("Compr\u00F3 el", fecha(nota.ventaFecha));
+  if (nota.usuario) renglon("La emiti\u00F3", nota.usuario);
+  y += 6;
+
+  // Recuadro con el valor
+  const altoCaja = 78;
+  g.lineWidth = 2;
+  g.strokeRect(M + 1, y, util - 2, altoCaja);
+  g.font = "16px " + F; g.textAlign = "center";
+  g.fillText("VALE POR", ANCHO / 2, y + 12);
+  g.font = "bold 34px " + F;
+  g.fillText(money(nota.monto || 0), ANCHO / 2, y + 34);
+  y += altoCaja + 12;
+
+  raya(true);
+  escribir("LO QUE DEJ\u00D3", { tam: 16, negrita: true, aire: 6 });
+  (nota.items || []).forEach((it) => {
+    const importe = money((it.precioUnit || 0) * (it.cantidad || 0));
+    g.font = "19px " + F;
+    const anchoImporte = g.measureText(importe).width;
+    const lineas = partir(it.cantidad + " x " + it.nombre, 19, util - anchoImporte - 14);
+    lineas.forEach((l, i) => {
+      if (i === 0) renglon(l, importe, { tam: 19, aire: 2 }); else escribir(l, { tam: 19, aire: 2 });
+    });
+    const det = [it.talla && ("Talle " + it.talla), it.color].filter(Boolean).join(" \u00B7 ");
+    if (det) escribir("   " + det, { tam: 16, aire: 6 }); else y += 4;
+  });
+  if (nota.motivo) { raya(true); partir("Motivo: " + nota.motivo, 17, util).forEach((l) => escribir(l, { tam: 17, aire: 3 })); }
+
+  y += 6;
+  raya(true);
+  ["Present\u00E1 esta nota en cualquiera de", "nuestros locales. No se cambia por dinero.",
+   "Si la compra supera el valor, se abona", "la diferencia. Esta nota no vence."]
+    .forEach((l) => escribir(l, { tam: 15, alinear: "center", aire: 3 }));
+  y += 26;
+
+  const alto = Math.ceil(y / 8) * 8;
+  const recorte = document.createElement("canvas");
+  recorte.width = ANCHO; recorte.height = alto;
+  const g2 = recorte.getContext("2d");
+  g2.fillStyle = "#fff"; g2.fillRect(0, 0, ANCHO, alto);
+  g2.drawImage(lienzo, 0, 0);
+  return g2.getImageData(0, 0, ANCHO, alto);
+}
+
+// Conecta (o reconecta) con la impresora Bluetooth y manda la nota como imagen
+async function imprimirNotaPorBluetooth(data, nota, avisarEstado) {
+  if (!window.__blePrinter || !window.__blePrinter.device) {
+    avisarEstado && avisarEstado("Conectando con la impresora\u2026");
+    const nombre = await conectarImpresoraBLE();
+    avisarEstado && avisarEstado("Conectado a " + nombre + ". Imprimiendo\u2026");
+  } else if (!window.__blePrinter.device.gatt.connected) {
+    avisarEstado && avisarEstado("Reconectando con la impresora\u2026");
+    await caracteristicaImpresora();
+  }
+  avisarEstado && avisarEstado("Dibujando la nota\u2026");
+  await enviarALaImpresora(imagenARaster(dibujarNotaCredito(data, nota, "Arial")));
+}
+
 async function imprimirEscPos(texto) {
   const encoder = new TextEncoder();
   const init = new Uint8Array([27, 64]);
@@ -22399,6 +22537,18 @@ function NotaCreditoModal({ data, nota, onClose }) {
     }
   };
 
+  const [estadoBT, setEstadoBT] = useState("");
+  const imprimirBluetooth = async () => {
+    setEstadoBT("");
+    try {
+      await imprimirNotaPorBluetooth(data, nota, setEstadoBT);
+      setEstadoBT("Nota enviada a la impresora.");
+      setTimeout(() => setEstadoBT(""), 3000);
+    } catch (e) {
+      setEstadoBT("No se pudo imprimir: " + ((e && e.message) || e));
+    }
+  };
+
   const compartirPDF = async () => {
     const d = armarDocumento();
     setEstadoPDF("Preparando\u2026");
@@ -22456,11 +22606,14 @@ function NotaCreditoModal({ data, nota, onClose }) {
       { className: "ct-pie-fijo", style: { display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" } },
       // El ticket es lo que se entrega en el mostrador; la hoja A4 queda para
       // archivar o mandar por WhatsApp.
-      React.createElement(Button, { onClick: () => imprimir(true), style: { padding: "12px 18px" } },
-        React.createElement(Receipt, { size: 15 }), " Imprimir ticket"),
+      React.createElement(Button, { onClick: imprimirBluetooth, disabled: /Conectando|Reconectando|Dibujando/.test(estadoBT), style: { padding: "12px 18px" } },
+        React.createElement(Receipt, { size: 15 }), " ", /Conectando|Reconectando|Dibujando/.test(estadoBT) ? estadoBT : "Imprimir por Bluetooth"),
+      React.createElement(Button, { tone: "ghost", onClick: () => imprimir(true), style: { padding: "12px 18px" } },
+        React.createElement(Receipt, { size: 15 }), " Ticket (navegador)"),
       React.createElement(Button, { tone: "ghost", onClick: () => imprimir(false), style: { padding: "12px 16px" } }, "Hoja A4"),
       React.createElement(Button, { tone: "ghost", onClick: compartirPDF, disabled: !!estadoPDF, style: { padding: "12px 16px" } },
         React.createElement(ArrowDownCircle, { size: 15 }), " ", estadoPDF || "PDF"),
+      estadoBT && !/Conectando|Reconectando|Dibujando/.test(estadoBT) && React.createElement("p", { style: { width: "100%", margin: "4px 0 0", fontSize: 12, color: /No se pudo/.test(estadoBT) ? "var(--rose)" : "var(--muted)" } }, estadoBT),
       React.createElement(Button, { tone: "ghost", onClick: onClose, style: { padding: "12px 16px" } }, "Listo")
     )
   );
