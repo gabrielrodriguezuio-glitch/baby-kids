@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.830";
+const VERSION_APP = "9.840";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -20668,7 +20668,9 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
 
   // Filtra el pendiente según la lista que me toca (si hay división y estoy en ella)
   const pendienteMio = (division && miLista)
-    ? pendiente.filter((x) => (division.cats[x.categoria || "Sin categoría"] || "A") === miLista)
+    // Una categoría que apareció después de repartir (venta nueva) no está
+    // asignada: se la ve en las dos listas, para que no se pierda.
+    ? pendiente.filter((x) => (division.cats[x.categoria || "Sin categoría"] || miLista) === miLista)
     : pendiente;
 
   const visibles = pendienteMio.filter((x) => x.cantidad >= minimo);
@@ -20679,17 +20681,30 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
   // Marcar como repuesto descuenta del pendiente; sin marcar, queda esperando
   const alternar = (k, cant) => setHechos((h) => ({ ...h, [k]: h[k] ? 0 : cant }));
 
-  const confirmar = () => {
+  const confirmar = async () => {
+    // Antes de descontar se baja la lista TAL CUAL está en la nube: si otra
+    // persona repuso lo suyo hace un instante, se parte de esa versión y no de
+    // la copia local, así los dos guardados no se pisan.
+    let baseTodo = pendienteRepo(data);
+    try {
+      const { data: fila } = await nube.from("reposicion_pendiente").select("items").eq("negocio_id", negocioId).maybeSingle();
+      if (fila && Array.isArray(fila.items)) {
+        const otros = baseTodo.filter((x) => x.negocioId && x.negocioId !== negocioId);
+        baseTodo = [...otros, ...fila.items.map((x) => ({ ...x, negocioId: x.negocioId || negocioId }))];
+      }
+    } catch (e) { /* sin nube se usa la copia local */ }
+    const pendienteFresco = baseTodo.filter((x) => !x.negocioId || x.negocioId === negocioId);
+
     // Lo repuesto queda registrado con su remito, para poder revisar después
     // qué se bajó del depósito y cuándo.
-    const repuestos = pendiente
+    const repuestos = pendienteFresco
       .filter((x) => (hechos[CLAVE_REPO(x)] || 0) > 0)
       .map((x) => ({
         nombre: x.nombre, categoria: x.categoria,
         talle: x.talle || "", color: x.color || "",
         cantidad: hechos[CLAVE_REPO(x)], productoId: x.productoId
       }));
-    const quedan = pendiente.map((x) => {
+    const quedan = pendienteFresco.map((x) => {
       const k = CLAVE_REPO(x);
       const repuesto = hechos[k] || 0;
       return repuesto > 0 ? { ...x, cantidad: x.cantidad - repuesto } : x;
@@ -20734,7 +20749,7 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
       pendienteDespues: quedan.reduce((a, x) => a + x.cantidad, 0)
     };
     // Los items de otros negocios no se tocan: se guardan junto con lo que queda de este
-    const deOtros = pendienteRepo(data).filter((x) => x.negocioId && x.negocioId !== negocioId);
+    const deOtros = baseTodo.filter((x) => x.negocioId && x.negocioId !== negocioId);
     persist({
       ...data,
       productos,
@@ -20820,10 +20835,16 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
             React.createElement("div", { style: { flex: 1, minWidth: 140 } },
               React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, color: "var(--ink)", display: "flex", alignItems: "center", gap: 6 } },
                 React.createElement(Users, { size: 14, color: "var(--denim-light)" }),
-                miLista === "A" ? "Estás en la Lista 1" : miLista === "B" ? "Estás en la Lista 2" : "Lista dividida en dos"),
-              React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 3 } },
-                "Lista 1: " + (division.A && division.A.nombre ? division.A.nombre : "libre") +
-                " · Lista 2: " + (division.B && division.B.nombre ? division.B.nombre : "libre"))),
+                miLista ? "Tu lista (" + yoNombre + ")" : "Lista repartida en dos"),
+              // Quién tiene cada lista y qué categorías le tocan
+              React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 4, lineHeight: 1.5 } },
+                ["A", "B"].map((l) => {
+                  const quien = division[l] && division[l].nombre ? division[l].nombre : "libre";
+                  const cats = Object.keys(division.cats || {}).filter((c) => division.cats[c] === l);
+                  return React.createElement("div", { key: l },
+                    React.createElement("strong", { style: { color: l === miLista ? "var(--denim-light)" : "var(--ink)" } }, quien),
+                    cats.length ? ": " + cats.join(", ") : "");
+                }))),
             // Si soy B sin asignar y la lista 2 está libre, botón para tomarla
             (!miLista && division.B && !division.B.nombre) && React.createElement(Button, {
               onClick: tomarListaB, style: { padding: "8px 14px" }
