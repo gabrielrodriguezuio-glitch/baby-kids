@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.862";
+const VERSION_APP = "9.863";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -3063,11 +3063,12 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
           // Cuando el teclado propio de la app está abierto, la barra sube
           // y queda justo encima de él, como pasa con el teclado del celular.
           position: "fixed", left: 0, right: 0,
-          bottom: "calc(var(--ct-teclado-alto, 0px) - var(--ct-vv-extra, 0px))",
-          // Con el teclado abierto pasa por encima de su capa de fondo, así
-          // tocar Vender/Caja/... navega en vez de sólo cerrar el teclado.
-          zIndex: "calc(40 + 9960 * var(--ct-teclado-abierto, 0))",
-          transition: "bottom .18s ease-out",
+          bottom: "calc(0px - var(--ct-vv-extra, 0px))",
+          zIndex: 40,
+          // Con el teclado de búsqueda abierto la barra se esconde: el
+          // teclado ocupa el pie de la pantalla y la barra vuelve al cerrarlo.
+          transform: "translateY(calc(120% * var(--ct-teclado-abierto, 0)))",
+          transition: "transform .18s ease-out",
           background: "var(--rail)",
           display: "flex",
           overflowX: "auto",
