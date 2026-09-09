@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.873";
+const VERSION_APP = "9.876";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -21736,21 +21736,11 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
 
     React.createElement(
       "div",
-      { className: "ct-editor-grid", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginBottom: 18 } },
+      // Origen y destino siempre lado a lado, también en el celular: es una
+      // sola idea ("de acá para allá") y apilados se le\u00EDan como dos pasos.
+      { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 } },
       React.createElement(CampoEditor, { label: "Negocio origen" }, selectNegocio(origen, setOrigen, destino)),
       React.createElement(CampoEditor, { label: "Negocio destino" }, selectNegocio(destino, setDestino, origen))
-    ),
-
-    React.createElement(
-      "label",
-      { style: { display: "flex", alignItems: "center", gap: 11, fontSize: 13, cursor: "pointer", background: sinControl ? "color-mix(in srgb, var(--mustard) 12%, transparent)" : "var(--surface-2)", border: "1px solid " + (sinControl ? "color-mix(in srgb, var(--mustard) 45%, transparent)" : "transparent"), borderRadius: 9, padding: "11px 14px", marginBottom: 18 } },
-      React.createElement(Switch, { on: sinControl, onChange: () => setSinControl(!sinControl) }),
-      React.createElement("span", null,
-        React.createElement("span", { style: { display: "block", fontWeight: 600 } }, "Transferir aunque no figure stock"),
-        React.createElement("span", { style: { display: "block", fontSize: 11.5, color: "var(--muted)", marginTop: 2 } },
-          sinControl
-            ? "Se mueve igual y el origen puede quedar en negativo. \u00DAtil mientras las cantidades cargadas no sean las reales."
-            : "S\u00F3lo se puede transferir lo que el origen tiene disponible."))
     ),
 
     !listos && React.createElement(
@@ -21850,6 +21840,21 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
           enCamino
             ? "Sale del origen ahora. Alguien del destino confirma la llegada y queda registrado quién."
             : "Entra directo al destino, sin que nadie confirme que llegó.")
+      )
+    ),
+
+    React.createElement(
+      "label",
+      { style: { display: "flex", alignItems: "center", gap: 12, marginTop: 14, cursor: "pointer" } },
+      React.createElement(Switch, { on: sinControl, onChange: () => setSinControl(!sinControl) }),
+      React.createElement(
+        "span",
+        null,
+        React.createElement("span", { style: { display: "block", fontSize: 14, fontWeight: 600 } }, "Transferir aunque no figure stock"),
+        React.createElement("span", { style: { display: "block", fontSize: 12.5, color: "var(--muted)", marginTop: 3 } },
+          sinControl
+            ? "Se mueve igual y el origen puede quedar en negativo. \u00DAtil mientras las cantidades cargadas no sean las reales."
+            : "S\u00F3lo se puede transferir lo que el origen tiene disponible.")
       )
     ),
 
@@ -23411,6 +23416,7 @@ function PedidosView({ data, persist, onCerrar }) {
 }
 
 function TransferenciasView({ data, persist }) {
+  const [menuFiltros, setMenuFiltros] = useState(false);
   const negocios = listaNegocios(data);
   const principal = negocios[0];
   const [nueva, setNueva] = useState(false);
@@ -23519,26 +23525,48 @@ function TransferenciasView({ data, persist }) {
     React.createElement(
       "div",
       { style: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16, alignItems: "center" } },
-      // Los dos filtros juntos en un mismo recuadro: son la misma decisión
-      // (qué transferencias mirar) y separados parecían dos cosas distintas.
-      // Cada control por separado: con el menú fuera del camino sobra ancho y
-      // no hace falta apretarlos en una sola barra.
-      React.createElement("select", {
-        value: filtroEstado,
-        onChange: (e) => setFiltroEstado(e.target.value),
-        style: { background: "var(--surface-2)", border: "1.5px solid var(--line)", borderRadius: 10, outline: "none", color: "var(--ink)", fontSize: 13, fontWeight: 600, padding: "10px 14px", cursor: "pointer", fontFamily: "'Inter', sans-serif" }
-      },
-        React.createElement("option", { value: "" }, "Todos los estados"),
-        Object.keys(ESTADOS_TRANSFER).map((k) =>
-          React.createElement("option", { key: k, value: k }, ESTADOS_TRANSFER[k].label))),
-
-      React.createElement("select", {
-        value: filtroNegocio,
-        onChange: (e) => setFiltroNegocio(e.target.value),
-        style: { background: "var(--surface-2)", border: "1.5px solid var(--line)", borderRadius: 10, outline: "none", color: "var(--ink)", fontSize: 13, fontWeight: 600, padding: "10px 14px", cursor: "pointer", fontFamily: "'Inter', sans-serif" }
-      },
-        React.createElement("option", { value: "" }, "Todos los negocios"),
-        negocios.map((n) => React.createElement("option", { key: n.id, value: n.id }, n.nombre))),
+      // Los dos filtros (estado y negocio) viven detr\u00E1s de un solo bot\u00F3n de
+      // tres puntos: ocupan menos y son la misma decisi\u00F3n (qu\u00E9 mirar).
+      React.createElement(
+        "div",
+        { style: { position: "relative" } },
+        React.createElement("button", {
+          onClick: () => setMenuFiltros((v) => !v),
+          title: "Filtros",
+          style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 42, height: 42, borderRadius: 10, border: "1.5px solid " + ((filtroEstado || filtroNegocio) ? "var(--denim)" : "var(--line)"), background: (filtroEstado || filtroNegocio) ? "var(--denim-soft)" : "var(--surface-2)", color: (filtroEstado || filtroNegocio) ? "var(--denim-light)" : "var(--ink)", cursor: "pointer", position: "relative" }
+        },
+          React.createElement(MoreHorizontal, { size: 18 }),
+          (filtroEstado || filtroNegocio) && React.createElement("span", { style: { position: "absolute", top: 6, right: 6, width: 7, height: 7, borderRadius: "50%", background: "var(--denim)" } })),
+        menuFiltros && React.createElement(
+          React.Fragment,
+          null,
+          React.createElement("div", { onClick: () => setMenuFiltros(false), style: { position: "fixed", inset: 0, zIndex: 39 } }),
+          React.createElement(
+            "div",
+            { style: { position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 40, minWidth: 240, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 12, boxShadow: "0 12px 32px rgba(0,0,0,0.25)", padding: 12, display: "flex", flexDirection: "column", gap: 10 } },
+            React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: 0.07, textTransform: "uppercase", color: "var(--muted)" } }, "Filtrar"),
+            React.createElement("select", {
+              value: filtroEstado,
+              onChange: (e) => setFiltroEstado(e.target.value),
+              style: { background: "var(--surface-2)", border: "1.5px solid var(--line)", borderRadius: 9, outline: "none", color: "var(--ink)", fontSize: 13, fontWeight: 600, padding: "9px 12px", cursor: "pointer", fontFamily: "'Inter', sans-serif", width: "100%" }
+            },
+              React.createElement("option", { value: "" }, "Todos los estados"),
+              Object.keys(ESTADOS_TRANSFER).map((k) =>
+                React.createElement("option", { key: k, value: k }, ESTADOS_TRANSFER[k].label))),
+            React.createElement("select", {
+              value: filtroNegocio,
+              onChange: (e) => setFiltroNegocio(e.target.value),
+              style: { background: "var(--surface-2)", border: "1.5px solid var(--line)", borderRadius: 9, outline: "none", color: "var(--ink)", fontSize: 13, fontWeight: 600, padding: "9px 12px", cursor: "pointer", fontFamily: "'Inter', sans-serif", width: "100%" }
+            },
+              React.createElement("option", { value: "" }, "Todos los negocios"),
+              negocios.map((n) => React.createElement("option", { key: n.id, value: n.id }, n.nombre))),
+            (filtroEstado || filtroNegocio) && React.createElement("button", {
+              onClick: () => { setFiltroEstado(""); setFiltroNegocio(""); setMenuFiltros(false); },
+              style: { background: "none", border: "none", cursor: "pointer", color: "var(--denim-light)", fontSize: 12.5, fontWeight: 600, fontFamily: "'Inter', sans-serif", textAlign: "left", padding: "2px 0" }
+            }, "Quitar filtros")
+          )
+        )
+      ),
 
       React.createElement(Button, { tone: "ghost", onClick: () => setModo("pedidos"), style: { marginLeft: "auto", padding: "11px 16px" } },
         React.createElement(ShoppingBag, { size: 15 }), " Pedidos",
