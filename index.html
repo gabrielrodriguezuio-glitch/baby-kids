@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.804";
+const VERSION_APP = "9.805";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -20608,6 +20608,19 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
     }
     const origenNombre = (negociosLista.find((n) => n.id === origen) || {}).nombre || "";
 
+    // Marcar como vistas TODAS las ventas recientes de los productos que se
+    // repusieron. Si alguna venta vieja no había quedado registrada como vista
+    // (por ejemplo, la lista se llenó con una versión anterior), esto evita
+    // que "Traer" la vuelva a sumar y el producto reaparezca.
+    const idsRepuestos = new Set(repuestos.map((r) => r.productoId).filter(Boolean));
+    const yaVistas = new Set(data.repoVentasVistas || []);
+    const desde90 = sumarDias(todayISO(), -90);
+    (data.ventas || []).forEach((v) => {
+      if (v.fecha < desde90) return;
+      const tocaAlguno = (v.items || []).some((it) => idsRepuestos.has(it.productoId));
+      if (tocaAlguno) yaVistas.add(v.id);
+    });
+
     const registro = {
       id: uid(),
       remito: "R-" + String((data.reposiciones || []).length + 1).padStart(4, "0"),
@@ -20624,6 +20637,7 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
       ...data,
       productos,
       repoPendiente: quedan,
+      repoVentasVistas: [...yaVistas].slice(0, 2000),
       reposiciones: [registro, ...(data.reposiciones || [])]
     });
     setRemito(registro);
