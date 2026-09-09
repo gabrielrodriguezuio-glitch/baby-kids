@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.802-DIAG";
+const VERSION_APP = "9.803-DIAG";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -20571,12 +20571,12 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
       }));
     // DIAGNÓSTICO temporal: ver cuántos se marcaron y cuántos se van a descontar
     const marcadasCant = Object.keys(hechos).filter((k) => hechos[k] > 0).length;
-    avisar("Marcados: " + marcadasCant + " · A descontar: " + repuestos.length + " · Pendiente total: " + pendiente.length, { tono: "info" });
     const quedan = pendiente.map((x) => {
       const k = CLAVE_REPO(x);
       const repuesto = hechos[k] || 0;
       return repuesto > 0 ? { ...x, cantidad: x.cantidad - repuesto } : x;
     }).filter((x) => x.cantidad > 0);
+    avisar("Marcados: " + marcadasCant + " · Antes: " + pendiente.length + " prod · Después: " + quedan.length + " prod", { tono: "info" });
 
     // Mover la mercadería del local de origen a la camioneta (este negocio).
     // Sin origen elegido, sólo se registra el remito sin tocar stock (como antes).
