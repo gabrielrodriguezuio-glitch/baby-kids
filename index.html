@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.798";
+const VERSION_APP = "9.801";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -846,7 +846,11 @@ const puede = (data, accion) => {
 
 const tabPermitida = (data, tab) => {
   const u = usuarioSesion(data);
-  if (!u) return true;
+  // Mientras la app todavía no sabe quién es el usuario (recién carga, o la
+  // lista de usuarios aún no bajó de la nube), NO se muestra todo: sólo lo
+  // mínimo seguro. Sin esto, un empleado veía Reportes, Usuarios y Mis
+  // Negocios por unos segundos hasta que se identificaba su rol.
+  if (!u) return tab === "pos" || tab === "soporte";
   const tabs = tabsDelRol(data, u.rol || "Propietario");
   if (!tabs || tabs === "*") return true;
   // Soporte siempre accesible: es donde se pide ayuda si algo falla
@@ -1319,7 +1323,7 @@ function ControlTienda() {
   // de la nube: pisaría lo que se está escribiendo en este mismo momento.
   const guardando = React.useRef(0);
   const [loading, setLoading] = useState(true);
-  const [tabPedida, setTab] = useState("negocios");
+  const [tabPedida, setTab] = useState("pos");
   // Si el rol no llega a esa pantalla, se cae a la primera que sí puede usar.
   // Evita quedar en blanco al cambiar de usuario o al abrir un enlace viejo.
   const tab = tabPermitida(data, tabPedida) ? tabPedida
@@ -20506,7 +20510,48 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
   };
 
   const pendiente = pendienteRepo(data);
-  const visibles = pendiente.filter((x) => x.cantidad >= minimo);
+
+  // --- División de la lista entre dos personas, por categoría ---
+  // La asignación (qué categoría le toca a cada lista) se guarda en data para
+  // que los dos dispositivos vean lo mismo. Cada empleado ve sólo su lista,
+  // identificada por su cuenta, así nunca se pisan al tachar.
+  const division = data.repoDivision || null;  // { A: {nombre}, B: {nombre}, cats: { categoria: "A"|"B" } }
+  const yoNombre = usuarioActivo(data);
+  // Qué lista me toca: si soy la persona A o B de la división. Si no estoy en
+  // ninguna (un tercero mira), veo todo.
+  const miLista = division
+    ? (division.A && division.A.nombre === yoNombre ? "A"
+       : division.B && division.B.nombre === yoNombre ? "B" : null)
+    : null;
+
+  const dividirListaEnDos = () => {
+    // Reparte las categorías alternadas entre las dos listas
+    const cats = [...new Set(pendiente.map((x) => x.categoria || "Sin categoría"))].sort();
+    if (cats.length < 2) { avisar("Hace falta al menos dos categorías para dividir", { tono: "info" }); return; }
+    const mapa = {};
+    cats.forEach((c, i) => { mapa[c] = i % 2 === 0 ? "A" : "B"; });
+    // La persona que divide queda como lista A; la B queda libre para el otro
+    persist({ ...data, repoDivision: { A: { nombre: yoNombre }, B: { nombre: "" }, cats: mapa } });
+    avisar("Lista dividida en dos por categoría");
+  };
+
+  const unirListas = () => {
+    persist({ ...data, repoDivision: null });
+    avisar("Listas unidas de nuevo");
+  };
+
+  // Si soy la persona B todavía sin nombre asignado, me tomo la lista B
+  const tomarListaB = () => {
+    if (!division) return;
+    persist({ ...data, repoDivision: { ...division, B: { nombre: yoNombre } } });
+  };
+
+  // Filtra el pendiente según la lista que me toca (si hay división y estoy en ella)
+  const pendienteMio = (division && miLista)
+    ? pendiente.filter((x) => (division.cats[x.categoria || "Sin categoría"] || "A") === miLista)
+    : pendiente;
+
+  const visibles = pendienteMio.filter((x) => x.cantidad >= minimo);
   const grupos = agruparRepo(visibles);
   const total = visibles.reduce((a, x) => a + x.cantidad, 0);
   const tachadas = Object.keys(hechos).filter((k) => hechos[k] > 0).length;
@@ -20590,6 +20635,11 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
       React.createElement("span", {
         style: { minWidth: 32, textAlign: "right", fontFamily: "'Inter Tight', sans-serif", fontSize: 18, fontWeight: 700, flexShrink: 0 }
       }, it.cantidad),
+      // Foto del producto, para reconocerlo de un vistazo
+      React.createElement(ProductoThumb, {
+        producto: (data.productos || []).find((p) => p.id === it.productoId) || { nombre: it.nombre },
+        size: 38
+      }),
       React.createElement(
         "span",
         { style: { flex: 1, minWidth: 0 } },
@@ -20615,6 +20665,39 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
     ModalOverlay,
     { width: 580 },
     React.createElement(ModalHeader, { icon: Truck, title: "Pendiente de reponer", onClose }),
+    // Control de división de la lista entre dos personas
+    pendiente.length > 0 && React.createElement(
+      "div",
+      { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: division ? "color-mix(in srgb, var(--denim) 10%, transparent)" : "var(--surface-2)", border: division ? "1px solid color-mix(in srgb, var(--denim) 35%, transparent)" : "none", borderRadius: 10, padding: "10px 12px", marginBottom: 14 } },
+      !division
+        ? React.createElement(
+            React.Fragment,
+            null,
+            React.createElement("span", { style: { flex: 1, minWidth: 120, fontSize: 12.5, color: "var(--muted)" } },
+              "Repartí la lista entre dos personas para reponer en paralelo."),
+            React.createElement(Button, { onClick: dividirListaEnDos, tone: "ghost", style: { padding: "8px 14px" } },
+              React.createElement(Users, { size: 14 }), " Dividir en dos")
+          )
+        : React.createElement(
+            React.Fragment,
+            null,
+            React.createElement("div", { style: { flex: 1, minWidth: 140 } },
+              React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, color: "var(--ink)", display: "flex", alignItems: "center", gap: 6 } },
+                React.createElement(Users, { size: 14, color: "var(--denim-light)" }),
+                miLista === "A" ? "Estás en la Lista 1" : miLista === "B" ? "Estás en la Lista 2" : "Lista dividida en dos"),
+              React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 3 } },
+                "Lista 1: " + (division.A && division.A.nombre ? division.A.nombre : "libre") +
+                " · Lista 2: " + (division.B && division.B.nombre ? division.B.nombre : "libre"))),
+            // Si soy B sin asignar y la lista 2 está libre, botón para tomarla
+            (!miLista && division.B && !division.B.nombre) && React.createElement(Button, {
+              onClick: tomarListaB, style: { padding: "8px 14px" }
+            }, "Tomar Lista 2"),
+            React.createElement("button", {
+              onClick: unirListas,
+              style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 12, fontFamily: "'Inter', sans-serif", textDecoration: "underline", padding: 4 }
+            }, "Unir listas")
+          )
+    ),
     // Traer lo vendido sin cerrar el recorrido: se elige de cuántos días y se
     // suma a la lista de una vez.
     React.createElement(
