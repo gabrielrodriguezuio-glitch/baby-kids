@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.793";
+const VERSION_APP = "9.794";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -18891,9 +18891,17 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
       }
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          // Más resolución: un código de barras chico necesita píxeles para
-          // que se distingan las barras finas. Con 1280 quedaba borroso.
-          video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+          // Máxima resolución posible: un código de barras chico necesita
+          // muchos píxeles para distinguir las barras finas. Pedimos 4K ideal
+          // (la cámara da lo más alto que pueda) más enfoque continuo, para
+          // que no salga borroso como con resoluciones bajas.
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 3840 },
+            height: { ideal: 2160 },
+            frameRate: { ideal: 30 },
+            advanced: [{ focusMode: "continuous" }]
+          },
           audio: false
         });
         if (cancelado) { stream.getTracks().forEach((t) => t.stop()); return; }
