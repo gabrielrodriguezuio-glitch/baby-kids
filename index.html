@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.881";
+const VERSION_APP = "9.882";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -10959,7 +10959,8 @@ function PosButton({ children, onClick, variant = "primary", disabled, style, cl
 function ElegirTalleModal({ producto, precio, negocioId, onElegir, onClose }) {
   const vs = variantesNegocio(producto, negocioId);
   const conStock = vs.filter((v) => (Number(v.stock) || 0) > 0);
-  const [elegido, setElegido] = useState(() => conStock[0] ? claveVariante(conStock[0]) : "");
+  // Arranca en el primero con stock, pero se puede elegir cualquiera
+  const [elegido, setElegido] = useState(() => (conStock[0] || vs[0]) ? claveVariante(conStock[0] || vs[0]) : "");
   const [filtro, setFiltro] = useState("");
 
   const q = filtro.trim().toLowerCase();
@@ -10967,7 +10968,7 @@ function ElegirTalleModal({ producto, precio, negocioId, onElegir, onClose }) {
 
   const confirmar = () => {
     const v = vs.find((x) => claveVariante(x) === elegido);
-    if (!v || (Number(v.stock) || 0) <= 0) return;
+    if (!v) return;
     onElegir(elegido);
   };
 
@@ -11387,7 +11388,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
   // categoría o el texto de la grilla.
   const productos = useMemo(
     () => data.productos.filter(
-      (p) => stockNegocio(p, negocioId) > 0 && p.activo !== false && (categoria === "Todas" || p.categoria === categoria) && (p.nombre.toLowerCase().includes(query.toLowerCase()) || (p.codigoBarras || "").includes(query.trim()))
+      (p) => p.activo !== false && (categoria === "Todas" || p.categoria === categoria) && (p.nombre.toLowerCase().includes(query.toLowerCase()) || (p.codigoBarras || "").includes(query.trim()))
     ),
     [data.productos, negocioId, categoria, query]
   );
@@ -11684,9 +11685,11 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
         faltantes.push(prod.nombre + (talle ? " · " + textoDeClave(talle) : "") + ": quedan " + real + ", pediste " + pedido[k]);
       }
     });
+    // Se vende igual aunque el conteo diga que no alcanza: la prenda puede
+    // estar en la mano y el stock cargado estar mal. Queda en negativo y
+    // avisado, para revisar el conteo despu\u00E9s.
     if (faltantes.length) {
-      setErrorStock("El stock cambió desde que armaste el carrito:\n" + faltantes.join("\n"));
-      return;
+      setAvisoStock("Se vendi\u00F3 con stock en negativo: " + faltantes.join(" \u00B7 "));
     }
     const cliente = data.clientes.find((c) => c.id === clienteId);
     const extraRecargo = Number(recargo) || 0;
@@ -12060,7 +12063,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
               cart.map((it) => {
                 const prod = it.productoId ? data.productos.find((p) => p.id === it.productoId) : null;
                 const vs = prod ? variantesNegocio(prod, negocioId) : [];
-                const tope = it.cantidad >= it.stockDisp;
+                const tope = false; // sin tope: se puede vender en negativo
                 return React.createElement(
                   "div",
                   {
@@ -12123,7 +12126,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
                       const clave = claveVariante(v);
                       return React.createElement(
                         "option",
-                        { key: clave, value: clave, disabled: (Number(v.stock) || 0) <= 0 && clave !== it.varianteTalle },
+                        { key: clave, value: clave },
                         etiquetaVariante(v).toUpperCase() + " - Stock: " + (Number(v.stock) || 0)
                       );
                     })
@@ -12140,7 +12143,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
                     React.createElement("button", {
                       onClick: () => changeQty(it, 1),
                       disabled: tope,
-                      title: tope ? "No queda más stock" : "Sumar uno",
+                      title: "Sumar uno",
                       style: { ...posQtyBtnStyle, width: 32, height: 32, opacity: tope ? 0.4 : 1 }
                     }, React.createElement(Plus, { size: 14 }))
                   ),
