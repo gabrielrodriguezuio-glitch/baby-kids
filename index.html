@@ -2,7 +2,7 @@
 <html lang="es-AR">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
 <title>Control Tienda</title>
 <!-- Con esto el teléfono puede instalarla: aparece con su ícono y se abre
      sin la barra del navegador arriba. -->
@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.861";
+const VERSION_APP = "9.862";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -298,6 +298,23 @@ const efectivoEnCaja = (caja) => {
 };
 
 // ===== Detección de pantalla chica =====
+// En algunos Android, al desplazarse, la zona visible queda más alta o más baja
+// que el viewport "de layout", y lo que está con position:fixed aparece flotando
+// en el medio con negro debajo. Se mide la diferencia con la Visual Viewport
+// API y se publica en una variable CSS que usan la barra inferior y el teclado.
+(function corregirViewportFijo() {
+  if (typeof window === "undefined" || !window.visualViewport) return;
+  const vv = window.visualViewport;
+  const aplicar = () => {
+    const extra = Math.max(0, Math.round(vv.offsetTop + vv.height - window.innerHeight));
+    document.documentElement.style.setProperty("--ct-vv-extra", extra + "px");
+  };
+  vv.addEventListener("resize", aplicar);
+  vv.addEventListener("scroll", aplicar);
+  window.addEventListener("orientationchange", () => setTimeout(aplicar, 50));
+  aplicar();
+})();
+
 function useIsMobile(bp = 700) {
   const [mobile, setMobile] = useState(typeof window !== "undefined" && window.innerWidth <= bp);
   useEffect(() => {
@@ -3045,7 +3062,8 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
         style: {
           // Cuando el teclado propio de la app está abierto, la barra sube
           // y queda justo encima de él, como pasa con el teclado del celular.
-          position: "fixed", left: 0, right: 0, bottom: "var(--ct-teclado-alto, 0px)",
+          position: "fixed", left: 0, right: 0,
+          bottom: "calc(var(--ct-teclado-alto, 0px) - var(--ct-vv-extra, 0px))",
           // Con el teclado abierto pasa por encima de su capa de fondo, así
           // tocar Vender/Caja/... navega en vez de sólo cerrar el teclado.
           zIndex: "calc(40 + 9960 * var(--ct-teclado-abierto, 0))",
@@ -11059,7 +11077,7 @@ const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ onCambiar, onEnt
     ),
     abierto && React.createElement(
       "div",
-      { ref: panelRef, onClick: (e) => e.stopPropagation(), style: { position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 9999, padding: "8px 6px calc(6px + env(safe-area-inset-bottom, 0px))", background: "#202124", borderTopLeftRadius: 14, borderTopRightRadius: 14, boxShadow: "0 -4px 20px rgba(0,0,0,0.5)", display: "flex", flexDirection: "column", gap: 6, animation: "ctSubeTeclado .18s ease-out" } },
+      { ref: panelRef, onClick: (e) => e.stopPropagation(), style: { position: "fixed", left: 0, right: 0, bottom: "calc(0px - var(--ct-vv-extra, 0px))", zIndex: 9999, padding: "8px 6px calc(6px + env(safe-area-inset-bottom, 0px))", background: "#202124", borderTopLeftRadius: 14, borderTopRightRadius: 14, boxShadow: "0 -4px 20px rgba(0,0,0,0.5)", display: "flex", flexDirection: "column", gap: 6, animation: "ctSubeTeclado .18s ease-out" } },
       // Sugerencias de productos: van DENTRO del panel del teclado, arriba de
       // las teclas, para que el teclado quede quieto y las sugerencias no lo
       // empujen (como las sugerencias de palabras de Gboard).
