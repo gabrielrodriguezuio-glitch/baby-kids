@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.807";
+const VERSION_APP = "9.820";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -143,6 +143,10 @@ import { Tag, Package, ShoppingBag, Users, Wallet, Plus, Trash2, X, AlertTriangl
 } from "lucide-react";
 const STORAGE_KEY = "control-tienda-ropa-v1";
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+// Id definitivo con formato de la base (UUID). Se usa para las ventas: así el
+// id que se les pone en la app es el MISMO que queda en la nube, y nada que
+// lo anote (como la lista de reposición) queda apuntando a un id viejo.
+const uidUUID = () => (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : uid();
 // La fecha de HOY según el reloj de acá, no el de Greenwich. Con toISOString,
 // después de las 21:00 en Argentina la app creía que ya era el día siguiente:
 // las ventas de la noche quedaban con fecha equivocada y no aparecían en el
@@ -4721,6 +4725,9 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
     const tanda = ventasNuevas.slice(i, i + 50);
     const { data: filas, error } = await nube.from("ventas").insert(
       tanda.map((v) => ({
+        // Si la venta ya nació con id de formato UUID, se manda ese mismo:
+        // la nube lo respeta y no hace falta renombrar nada después.
+        ...(esIdDeLaBase(v.id) ? { id: v.id } : {}),
         negocio_id: v.negocioId || null,
         cliente_id: v.clienteId ? idRealCliente(v.clienteId) : null,
         cliente_nombre: v.clienteNombre || null,
@@ -11522,7 +11529,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     const montoDeudaCobrada = lineaDeudaCobrada ? lineaDeudaCobrada.precioUnit * lineaDeudaCobrada.cantidad : 0;
 
     const venta = {
-      id: uid(),
+      id: uidUUID(),
       // En qué local se hizo: sin esto los informes por negocio y el detalle
       // del cierre no encontraban ninguna venta.
       negocioId: negocioActivo(data).id,
@@ -11628,7 +11635,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
         usuario: usuarioActivo(data),
       });
     });
-    persist(conMovimientos(guardarCaja({ ...data, ventas: [venta, ...data.ventas], productos: productosActualizados, movimientosCC }, miId, cajaActualizada, negocioId), movsStock));
+    persist(conMovimientos(guardarCaja({ ...data, ventas: [venta, ...data.ventas], productos: productosActualizados, movimientosCC, ...sumarVentaARepo(data, venta) }, miId, cajaActualizada, negocioId), movsStock));
     setConfirmado({ total, unidades: totalUnidades });
     cerrarCarritoCobrado();
     setShowCheckout(false);
@@ -15181,7 +15188,7 @@ function ImportarVentasModal({ data, persist, onClose }) {
           cantidad: it.cantidad, precioUnit: 0, costo: 0
         }));
         ventas.push({
-          id: uid(),
+          id: uidUUID(),
           fecha, horaTexto: hora,
           clienteId, clienteNombre: nombreCli,
           items,
@@ -20244,6 +20251,34 @@ const CLAVE_REPO = (it) => it.productoId + "|" + (it.talle || "") + "|" + (it.co
 
 const pendienteRepo = (data) => (data.repoPendiente || []);
 
+// Suma los productos de UNA venta a la lista de reposición, en el momento en
+// que se vende. La lista es un acumulador propio: no se reconstruye mirando el
+// historial de ventas (eso fallaba cuando cambiaba el id de la venta). Se
+// anota también el id de la venta como "vista" para que el cierre de vuelta
+// no la vuelva a contar.
+const sumarVentaARepo = (data, venta) => {
+  if (!venta || esDevolucion(venta)) return {};
+  const negocioId = venta.negocioId || (listaNegocios(data)[0] || {}).id;
+  const previo = {};
+  pendienteRepo(data).forEach((x) => { previo[CLAVE_REPO(x) + "|" + (x.negocioId || "")] = { ...x }; });
+  (venta.items || []).forEach((it) => {
+    if (!it.productoId) return;
+    const prod = (data.productos || []).find((p) => p.id === it.productoId);
+    const base = {
+      productoId: it.productoId,
+      nombre: it.nombre || (prod && prod.nombre) || "\u2014",
+      categoria: (prod && prod.categoria) || "Sin categor\u00EDa",
+      talle: it.talla || "", color: it.color || "",
+      negocioId
+    };
+    const k = CLAVE_REPO(base) + "|" + negocioId;
+    if (previo[k]) previo[k].cantidad += it.cantidad;
+    else previo[k] = { ...base, cantidad: it.cantidad, dias: 1, desde: venta.fecha, ultimoDia: venta.fecha };
+  });
+  const vistas = [venta.id, ...(data.repoVentasVistas || [])].slice(0, 2000);
+  return { repoPendiente: Object.values(previo), repoVentasVistas: vistas };
+};
+
 // Suma lo vendido en una fecha a lo que ya venía pendiente
 // Cada venta se cuenta UNA sola vez: se anotan los ids ya procesados. Sin
 // esto, cerrar el recorrido dos veces el mismo día volvía a sumar las mismas
@@ -20528,7 +20563,6 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
   const [hechos, setHechos] = useState({}); // clave -> cuántas se encontraron
   const [remito, setRemito] = useState(null);
   const [verHistorial, setVerHistorial] = useState(false);
-  const [diasTraer, setDiasTraer] = useState(1);
   // De qué local se saca la mercadería para reponer la camioneta. Por defecto
   // el local principal (el primero). El destino es este negocio (la camioneta).
   const negociosLista = listaNegocios(data);
@@ -20538,35 +20572,21 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
   // Trae lo vendido en los últimos días y lo suma a la lista de reposición,
   // sin esperar a cerrar el recorrido. Antes esta lista sólo se llenaba al
   // cerrar la vuelta; ahora se puede reponer cuando se quiera.
-  const traerVendido = () => {
-    // DIAGNÓSTICO: ver el estado de las ventas vistas y qué se va a sumar
-    const yaVistas = new Set(data.repoVentasVistas || []);
-    const desde = sumarDias(todayISO(), -(Math.max(1, diasTraer) - 1));
-    const ventasEnRango = (data.ventas || []).filter((v) => v.fecha >= desde && !esDevolucion(v));
-    const nuevasSinVer = ventasEnRango.filter((v) => !yaVistas.has(v.id));
-    avisar("Ventas en rango: " + ventasEnRango.length + " · Ya vistas: " + (data.repoVentasVistas || []).length + " · Nuevas a sumar: " + nuevasSinVer.length, { tono: "info" });
-
-    const acumulado = acumularRepoDias(data, diasTraer, negocioId);
-    if (!acumulado.agregadas) {
-      avisar("No hubo ventas nuevas para reponer en ese período", { tono: "info" });
-      return;
-    }
-    persist({ ...data, repoPendiente: acumulado.items, repoVentasVistas: acumulado.vistas });
-    avisar(acumulado.agregadas + " venta" + (acumulado.agregadas === 1 ? "" : "s") + " sumada" + (acumulado.agregadas === 1 ? "" : "s") + " a la reposición");
-  };
-
   // Empezar de cero: vacía la lista y da por vistas TODAS las ventas que
   // existen hoy, así sólo se suman las ventas que vengan de ahora en más.
   // Sirve para limpiar una lista que quedó con ventas mal anotadas.
   const empezarDeCero = () => {
     if (!window.confirm("¿Vaciar la lista de reposición y empezar de cero?\n\nLas ventas que ya existen no se van a volver a sumar; sólo las nuevas.")) return;
     const todas = (data.ventas || []).map((v) => v.id);
-    persist({ ...data, repoPendiente: [], repoVentasVistas: todas.slice(0, 2000), repoDivision: null });
+    const deOtros = pendienteRepo(data).filter((x) => x.negocioId && x.negocioId !== negocioId);
+    persist({ ...data, repoPendiente: deOtros, repoVentasVistas: todas.slice(0, 2000), repoDivision: null });
     setHechos({});
     avisar("Lista de reposición vaciada. Se suman sólo las ventas nuevas.");
   };
 
-  const pendiente = pendienteRepo(data);
+  // Sólo lo vendido en este negocio (la camioneta). Los items viejos sin
+  // negocio anotado se muestran igual para no perderlos.
+  const pendiente = pendienteRepo(data).filter((x) => !x.negocioId || x.negocioId === negocioId);
 
   // --- División de la lista entre dos personas, por categoría ---
   // La asignación (qué categoría le toca a cada lista) se guarda en data para
@@ -20670,10 +20690,12 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
       unidades: repuestos.reduce((a, x) => a + x.cantidad, 0),
       pendienteDespues: quedan.reduce((a, x) => a + x.cantidad, 0)
     };
+    // Los items de otros negocios no se tocan: se guardan junto con lo que queda de este
+    const deOtros = pendienteRepo(data).filter((x) => x.negocioId && x.negocioId !== negocioId);
     persist({
       ...data,
       productos,
-      repoPendiente: quedan,
+      repoPendiente: [...deOtros, ...quedan],
       repoVentasVistas: [...yaVistas].slice(0, 2000),
       reposiciones: [registro, ...(data.reposiciones || [])]
     });
@@ -20789,30 +20811,6 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
           otrosLocales.map((n) => React.createElement("option", { key: n.id, value: n.id }, n.nombre))
         ),
         React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)" } }, "\u2192 " + negocioNombre)
-      ),
-      // Traer lo vendido
-      React.createElement(
-        "div",
-        { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
-        React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)", minWidth: 60 } }, "Traer de"),
-        React.createElement(
-          "div",
-          { style: { display: "flex", gap: 5 } },
-          [1, 7, 15, 30].map((n) => React.createElement("button", {
-            key: n,
-            onClick: () => setDiasTraer(n),
-            style: {
-              padding: "6px 12px", borderRadius: 999, cursor: "pointer", border: "none",
-              background: diasTraer === n ? "var(--denim)" : "var(--surface)",
-              color: diasTraer === n ? "var(--on-accent)" : "var(--ink)",
-              fontSize: 12.5, fontWeight: diasTraer === n ? 700 : 500, fontFamily: "'Inter', sans-serif"
-            }
-          }, n === 1 ? "Hoy" : n + " días"))
-        ),
-        React.createElement(Button, {
-          onClick: traerVendido,
-          style: { marginLeft: "auto", padding: "9px 16px" }
-        }, React.createElement(Plus, { size: 15 }), " Traer")
       ),
       // Para limpiar una lista que quedó con ventas mal anotadas
       pendiente.length > 0 && React.createElement("button", {
@@ -29300,4 +29298,4 @@ try {
 }
 </script>
 </body>
-</html>-
+</html>
