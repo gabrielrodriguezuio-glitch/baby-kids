@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.790";
+const VERSION_APP = "9.791";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -2096,6 +2096,7 @@ function Wrapper({ children, mobile, tema = "oscuro" }) {
 
         /* Las filas entran escalonadas al cargar una lista */
         @keyframes ct-fila-in { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
+        @keyframes ctSubeTeclado { from { transform: translateY(100%) } to { transform: translateY(0) } }
         .ct-tablewrap tbody tr { animation: ct-fila-in .3s ease backwards; }
         .ct-tablewrap tbody tr:nth-child(1) { animation-delay: .02s }
         .ct-tablewrap tbody tr:nth-child(2) { animation-delay: .04s }
@@ -10910,10 +10911,21 @@ const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ onCambiar, onEnt
       style: { display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", borderLeft: "1px solid color-mix(in srgb, var(--denim) 30%, transparent)", cursor: "pointer", color: "var(--denim-light)", width: 38, flex: "0 0 38px", flexShrink: 0, padding: "8px 0 8px 10px", boxSizing: "content-box" }
     }, React.createElement(ScanBarcode, { size: 18 }))
     ),
-    // El teclado estilo Gboard
+    // El teclado estilo Gboard, FIJO al fondo de la pantalla (sube desde
+    // abajo como el teclado de Google, en vez de empujar el contenido).
     abierto && React.createElement(
       "div",
-      { style: { marginTop: 8, padding: "8px 6px 6px", background: "#202124", borderRadius: 10, display: "flex", flexDirection: "column", gap: 6 } },
+      {
+        onClick: () => setAbierto(false),
+        style: { position: "fixed", left: 0, right: 0, top: 0, bottom: 0, zIndex: 9998, background: "transparent" }
+      }
+    ),
+    abierto && React.createElement(
+      "div",
+      { onClick: (e) => e.stopPropagation(), style: { position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 9999, padding: "8px 6px calc(6px + env(safe-area-inset-bottom, 0px))", background: "#202124", borderTopLeftRadius: 14, borderTopRightRadius: 14, boxShadow: "0 -4px 20px rgba(0,0,0,0.5)", display: "flex", flexDirection: "column", gap: 6, animation: "ctSubeTeclado .18s ease-out" } },
+      // Lo que vas escribiendo, arriba del teclado
+      React.createElement("div", { style: { padding: "7px 12px", background: "#0d1b3e", borderRadius: 7, marginBottom: 2, minHeight: 20, fontSize: 16, fontWeight: 700, color: "#ffffff", WebkitTextFillColor: "#ffffff", letterSpacing: 0.5, display: "flex", alignItems: "center" } },
+        texto || React.createElement("span", { style: { color: "#6677aa", WebkitTextFillColor: "#6677aa", fontSize: 14, fontWeight: 400 } }, "Buscar producto\u2026")),
       // Fila de números (siempre visible arriba, como Gboard)
       React.createElement("div", { style: { display: "flex", gap: 5, padding: "0 2px" } }, GB_NUMS.map(btnNum)),
       simbolos
