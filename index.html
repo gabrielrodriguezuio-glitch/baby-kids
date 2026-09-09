@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.870";
+const VERSION_APP = "9.873";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -833,6 +833,12 @@ const usuarioSesion = (data) => {
 
 // El dueño o un administrador: pueden cerrar la caja de cualquiera si alguien
 // se fue sin cerrar y hay que dejar el día cuadrado.
+// S\u00F3lo el due\u00F1o (no el administrador): para acciones sensibles de caja.
+const esPropietario = (data) => {
+  const u = usuarioSesion(data);
+  return !u || u.rol === "Propietario";
+};
+
 const esJefe = (data) => {
   const u = usuarioSesion(data);
   if (!u) return true;
@@ -16628,9 +16634,12 @@ function HistorialCajaModal({ data, caja, cierres, onVolver, onClose }) {
   );
 }
 
-function GestionarCajaModal({ data, caja, onIngresar, onRetirar, onCerrar, onClose }) {
+function GestionarCajaModal({ data, caja, onIngresar, onRetirar, onCerrar, onCorregirInicial, onAnular, onClose }) {
   const [vista, setVista] = useState("menu");
+  const [nuevoInicial, setNuevoInicial] = useState(String(caja.montoInicial || 0));
   const disponible = efectivoEnCaja(caja);
+  // Sin movimientos todavía: la apertura se puede deshacer sin dejar rastro.
+  const sinMovimientos = !(caja.movimientos || []).length;
   // Cada uno cierra la suya. El dueño puede cerrar cualquiera, por si alguien
   // se fue sin cerrar y hay que dejar el día cuadrado.
   const esMia = !caja.abiertaPorId || caja.abiertaPorId === usuarioActualId(data);
@@ -16658,7 +16667,30 @@ function GestionarCajaModal({ data, caja, onIngresar, onRetirar, onCerrar, onClo
     onClose
   });
   if (vista === "cierre") return /* @__PURE__ */ React.createElement(CerrarCajaModal, { caja, onCerrar, onClose: () => setVista("resumen") });
-  return /* @__PURE__ */ React.createElement(ModalOverlay, { width: 420 }, /* @__PURE__ */ React.createElement(ModalHeader, { icon: DollarSign, title: "Gestionar caja", onClose }), /* @__PURE__ */ React.createElement("p", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: -8, marginBottom: 16 } }, caja.abiertaPor ? "Caja de " + caja.abiertaPor + " \xB7 revis\xE1 el efectivo y eleg\xED una acci\xF3n." : "Revis\xE1 tu efectivo disponible y eleg\xED una acci\xF3n para continuar."), /* @__PURE__ */ React.createElement(Card, { style: { background: "var(--cream)", marginBottom: 16 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", fontWeight: 500 } }, "Efectivo disponible"), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", letterSpacing: -0.03, fontSize: 26, marginTop: 2 } }, money(disponible)))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } }, /* @__PURE__ */ React.createElement(Button, { tone: "ghost", onClick: () => setVista("ingreso"), style: { justifyContent: "center", padding: "11px 14px" } }, /* @__PURE__ */ React.createElement(ArrowUpCircle, { size: 15 }), " Ingresar efectivo"), /* @__PURE__ */ React.createElement(Button, { tone: "ghost", onClick: () => setVista("retiro"), style: { justifyContent: "center", padding: "11px 14px" } }, /* @__PURE__ */ React.createElement(ArrowDownCircle, { size: 15 }), " Retirar efectivo"), /* @__PURE__ */ React.createElement(Button, { tone: "ghost", onClick: () => setVista("historial"), style: { justifyContent: "center", padding: "11px 14px" } }, /* @__PURE__ */ React.createElement(Clock3, { size: 15 }), " Movimientos y cierres"), puedeCerrar && /* @__PURE__ */ React.createElement("button", { onClick: () => setVista("resumen"), style: { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 9, width: "100%", marginTop: 4, padding: "13px 14px", borderRadius: 9, border: "none", cursor: "pointer", background: "var(--rose)", color: "#fff", fontSize: 14, fontWeight: 700, fontFamily: "'Inter', sans-serif" } }, /* @__PURE__ */ React.createElement(Calculator, { size: 16 }), " Cerrar caja"), !puedeCerrar && !esMia && /* @__PURE__ */ React.createElement("p", { style: { fontSize: 11.5, color: "var(--muted)", textAlign: "center", marginTop: 6, lineHeight: 1.5 } }, "Esta caja la abrió otra persona. Sólo el dueño puede cerrarla.")));
+  // Corregir el monto con el que se abrió (se equivocó al tipearlo)
+  if (vista === "corregir") return React.createElement(
+    ModalOverlay, { width: 400 },
+    React.createElement(ModalHeader, { icon: Calculator, title: "Corregir monto inicial", onClose: () => setVista("menu") }),
+    React.createElement("p", { style: { fontSize: 13, color: "var(--muted)", marginTop: -6, marginBottom: 14, lineHeight: 1.6 } },
+      "La caja se abri\u00F3 con ", React.createElement("strong", { style: { color: "var(--ink)" } }, money(caja.montoInicial || 0)),
+      ". Pon\u00E9 el monto correcto: los movimientos y ventas quedan igual, s\u00F3lo cambia la base."),
+    React.createElement(Field, { label: "Monto inicial correcto" },
+      React.createElement("input", { autoFocus: true, style: inputStyle, type: "number", inputMode: "decimal", min: 0, value: nuevoInicial,
+        onChange: (e) => setNuevoInicial(e.target.value),
+        onKeyDown: (e) => { if (e.key === "Enter" && Number(nuevoInicial) >= 0) { onCorregirInicial(Number(nuevoInicial)); setVista("menu"); } } })),
+    React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 16 } },
+      React.createElement(Button, { tone: "ghost", onClick: () => setVista("menu"), style: { flex: 1, justifyContent: "center" } }, "Cancelar"),
+      React.createElement(Button, { onClick: () => { if (Number(nuevoInicial) >= 0) { onCorregirInicial(Number(nuevoInicial)); setVista("menu"); } }, style: { flex: 1, justifyContent: "center" } }, "Guardar"))
+  );
+  return /* @__PURE__ */ React.createElement(ModalOverlay, { width: 420 }, /* @__PURE__ */ React.createElement(ModalHeader, { icon: DollarSign, title: "Gestionar caja", onClose }), /* @__PURE__ */ React.createElement("p", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: -8, marginBottom: 16 } }, caja.abiertaPor ? "Caja de " + caja.abiertaPor + " \xB7 revis\xE1 el efectivo y eleg\xED una acci\xF3n." : "Revis\xE1 tu efectivo disponible y eleg\xED una acci\xF3n para continuar."), /* @__PURE__ */ React.createElement(Card, { style: { background: "var(--cream)", marginBottom: 16 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", fontWeight: 500 } }, "Efectivo disponible"), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", letterSpacing: -0.03, fontSize: 26, marginTop: 2 } }, money(disponible)))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } }, /* @__PURE__ */ React.createElement(Button, { tone: "ghost", onClick: () => setVista("ingreso"), style: { justifyContent: "center", padding: "11px 14px" } }, /* @__PURE__ */ React.createElement(ArrowUpCircle, { size: 15 }), " Ingresar efectivo"), /* @__PURE__ */ React.createElement(Button, { tone: "ghost", onClick: () => setVista("retiro"), style: { justifyContent: "center", padding: "11px 14px" } }, /* @__PURE__ */ React.createElement(ArrowDownCircle, { size: 15 }), " Retirar efectivo"), /* @__PURE__ */ React.createElement(Button, { tone: "ghost", onClick: () => setVista("historial"), style: { justifyContent: "center", padding: "11px 14px" } }, /* @__PURE__ */ React.createElement(Clock3, { size: 15 }), " Movimientos y cierres"),
+    // Si se abri\u00F3 mal: corregir el monto inicial o, si todav\u00EDa no hubo nada, anular la apertura
+    esPropietario(data) && onCorregirInicial && React.createElement(Button, { tone: "ghost", onClick: () => { setNuevoInicial(String(caja.montoInicial || 0)); setVista("corregir"); }, style: { justifyContent: "center", padding: "11px 14px" } },
+      React.createElement(Calculator, { size: 15 }), " Corregir monto inicial"),
+    esPropietario(data) && onAnular && sinMovimientos && React.createElement("button", {
+      onClick: () => { if (window.confirm("\u00BFAnular esta apertura?\n\nLa caja vuelve a quedar cerrada como si no se hubiera abierto. No queda registro porque no hubo ventas ni movimientos.")) { onAnular(); onClose(); } },
+      style: { background: "none", border: "1px dashed var(--line)", borderRadius: 9, padding: "10px 14px", cursor: "pointer", color: "var(--muted)", fontSize: 12.5, fontFamily: "'Inter', sans-serif" }
+    }, "Anular apertura (se abri\u00F3 por error)"),
+    puedeCerrar && /* @__PURE__ */ React.createElement("button", { onClick: () => setVista("resumen"), style: { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 9, width: "100%", marginTop: 4, padding: "13px 14px", borderRadius: 9, border: "none", cursor: "pointer", background: "var(--rose)", color: "#fff", fontSize: 14, fontWeight: 700, fontFamily: "'Inter', sans-serif" } }, /* @__PURE__ */ React.createElement(Calculator, { size: 16 }), " Cerrar caja"), !puedeCerrar && !esMia && /* @__PURE__ */ React.createElement("p", { style: { fontSize: 11.5, color: "var(--muted)", textAlign: "center", marginTop: 6, lineHeight: 1.5 } }, "Esta caja la abrió otra persona. Sólo el dueño puede cerrarla.")));
 }
 // Panel para ver qué está pasando con la caja sin tener que abrir las
 // herramientas del navegador, que en el celular es incómodo.
@@ -16742,6 +16774,20 @@ function MiCajaCard({ data, persist }) {
     const nuevo = { id: uid(), tipo, monto: m.monto, concepto: m.concepto, fecha: (/* @__PURE__ */ new Date()).toISOString() };
     persist(guardarCaja(data, miId, { ...caja, movimientos: [nuevo, ...(caja.movimientos || [])] }, negId));
   };
+  // Se abri\u00F3 mal: corregir el monto inicial (queda anotado en los
+  // movimientos) o anular la apertura si todav\u00EDa no pas\u00F3 nada.
+  const corregirInicial = (monto) => {
+    const anterior = Number(caja.montoInicial) || 0;
+    if (monto === anterior) return;
+    const nota = { id: uid(), tipo: "correccion", monto: 0, concepto: "Monto inicial corregido: " + money(anterior) + " \u2192 " + money(monto), fecha: (/* @__PURE__ */ new Date()).toISOString(), usuario: usuarioActivo(data) };
+    persist(guardarCaja(data, miId, { ...caja, montoInicial: monto, movimientos: [nota, ...(caja.movimientos || [])] }, negId));
+    avisar("Monto inicial corregido a " + money(monto));
+  };
+  const anularApertura = () => {
+    if ((caja.movimientos || []).length) return avisar("La caja ya tiene movimientos: cerrala en vez de anularla", { tono: "error" });
+    persist(guardarCaja(data, miId, { ...CAJA_VACIA }, negId));
+    avisar("Apertura anulada: la caja qued\u00F3 cerrada");
+  };
   const cerrarCaja = (contado) => {
     const cierre = {
       id: uid(),
@@ -16770,10 +16816,12 @@ function MiCajaCard({ data, persist }) {
     onIngresar: agregarMovimiento("ingreso"),
     onRetirar: agregarMovimiento("retiro"),
     onCerrar: cerrarCaja,
+    onCorregirInicial: corregirInicial,
+    onAnular: anularApertura,
     onClose: () => setShowGestionar(false)
   }));
 }
-const TIPO_MOV_LABEL = { ingreso: "Ingreso", retiro: "Retiro", venta: "Venta en efectivo", devolucion: "Devoluci\xF3n" };
+const TIPO_MOV_LABEL = { ingreso: "Ingreso", retiro: "Retiro", venta: "Venta en efectivo", devolucion: "Devoluci\xF3n", correccion: "Correcci\xF3n de apertura" };
 const TIPO_MOV_TONE = { ingreso: "sage", retiro: "rose", venta: "denim", devolucion: "mustard" };
 function MovimientosCajaCard({ caja }) {
   const movimientos = (caja.movimientos || []).slice(0, 30);
@@ -16843,6 +16891,20 @@ function CajaRapida({ data, persist, onClose }) {
     persist(guardarCaja(data, miId, { ...caja, movimientos: [nuevo, ...(caja.movimientos || [])] }, negId));
     avisar((tipo === "ingreso" ? "Ingreso" : "Retiro") + " de " + money(m.monto) + " registrado");
   };
+  // Se abri\u00F3 mal: corregir el monto inicial (queda anotado en los
+  // movimientos) o anular la apertura si todav\u00EDa no pas\u00F3 nada.
+  const corregirInicial = (monto) => {
+    const anterior = Number(caja.montoInicial) || 0;
+    if (monto === anterior) return;
+    const nota = { id: uid(), tipo: "correccion", monto: 0, concepto: "Monto inicial corregido: " + money(anterior) + " \u2192 " + money(monto), fecha: (/* @__PURE__ */ new Date()).toISOString(), usuario: usuarioActivo(data) };
+    persist(guardarCaja(data, miId, { ...caja, montoInicial: monto, movimientos: [nota, ...(caja.movimientos || [])] }, negId));
+    avisar("Monto inicial corregido a " + money(monto));
+  };
+  const anularApertura = () => {
+    if ((caja.movimientos || []).length) return avisar("La caja ya tiene movimientos: cerrala en vez de anularla", { tono: "error" });
+    persist(guardarCaja(data, miId, { ...CAJA_VACIA }, negId));
+    avisar("Apertura anulada: la caja qued\u00F3 cerrada");
+  };
   const cerrarCaja = (contado) => {
     const cierre = {
       id: uid(),
@@ -16876,6 +16938,8 @@ function CajaRapida({ data, persist, onClose }) {
     onIngresar: agregarMovimiento("ingreso"),
     onRetirar: agregarMovimiento("retiro"),
     onCerrar: cerrarCaja,
+    onCorregirInicial: corregirInicial,
+    onAnular: anularApertura,
     onClose
   });
 }
@@ -21446,6 +21510,11 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
   // Lo que se va a transferir: { "productoId|talle": cantidad }
   const [sel, setSel] = useState({});
   const [error, setError] = useState("");
+  // Mientras las cantidades cargadas no sean confiables, se permite
+  // transferir aunque el origen figure sin stock (queda en negativo ah\u00ED y
+  // el movimiento se registra igual). Cuando el stock est\u00E9 controlado,
+  // se apaga el interruptor y vuelve a exigir disponible.
+  const [sinControl, setSinControl] = useState(true);
 
   const listos = origen && destino && origen !== destino;
   const clave = (id, talle) => id + "|" + (talle || "");
@@ -21468,6 +21537,7 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
 
   // Cuánto más se puede sumar de ese talle
   const margen = (prod, talle, exacto, hay) => {
+    if (sinControl) return 9999;
     const total = enOrigen(prod);
     if (talle && exacto) return Math.max(0, hay - yaElegido(prod, talle));
     return Math.max(0, total - elegidoDelProducto(prod));
@@ -21486,8 +21556,8 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
       setError('Ningún producto tiene el código "' + limpio + '".');
       return;
     }
-    const vs = variantesNegocio(prod, origen).filter((v) => (Number(v.stock) || 0) > 0);
-    const sinTalles = !variantesNegocio(prod, origen).length;
+    const vs = variantesNegocio(prod, origen).filter((v) => sinControl || (Number(v.stock) || 0) > 0);
+    const sinTalles = !variantesNegocio(prod, origen).length && !tallesDelProducto(prod).length;
     if (sinTalles || vs.length === 1) {
       const talle = sinTalles ? "" : vs[0].talle;
       const hay = sinTalles ? stockNegocio(prod, origen) : Number(vs[0].stock) || 0;
@@ -21496,7 +21566,7 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
       sumar(prod, talle, 1, false, hay);
       return;
     }
-    if (!vs.length) {
+    if (!vs.length && !sinControl) {
       pitido(false);
       setError('"' + prod.nombre + '" no tiene stock en el origen.');
       return;
@@ -21525,7 +21595,7 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
   const texto = query.trim().toLowerCase();
   const candidatos = listos
     ? data.productos
-        .filter((p) => !esCombo(p) && enOrigen(p) > 0)
+        .filter((p) => !esCombo(p) && (sinControl || enOrigen(p) > 0))
         .filter((p) => !texto || (p.nombre || "").toLowerCase().includes(texto) || (p.codigoBarras || "").includes(query.trim()))
     : [];
 
@@ -21553,7 +21623,7 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
   // Botón de talle con su contador
   const chipTalle = (prod, t, exacto) => {
     const elegido = yaElegido(prod, t.talle);
-    const sinStock = exacto && t.hay <= 0;
+    const sinStock = !sinControl && exacto && t.hay <= 0;
     return React.createElement(
       "div",
       {
@@ -21669,6 +21739,18 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
       { className: "ct-editor-grid", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginBottom: 18 } },
       React.createElement(CampoEditor, { label: "Negocio origen" }, selectNegocio(origen, setOrigen, destino)),
       React.createElement(CampoEditor, { label: "Negocio destino" }, selectNegocio(destino, setDestino, origen))
+    ),
+
+    React.createElement(
+      "label",
+      { style: { display: "flex", alignItems: "center", gap: 11, fontSize: 13, cursor: "pointer", background: sinControl ? "color-mix(in srgb, var(--mustard) 12%, transparent)" : "var(--surface-2)", border: "1px solid " + (sinControl ? "color-mix(in srgb, var(--mustard) 45%, transparent)" : "transparent"), borderRadius: 9, padding: "11px 14px", marginBottom: 18 } },
+      React.createElement(Switch, { on: sinControl, onChange: () => setSinControl(!sinControl) }),
+      React.createElement("span", null,
+        React.createElement("span", { style: { display: "block", fontWeight: 600 } }, "Transferir aunque no figure stock"),
+        React.createElement("span", { style: { display: "block", fontSize: 11.5, color: "var(--muted)", marginTop: 2 } },
+          sinControl
+            ? "Se mueve igual y el origen puede quedar en negativo. \u00DAtil mientras las cantidades cargadas no sean las reales."
+            : "S\u00F3lo se puede transferir lo que el origen tiene disponible."))
     ),
 
     !listos && React.createElement(
@@ -24039,7 +24121,7 @@ const lineaDeTiempo = (data, negocioId) => {
     ev.push({
       fecha: f, hora: horaDe(m.fecha), tipo: "Caja",
       tono: (m.tipo === "egreso" || m.tipo === "retiro") ? "rose" : "denim", icono: DollarSign,
-      titulo: (m.tipo === "ingreso" ? "Ingreso a caja" : m.tipo === "egreso" ? "Egreso de caja" : m.tipo === "retiro" ? "Retiro de caja" : (m.tipo || "Movimiento")) +
+      titulo: (m.tipo === "ingreso" ? "Ingreso a caja" : m.tipo === "egreso" ? "Egreso de caja" : m.tipo === "retiro" ? "Retiro de caja" : m.tipo === "correccion" ? "Correcci\u00F3n de apertura" : (m.tipo || "Movimiento")) +
         (m.concepto ? " \u00B7 " + m.concepto : ""),
       detalle: negId ? n(negId) : "Caja", monto: m.monto, usuario: m.usuario || quien || ""
     });
