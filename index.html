@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.786";
+const VERSION_APP = "9.790";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -10856,41 +10856,48 @@ const nuevoCarrito = (n, listaId) => ({
 // en pleno medio, las letras se corrompen (salían "aremre" en vez de
 // "remera", de la 3ª letra en adelante). Al no controlarlo, el teclado nunca
 // se interrumpe. Sólo leemos lo que hay para filtrar, sin devolvérselo.
-// Teclado propio en pantalla para el buscador. Los teclados de Android de
-// algunos equipos entregaban las letras desordenadas ("remera" -> "aremre") y
-// ninguna configuración del campo lo arreglaba. Este teclado no usa el de
-// Android: son botones que se tocan con el dedo, así que las letras entran
-// siempre en el orden real. El campo es de sólo lectura (readOnly) para que
-// el teclado del sistema no aparezca.
-const FILAS_TECLADO = [
-  ["Q","W","E","R","T","Y","U","I","O","P"],
-  ["A","S","D","F","G","H","J","K","L","Ñ"],
-  ["Z","X","C","V","B","N","M"]
-];
+// Teclado propio en pantalla para el buscador, con el aspecto de Gboard (el
+// teclado de Google). Los teclados de Android de algunos equipos entregaban
+// las letras desordenadas ("remera" -> "aremre") y ninguna configuración del
+// campo lo arreglaba. Este teclado no usa el de Android: son botones que se
+// tocan con el dedo, así que las letras entran siempre en el orden real.
+const GB_NUMS = ["1","2","3","4","5","6","7","8","9","0"];
+const GB_FILA1 = ["q","w","e","r","t","y","u","i","o","p"];
+const GB_FILA2 = ["a","s","d","f","g","h","j","k","l","ñ"];
+const GB_FILA3 = ["z","x","c","v","b","n","m"];
+const GB_SIMBOLOS = ["1","2","3","4","5","6","7","8","9","0","-","/",":",";","(",")","$","&","@",".",",","?","!","'"];
 const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ onCambiar, onEnter, onEscanear, isMobilePos, posColors, registrarLimpiador }) {
   const [texto, setTexto] = useState("");
   const [abierto, setAbierto] = useState(false);
+  const [mayus, setMayus] = useState(false);
+  const [simbolos, setSimbolos] = useState(false);
   const textoRef = React.useRef("");
   const fijar = (v) => { textoRef.current = v; setTexto(v); onCambiar(v); };
   useEffect(() => {
     if (registrarLimpiador) registrarLimpiador((t) => fijar(t || ""));
   }, []);
-  const tecla = (c) => fijar(textoRef.current + c);
+  const tecla = (c) => { fijar(textoRef.current + (mayus ? c.toUpperCase() : c)); if (mayus) setMayus(false); };
   const borrar = () => fijar(textoRef.current.slice(0, -1));
-  const btnTecla = (c) => React.createElement("button", {
-    key: c,
-    onClick: () => tecla(c),
-    style: { flex: 1, minWidth: 0, height: 38, borderRadius: 6, border: "1px solid " + posColors.inputBorder, background: posColors.input, color: posColors.text, fontSize: 15, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter', sans-serif", padding: 0 }
+
+  // Estilo de tecla estilo Gboard: fondo gris oscuro, redondeada, con sombra
+  const teclaBase = { flex: 1, minWidth: 0, height: 44, borderRadius: 6, border: "none", background: "#3c4043", color: "#fff", fontSize: 18, fontWeight: 400, cursor: "pointer", fontFamily: "'Roboto', 'Inter', sans-serif", padding: 0, boxShadow: "0 1px 0 rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center" };
+  const teclaEspecial = { ...teclaBase, background: "#26282b", fontSize: 14 };
+  const btnLetra = (c) => React.createElement("button", {
+    key: c, onClick: () => tecla(c), style: teclaBase
+  }, mayus ? c.toUpperCase() : c);
+  const btnNum = (c) => React.createElement("button", {
+    key: "n" + c, onClick: () => fijar(textoRef.current + c), style: { ...teclaBase, height: 38, fontSize: 16 }
   }, c);
+
   return React.createElement(
     "div",
     null,
-    // El "campo" que muestra lo escrito. Al tocarlo abre el teclado propio.
+    // El "campo" que muestra lo escrito. Al tocarlo abre el teclado.
     React.createElement(
     "div",
     { onClick: () => setAbierto(true), className: "ct-buscador", style: { flex: isMobilePos ? "1 0 100%" : 1, minWidth: isMobilePos ? "100%" : 190, display: "flex", alignItems: "center", gap: 10, background: texto ? "#0d1b3e" : "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "1.5px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: RADIO.control, padding: isMobilePos ? "0 14px" : "0 17px", height: isMobilePos ? 44 : 56, minHeight: isMobilePos ? 44 : 56, boxSizing: "border-box", cursor: "text", overflow: "hidden" } },
     React.createElement(Search, { size: 17, color: "var(--denim-light)", style: { flexShrink: 0 } }),
-    React.createElement("div", { style: { flex: "1 1 auto", minWidth: 0, fontSize: isMobilePos ? 15 : 15, fontWeight: 700, color: texto ? "#ffffff" : "#8899bb", WebkitTextFillColor: texto ? "#ffffff" : "#8899bb", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", letterSpacing: 0.5 } },
+    React.createElement("div", { style: { flex: "1 1 auto", minWidth: 0, fontSize: 15, fontWeight: 700, color: texto ? "#ffffff" : "#8899bb", WebkitTextFillColor: texto ? "#ffffff" : "#8899bb", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", letterSpacing: 0.5 } },
       texto ? texto : (isMobilePos ? "Tocá para buscar\u2026" : "Buscar producto...")),
     texto && React.createElement("button", {
       onClick: (e) => { e.stopPropagation(); fijar(""); },
@@ -10903,38 +10910,62 @@ const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ onCambiar, onEnt
       style: { display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", borderLeft: "1px solid color-mix(in srgb, var(--denim) 30%, transparent)", cursor: "pointer", color: "var(--denim-light)", width: 38, flex: "0 0 38px", flexShrink: 0, padding: "8px 0 8px 10px", boxSizing: "content-box" }
     }, React.createElement(ScanBarcode, { size: 18 }))
     ),
-    // El teclado propio: aparece al tocar el campo
+    // El teclado estilo Gboard
     abierto && React.createElement(
       "div",
-      { style: { marginTop: 10, padding: 10, background: posColors.card, border: "1px solid " + posColors.inputBorder, borderRadius: 12, display: "flex", flexDirection: "column", gap: 7 } },
-      // Lo que vas escribiendo, visible arriba del teclado
-      React.createElement("div", { style: { padding: "6px 12px", background: "#0d1b3e", borderRadius: 7, marginBottom: 2, minHeight: 18, fontSize: 15, fontWeight: 700, color: "#ffffff", WebkitTextFillColor: "#ffffff", letterSpacing: 0.5 } },
-        texto || React.createElement("span", { style: { color: "#6677aa", WebkitTextFillColor: "#6677aa", fontSize: 13, fontWeight: 400 } }, "Escribí acá\u2026")),
-      FILAS_TECLADO.map((fila, i) => React.createElement(
-        "div",
-        { key: i, style: { display: "flex", gap: 5, justifyContent: "center" } },
-        fila.map(btnTecla)
-      )),
-      // Fila de acciones: espacio, borrar, buscar, cerrar
+      { style: { marginTop: 8, padding: "8px 6px 6px", background: "#202124", borderRadius: 10, display: "flex", flexDirection: "column", gap: 6 } },
+      // Fila de números (siempre visible arriba, como Gboard)
+      React.createElement("div", { style: { display: "flex", gap: 5, padding: "0 2px" } }, GB_NUMS.map(btnNum)),
+      simbolos
+        ? // Vista de símbolos
+          React.createElement(
+            "div",
+            { style: { display: "flex", flexWrap: "wrap", gap: 5, padding: "0 2px" } },
+            GB_SIMBOLOS.map((c) => React.createElement("button", {
+              key: "s" + c, onClick: () => fijar(textoRef.current + c),
+              style: { ...teclaBase, flex: "0 0 calc(20% - 4px)", height: 42, fontSize: 17 }
+            }, c))
+          )
+        : // Vista de letras
+          React.createElement(
+            React.Fragment,
+            null,
+            React.createElement("div", { style: { display: "flex", gap: 5, padding: "0 2px" } }, GB_FILA1.map(btnLetra)),
+            React.createElement("div", { style: { display: "flex", gap: 5, padding: "0 16px" } }, GB_FILA2.map(btnLetra)),
+            React.createElement("div", { style: { display: "flex", gap: 5, padding: "0 2px" } },
+              // Tecla Shift (mayúsculas)
+              React.createElement("button", {
+                onClick: () => setMayus(!mayus),
+                style: { ...teclaEspecial, flex: 1.5, background: mayus ? "#8ab4f8" : "#26282b", color: mayus ? "#202124" : "#fff", fontSize: 18 }
+              }, "\u21E7"),
+              ...GB_FILA3.map(btnLetra),
+              // Tecla Borrar
+              React.createElement("button", {
+                onClick: borrar,
+                style: { ...teclaEspecial, flex: 1.5, fontSize: 20 }
+              }, "\u232B")
+            )
+          ),
+      // Fila inferior: símbolos, espacio, buscar
       React.createElement(
         "div",
-        { style: { display: "flex", gap: 5, marginTop: 2 } },
+        { style: { display: "flex", gap: 5, padding: "0 2px" } },
         React.createElement("button", {
-          onClick: () => tecla(" "),
-          style: { flex: 3, height: 44, borderRadius: 7, border: "1px solid " + posColors.inputBorder, background: posColors.input, color: posColors.text, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Inter', sans-serif" }
-        }, "Espacio"),
-        React.createElement("button", {
-          onClick: borrar,
-          style: { flex: 1, height: 44, borderRadius: 7, border: "1px solid " + posColors.inputBorder, background: posColors.input, color: posColors.text, fontSize: 18, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }
-        }, "\u232B"),
-        React.createElement("button", {
-          onClick: () => { onEnter(); },
-          style: { flex: 1.5, height: 44, borderRadius: 7, border: "none", background: "var(--denim)", color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }
-        }, "Buscar"),
+          onClick: () => setSimbolos(!simbolos),
+          style: { ...teclaEspecial, flex: 1.5 }
+        }, simbolos ? "ABC" : "?123"),
         React.createElement("button", {
           onClick: () => setAbierto(false),
-          style: { flex: 1, height: 44, borderRadius: 7, border: "1px solid " + posColors.inputBorder, background: "none", color: posColors.muted, fontSize: 13, cursor: "pointer", fontFamily: "'Inter', sans-serif" }
-        }, "Cerrar")
+          style: { ...teclaEspecial, flex: 1, fontSize: 16 }
+        }, "\u2304"),
+        React.createElement("button", {
+          onClick: () => tecla(" "),
+          style: { ...teclaBase, flex: 4 }
+        }, ""),
+        React.createElement("button", {
+          onClick: () => { onEnter(); },
+          style: { ...teclaBase, flex: 2, background: "var(--denim)", fontSize: 14, fontWeight: 600 }
+        }, "Buscar")
       )
     )
   );
