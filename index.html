@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.782";
+const VERSION_APP = "9.783";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -10888,10 +10888,10 @@ const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ onCambiar, onEnt
     // El "campo" que muestra lo escrito. Al tocarlo abre el teclado propio.
     React.createElement(
     "div",
-    { onClick: () => setAbierto(true), className: "ct-buscador", style: { flex: isMobilePos ? "1 0 100%" : 1, minWidth: isMobilePos ? "100%" : 190, display: "flex", alignItems: "center", gap: 12, background: "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "1.5px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: RADIO.control, padding: isMobilePos ? "0 18px" : "0 17px", height: 56, minHeight: 56, boxSizing: "border-box", cursor: "text" } },
+    { onClick: () => setAbierto(true), className: "ct-buscador", style: { flex: isMobilePos ? "1 0 100%" : 1, minWidth: isMobilePos ? "100%" : 190, display: "flex", alignItems: "center", gap: 12, background: texto ? "#0d1b3e" : "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "1.5px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: RADIO.control, padding: isMobilePos ? "0 18px" : "0 17px", height: 56, minHeight: 56, boxSizing: "border-box", cursor: "text" } },
     React.createElement(Search, { size: 18, color: "var(--denim-light)" }),
     React.createElement("div", { style: { flex: 1, minWidth: 0, fontSize: isMobilePos ? 18 : 15, fontWeight: 700, color: texto ? "#ffffff" : "#888", WebkitTextFillColor: texto ? "#ffffff" : "#888", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", letterSpacing: 0.5 } },
-      texto ? texto : (isMobilePos ? "Buscar producto\u2026" : "Buscar producto...")),
+      texto ? texto : (isMobilePos ? "Tocá para buscar\u2026" : "Buscar producto...")),
     texto && React.createElement("button", {
       onClick: (e) => { e.stopPropagation(); fijar(""); },
       title: "Borrar",
