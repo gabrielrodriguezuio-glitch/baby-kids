@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.805";
+const VERSION_APP = "9.806-DIAG";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -20520,6 +20520,13 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
   // sin esperar a cerrar el recorrido. Antes esta lista sólo se llenaba al
   // cerrar la vuelta; ahora se puede reponer cuando se quiera.
   const traerVendido = () => {
+    // DIAGNÓSTICO: ver el estado de las ventas vistas y qué se va a sumar
+    const yaVistas = new Set(data.repoVentasVistas || []);
+    const desde = sumarDias(todayISO(), -(Math.max(1, diasTraer) - 1));
+    const ventasEnRango = (data.ventas || []).filter((v) => v.fecha >= desde && !esDevolucion(v));
+    const nuevasSinVer = ventasEnRango.filter((v) => !yaVistas.has(v.id));
+    avisar("Ventas en rango: " + ventasEnRango.length + " · Ya vistas: " + (data.repoVentasVistas || []).length + " · Nuevas a sumar: " + nuevasSinVer.length, { tono: "info" });
+
     const acumulado = acumularRepoDias(data, diasTraer, negocioId);
     if (!acumulado.agregadas) {
       avisar("No hubo ventas nuevas para reponer en ese período", { tono: "info" });
