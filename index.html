@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.797";
+const VERSION_APP = "9.798";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -20486,6 +20486,11 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
   const [remito, setRemito] = useState(null);
   const [verHistorial, setVerHistorial] = useState(false);
   const [diasTraer, setDiasTraer] = useState(1);
+  // De qué local se saca la mercadería para reponer la camioneta. Por defecto
+  // el local principal (el primero). El destino es este negocio (la camioneta).
+  const negociosLista = listaNegocios(data);
+  const otrosLocales = negociosLista.filter((n) => n.id !== negocioId);
+  const [origen, setOrigen] = useState((otrosLocales[0] || {}).id || "");
 
   // Trae lo vendido en los últimos días y lo suma a la lista de reposición,
   // sin esperar a cerrar el recorrido. Antes esta lista sólo se llenaba al
@@ -20517,19 +20522,34 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
       .map((x) => ({
         nombre: x.nombre, categoria: x.categoria,
         talle: x.talle || "", color: x.color || "",
-        cantidad: hechos[CLAVE_REPO(x)]
+        cantidad: hechos[CLAVE_REPO(x)], productoId: x.productoId
       }));
     const quedan = pendiente.map((x) => {
       const k = CLAVE_REPO(x);
       const repuesto = hechos[k] || 0;
       return repuesto > 0 ? { ...x, cantidad: x.cantidad - repuesto } : x;
     }).filter((x) => x.cantidad > 0);
+
+    // Mover la mercadería del local de origen a la camioneta (este negocio).
+    // Sin origen elegido, sólo se registra el remito sin tocar stock (como antes).
+    let productos = data.productos;
+    if (origen && origen !== negocioId) {
+      repuestos.forEach((it) => {
+        if (!it.productoId) return;
+        productos = productos.map((p) => p.id === it.productoId
+          ? moverEntreNegocios(p, origen, negocioId, it.cantidad, it.talle)
+          : p);
+      });
+    }
+    const origenNombre = (negociosLista.find((n) => n.id === origen) || {}).nombre || "";
+
     const registro = {
       id: uid(),
       remito: "R-" + String((data.reposiciones || []).length + 1).padStart(4, "0"),
       fecha: todayISO(),
       hora: new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }),
       negocioId, negocioNombre,
+      origen, origenNombre,
       usuario: usuarioActivo(data),
       items: repuestos,
       unidades: repuestos.reduce((a, x) => a + x.cantidad, 0),
@@ -20537,6 +20557,7 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
     };
     persist({
       ...data,
+      productos,
       repoPendiente: quedan,
       reposiciones: [registro, ...(data.reposiciones || [])]
     });
@@ -20598,26 +20619,47 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
     // suma a la lista de una vez.
     React.createElement(
       "div",
-      { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", background: "var(--surface-2)", borderRadius: 10, padding: "10px 12px", marginBottom: 14 } },
-      React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)" } }, "Traer lo vendido de"),
+      { style: { display: "flex", flexDirection: "column", gap: 10, background: "var(--surface-2)", borderRadius: 10, padding: "12px 12px", marginBottom: 14 } },
+      // Selector de local de origen: de dónde se saca la mercadería
+      otrosLocales.length > 0 && React.createElement(
+        "div",
+        { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+        React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)", minWidth: 60 } }, "Sacar de"),
+        React.createElement(
+          "select",
+          {
+            value: origen,
+            onChange: (e) => setOrigen(e.target.value),
+            style: { flex: 1, minWidth: 140, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--surface)", color: "var(--ink)", fontSize: 13, fontFamily: "'Inter', sans-serif" }
+          },
+          otrosLocales.map((n) => React.createElement("option", { key: n.id, value: n.id }, n.nombre))
+        ),
+        React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)" } }, "\u2192 " + negocioNombre)
+      ),
+      // Traer lo vendido
       React.createElement(
         "div",
-        { style: { display: "flex", gap: 5 } },
-        [1, 7, 15, 30].map((n) => React.createElement("button", {
-          key: n,
-          onClick: () => setDiasTraer(n),
-          style: {
-            padding: "6px 12px", borderRadius: 999, cursor: "pointer", border: "none",
-            background: diasTraer === n ? "var(--denim)" : "var(--surface)",
-            color: diasTraer === n ? "var(--on-accent)" : "var(--ink)",
-            fontSize: 12.5, fontWeight: diasTraer === n ? 700 : 500, fontFamily: "'Inter', sans-serif"
-          }
-        }, n === 1 ? "Hoy" : n + " días"))
-      ),
-      React.createElement(Button, {
-        onClick: traerVendido,
-        style: { marginLeft: "auto", padding: "9px 16px" }
-      }, React.createElement(Plus, { size: 15 }), " Traer")
+        { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+        React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)", minWidth: 60 } }, "Traer de"),
+        React.createElement(
+          "div",
+          { style: { display: "flex", gap: 5 } },
+          [1, 7, 15, 30].map((n) => React.createElement("button", {
+            key: n,
+            onClick: () => setDiasTraer(n),
+            style: {
+              padding: "6px 12px", borderRadius: 999, cursor: "pointer", border: "none",
+              background: diasTraer === n ? "var(--denim)" : "var(--surface)",
+              color: diasTraer === n ? "var(--on-accent)" : "var(--ink)",
+              fontSize: 12.5, fontWeight: diasTraer === n ? 700 : 500, fontFamily: "'Inter', sans-serif"
+            }
+          }, n === 1 ? "Hoy" : n + " días"))
+        ),
+        React.createElement(Button, {
+          onClick: traerVendido,
+          style: { marginLeft: "auto", padding: "9px 16px" }
+        }, React.createElement(Plus, { size: 15 }), " Traer")
+      )
     ),
     // Acceso a lo ya repuesto, sin salir de acá
     (data.reposiciones || []).length > 0 && React.createElement("button", {
