@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.795";
+const VERSION_APP = "9.797";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -18186,6 +18186,57 @@ function NegocioModalEdit({ inicial, onGuardar, onClose }) {
 // Pestañas del panel consolidado
 // Inicio y Reportes eran dos pantallas con cinco pestañas repetidas. Ahora hay
 // una sola: estas pestañas cubren todo lo que antes estaba dividido.
+// Historial de reposiciones como vista, para la pestaña de Reportes.
+function ReposicionesReporte({ data }) {
+  const [verRemito, setVerRemito] = useState(null);
+  const lista = data.reposiciones || [];
+  if (lista.length === 0) {
+    return React.createElement("div", { style: { padding: "26px 0" } },
+      React.createElement(Empty, { icono: Truck, compacto: true, text: "Todavía no registraste ninguna reposición." }));
+  }
+  const totalUnidades = lista.reduce((a, r) => a + (r.unidades || 0), 0);
+  return React.createElement(
+    "div",
+    null,
+    React.createElement("p", { style: { fontSize: 13, color: "var(--muted)", marginBottom: 14 } },
+      lista.length + " reposicion" + (lista.length === 1 ? "" : "es") + " · " + totalUnidades + " unidades repuestas en total"),
+    React.createElement(
+      "div",
+      { style: { display: "flex", flexDirection: "column", gap: 8 } },
+      lista.map((r) => React.createElement(
+        "button",
+        {
+          key: r.id,
+          onClick: () => setVerRemito(r),
+          className: "ct-transfer",
+          style: { display: "flex", alignItems: "center", gap: 14, background: "var(--surface-2)", border: "none", borderRadius: 12, padding: "13px 15px", cursor: "pointer", textAlign: "left", fontFamily: "'Inter', sans-serif", width: "100%" }
+        },
+        React.createElement("span", {
+          style: { width: 36, height: 36, borderRadius: 10, background: "var(--denim-soft)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }
+        }, React.createElement(Receipt, { size: 16, color: "var(--denim-light)" })),
+        React.createElement(
+          "span",
+          { style: { flex: 1, minWidth: 0 } },
+          React.createElement("span", { style: { display: "block", fontSize: 14, fontWeight: 650, color: "var(--ink)" } }, r.remito),
+          React.createElement("span", { style: { display: "block", fontSize: 12, color: "var(--muted)", marginTop: 3 } },
+            fechaNumerica(r.fecha), r.hora ? " · " + r.hora : "", r.usuario ? " · " + r.usuario : "")
+        ),
+        React.createElement(
+          "span",
+          { style: { textAlign: "right", flexShrink: 0 } },
+          React.createElement("span", { style: { display: "block", fontFamily: "'Inter Tight', sans-serif", fontSize: 18, fontWeight: 700, color: "var(--ink)" } },
+            r.unidades, React.createElement("span", { style: { fontSize: 12, fontWeight: 500, color: "var(--muted)" } }, " u")),
+          React.createElement("span", { style: { display: "block", fontSize: 11.5, color: "var(--muted)", marginTop: 2 } },
+            (r.items || []).length, " art\u00EDculo", (r.items || []).length === 1 ? "" : "s")
+        )
+      ))
+    ),
+    verRemito && React.createElement(RemitoReposicionModal, {
+      data, registro: verRemito, onClose: () => setVerRemito(null)
+    })
+  );
+}
+
 const INICIO_TABS = [
   { id: "resumen", label: "Resumen", icon: LayoutGrid },
   { id: "envivo", label: "En vivo", icon: TrendingUp },
@@ -18195,7 +18246,10 @@ const INICIO_TABS = [
   { id: "comprobantes", label: "Comprobantes", icon: Receipt },
   { id: "dormidos", label: "Sin vender", icon: AlertTriangle },
   { id: "caja", label: "Caja", icon: Archive },
-  { id: "carrito", label: "Carrito", icon: ShoppingCart }
+  { id: "carrito", label: "Carrito", icon: ShoppingCart },
+  { id: "actividad", label: "Actividad", icon: Clock3 },
+  { id: "transferencias", label: "Transferencias", icon: ArrowRightLeft },
+  { id: "reposiciones", label: "Reposiciones", icon: Truck }
 ];
 
 // Tarjetas para crear, editar y elegir el negocio activo
@@ -18492,6 +18546,9 @@ function NegociosInicio({ data, persist, setTab, filtroNegocio, rango, senalExpo
   else if (sub === "envivo") contenido = React.createElement(EnVivoReportes, { data });
   else if (sub === "dormidos") contenido = React.createElement(SinVenderReportes, { data: dataFiltrada, rango: r, persist });
   else if (sub === "caja") contenido = React.createElement(CajaReportes, { data: dataFiltrada, rango: r, persist, dataReal: data });
+  else if (sub === "actividad") contenido = React.createElement(ActividadView, { data, persist });
+  else if (sub === "transferencias") contenido = React.createElement(TransferenciasView, { data, persist });
+  else if (sub === "reposiciones") contenido = React.createElement(ReposicionesReporte, { data });
   else contenido = React.createElement(CarritoAbandonadoReportes, { data: dataFiltrada, rango: r });
 
   return React.createElement(
@@ -20186,6 +20243,39 @@ const acumularRepo = (data, fecha, negocioId) => {
   return { items: Object.values(previo), vistas: [...nuevas, ...yaVistas].slice(0, 800) };
 };
 
+// Como acumularRepo pero mirando los últimos N días de una vez, para reponer
+// sin depender de cerrar el recorrido. Devuelve también cuántas ventas nuevas
+// agregó, para poder avisar si no había nada nuevo.
+const acumularRepoDias = (data, dias, negocioId) => {
+  const desde = sumarDias(todayISO(), -(Math.max(1, dias) - 1));
+  const yaVistas = new Set(data.repoVentasVistas || []);
+  const previo = {};
+  pendienteRepo(data).forEach((x) => { previo[CLAVE_REPO(x)] = { ...x }; });
+
+  const nuevas = [];
+  (data.ventas || [])
+    .filter((v) => v.fecha >= desde && !esDevolucion(v) && !yaVistas.has(v.id) &&
+      (!negocioId || (v.negocioId || (listaNegocios(data)[0] || {}).id) === negocioId))
+    .forEach((v) => {
+      nuevas.push(v.id);
+      (v.items || []).forEach((it) => {
+        if (!it.productoId) return;
+        const prod = (data.productos || []).find((p) => p.id === it.productoId);
+        const base = {
+          productoId: it.productoId,
+          nombre: it.nombre || (prod && prod.nombre) || "—",
+          categoria: (prod && prod.categoria) || "Sin categoría",
+          talle: it.talla || "", color: it.color || ""
+        };
+        const k = CLAVE_REPO(base);
+        if (previo[k]) previo[k].cantidad += it.cantidad;
+        else previo[k] = { ...base, cantidad: it.cantidad, dias: 1, desde: v.fecha, ultimoDia: v.fecha };
+      });
+    });
+
+  return { items: Object.values(previo), vistas: [...nuevas, ...yaVistas].slice(0, 800), agregadas: nuevas.length };
+};
+
 // Agrupa la lista pendiente por categoría, lo más pedido primero
 const agruparRepo = (items) => {
   const porCat = {};
@@ -20395,6 +20485,20 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
   const [hechos, setHechos] = useState({}); // clave -> cuántas se encontraron
   const [remito, setRemito] = useState(null);
   const [verHistorial, setVerHistorial] = useState(false);
+  const [diasTraer, setDiasTraer] = useState(1);
+
+  // Trae lo vendido en los últimos días y lo suma a la lista de reposición,
+  // sin esperar a cerrar el recorrido. Antes esta lista sólo se llenaba al
+  // cerrar la vuelta; ahora se puede reponer cuando se quiera.
+  const traerVendido = () => {
+    const acumulado = acumularRepoDias(data, diasTraer, negocioId);
+    if (!acumulado.agregadas) {
+      avisar("No hubo ventas nuevas para reponer en ese período", { tono: "info" });
+      return;
+    }
+    persist({ ...data, repoPendiente: acumulado.items, repoVentasVistas: acumulado.vistas });
+    avisar(acumulado.agregadas + " venta" + (acumulado.agregadas === 1 ? "" : "s") + " sumada" + (acumulado.agregadas === 1 ? "" : "s") + " a la reposición");
+  };
 
   const pendiente = pendienteRepo(data);
   const visibles = pendiente.filter((x) => x.cantidad >= minimo);
@@ -20490,6 +20594,31 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
     ModalOverlay,
     { width: 580 },
     React.createElement(ModalHeader, { icon: Truck, title: "Pendiente de reponer", onClose }),
+    // Traer lo vendido sin cerrar el recorrido: se elige de cuántos días y se
+    // suma a la lista de una vez.
+    React.createElement(
+      "div",
+      { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", background: "var(--surface-2)", borderRadius: 10, padding: "10px 12px", marginBottom: 14 } },
+      React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)" } }, "Traer lo vendido de"),
+      React.createElement(
+        "div",
+        { style: { display: "flex", gap: 5 } },
+        [1, 7, 15, 30].map((n) => React.createElement("button", {
+          key: n,
+          onClick: () => setDiasTraer(n),
+          style: {
+            padding: "6px 12px", borderRadius: 999, cursor: "pointer", border: "none",
+            background: diasTraer === n ? "var(--denim)" : "var(--surface)",
+            color: diasTraer === n ? "var(--on-accent)" : "var(--ink)",
+            fontSize: 12.5, fontWeight: diasTraer === n ? 700 : 500, fontFamily: "'Inter', sans-serif"
+          }
+        }, n === 1 ? "Hoy" : n + " días"))
+      ),
+      React.createElement(Button, {
+        onClick: traerVendido,
+        style: { marginLeft: "auto", padding: "9px 16px" }
+      }, React.createElement(Plus, { size: 15 }), " Traer")
+    ),
     // Acceso a lo ya repuesto, sin salir de acá
     (data.reposiciones || []).length > 0 && React.createElement("button", {
       onClick: () => setVerHistorial(true),
@@ -26353,7 +26482,10 @@ const REPORTES_TABS = [
   { id: "metodos", label: "M\xE9todos", icon: CreditCard },
   { id: "dormidos", label: "Sin vender", icon: AlertTriangle },
   { id: "caja", label: "Caja", icon: Archive },
-  { id: "carrito", label: "Carrito", icon: ShoppingCart }
+  { id: "carrito", label: "Carrito", icon: ShoppingCart },
+  { id: "actividad", label: "Actividad", icon: Clock3 },
+  { id: "transferencias", label: "Transferencias", icon: ArrowRightLeft },
+  { id: "reposiciones", label: "Reposiciones", icon: Truck }
 ];
 function NavReportes({ sub, setSub }) {
   return React.createElement(
@@ -28937,6 +29069,9 @@ function ReportesHub({ data, persist, setTab, rangoBase, filtros }) {
   else if (sub === "envivo") contenido = React.createElement(EnVivoReportes, { data });
   else if (sub === "dormidos") contenido = React.createElement(SinVenderReportes, { data: dataFiltrada, rango, persist });
   else if (sub === "caja") contenido = React.createElement(CajaReportes, { data: dataFiltrada, rango, persist, dataReal: data });
+  else if (sub === "actividad") contenido = React.createElement(ActividadView, { data, persist });
+  else if (sub === "transferencias") contenido = React.createElement(TransferenciasView, { data, persist });
+  else if (sub === "reposiciones") contenido = React.createElement(ReposicionesReporte, { data });
   else contenido = React.createElement(CarritoAbandonadoReportes, { data: dataFiltrada, rango });
 
   return React.createElement(
