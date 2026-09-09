@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.820";
+const VERSION_APP = "9.830";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1588,6 +1588,7 @@ function ControlTienda() {
       .on("postgres_changes", { event: "*", schema: "public", table: "ventas" }, (ev) => refrescar("ventas", ev))
       .on("postgres_changes", { event: "*", schema: "public", table: "variantes" }, (ev) => refrescar("variantes", ev))
       .on("postgres_changes", { event: "*", schema: "public", table: "productos" }, (ev) => refrescar("productos", ev))
+      .on("postgres_changes", { event: "*", schema: "public", table: "reposicion_pendiente" }, (ev) => refrescar("reposicion_pendiente", ev))
       .on("postgres_changes", { event: "*", schema: "public", table: "clientes" }, (ev) => refrescar("clientes", ev))
       .on("postgres_changes", { event: "*", schema: "public", table: "movimientos_cc" }, (ev) => refrescar("movimientos_cc", ev))
       .on("postgres_changes", { event: "*", schema: "public", table: "cajas_abiertas" }, (ev) => refrescar("cajas_abiertas", ev))
@@ -4725,9 +4726,6 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
     const tanda = ventasNuevas.slice(i, i + 50);
     const { data: filas, error } = await nube.from("ventas").insert(
       tanda.map((v) => ({
-        // Si la venta ya nació con id de formato UUID, se manda ese mismo:
-        // la nube lo respeta y no hace falta renombrar nada después.
-        ...(esIdDeLaBase(v.id) ? { id: v.id } : {}),
         negocio_id: v.negocioId || null,
         cliente_id: v.clienteId ? idRealCliente(v.clienteId) : null,
         cliente_nombre: v.clienteNombre || null,
@@ -4884,11 +4882,44 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
     if (filas.length) await nube.from("proveedores").insert(filas);
   }
 
+  // ── Reposición de la camioneta: tabla propia por negocio ──
+  // Va en su propia tabla (y no en "ajustes") porque la escriben también los
+  // empleados al vender, y "ajustes" es configuración del dueño: la escritura
+  // fallaba en silencio y la lista se perdía al refrescar.
+  const repoAntes = JSON.stringify([antes.repoPendiente, antes.repoDivision]);
+  const repoAhora = JSON.stringify([despues.repoPendiente, despues.repoDivision]);
+  if (repoAntes !== repoAhora) {
+    const porNegocio = {};
+    (despues.repoPendiente || []).forEach((x) => {
+      const k = x.negocioId || (listaNegocios(despues)[0] || {}).id || "principal";
+      (porNegocio[k] = porNegocio[k] || []).push(x);
+    });
+    // Negocios que tenían items y ahora no: se suben vacíos para que borren
+    (antes.repoPendiente || []).forEach((x) => {
+      const k = x.negocioId || (listaNegocios(antes)[0] || {}).id || "principal";
+      if (!porNegocio[k]) porNegocio[k] = [];
+    });
+    Object.keys(despues.repoDivision || {}).forEach((k) => { if (!porNegocio[k]) porNegocio[k] = []; });
+    const filas = Object.keys(porNegocio).map((negId) => ({
+      negocio_id: negId,
+      items: porNegocio[negId],
+      division: (despues.repoDivision || {})[negId] || null,
+      actualizado_en: new Date().toISOString()
+    }));
+    if (filas.length) {
+      const { error } = await nube.from("reposicion_pendiente").upsert(filas, { onConflict: "negocio_id" });
+      if (error) {
+        console.error("No se pudo guardar la reposición:", error.message);
+        if (avisarProblema) avisarProblema("La lista de reposición no se guardó en la nube: " + error.message);
+      }
+    }
+  }
+
   // ── Ajustes del negocio ───────────────────────────────────
-  const ajusteAntes = JSON.stringify([antes.negocio, antes.catalogo, antes.rolesPersonalizados, antes.soporteTelefono, antes.repoPendiente, antes.repoVentasVistas, antes.repoDivision, antes.reparto, antes.reposicion]);
-  const ajusteAhora = JSON.stringify([despues.negocio, despues.catalogo, despues.rolesPersonalizados, despues.soporteTelefono, despues.repoPendiente, despues.repoVentasVistas, despues.repoDivision, despues.reparto, despues.reposicion]);
+  const ajusteAntes = JSON.stringify([antes.negocio, antes.catalogo, antes.rolesPersonalizados, antes.soporteTelefono, antes.reparto, antes.reposicion]);
+  const ajusteAhora = JSON.stringify([despues.negocio, despues.catalogo, despues.rolesPersonalizados, despues.soporteTelefono, despues.reparto, despues.reposicion]);
   if (ajusteAntes !== ajusteAhora) {
-    await nube.from("ajustes").update({
+    const { error: errAj } = await nube.from("ajustes").update({
       datos: {
         negocio: despues.negocio || {},
         catalogo: despues.catalogo || {},
@@ -4896,17 +4927,12 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
         soporteTelefono: despues.soporteTelefono || "",
         // Que el ajuste de los costos no se rehaga en cada dispositivo
         costoSoloDueno: !!despues.costoSoloDueno,
-        // La reposición y el reparto viajan a la nube: sin esto, reponer no
-        // sobrevivía al cerrar la app (volvía a bajar la lista sin el descuento)
-        // y no se podían compartir entre dispositivos.
-        repoPendiente: despues.repoPendiente || [],
-        repoVentasVistas: despues.repoVentasVistas || [],
-        repoDivision: despues.repoDivision || null,
         reparto: despues.reparto || null,
         reposicion: despues.reposicion || null
       },
       actualizado_en: new Date().toISOString()
     }).eq("id", 1);
+    if (errAj) console.error("No se pudieron guardar los ajustes:", errAj.message);
   }
 
   return cambios;
@@ -5071,7 +5097,7 @@ async function traerParcial(tablas, quienEntro) {
   // La comprobación va PRIMERO: antes estaba al final y ya se había armado
   // una respuesta incompleta, así que los cierres de caja nunca llegaban.
   const conocidas = ["variantes", "productos", "ventas", "venta_items", "clientes",
-                     "movimientos_cc", "cajas_abiertas", "caja_cierres"];
+                     "movimientos_cc", "cajas_abiertas", "caja_cierres", "reposicion_pendiente"];
   for (const t of tablas) if (conocidas.indexOf(t) < 0) return null;
 
   const salida = {};
@@ -5101,6 +5127,12 @@ async function traerParcial(tablas, quienEntro) {
     salida.ventas = (ventas || [])
       .map((v) => deLaNube.venta(v, porVenta[v.id]))
       .sort((a, b) => (b.fecha + " " + (b.horaTexto || "")).localeCompare(a.fecha + " " + (a.horaTexto || "")));
+  }
+
+  if (tablas.has("reposicion_pendiente")) {
+    // Otro dispositivo vendió o repuso: se baja la lista tal cual quedó
+    const repoNube = await nube.from("reposicion_pendiente").select("*");
+    Object.assign(salida, repoDesdeNube(repoNube, null));
   }
 
   if (tablas.has("clientes")) {
@@ -5148,7 +5180,7 @@ async function traerParcial(tablas, quienEntro) {
 // cajas. Con esto la app ya se puede usar para vender. El historial llega
 // después, por detrás, sin que se note.
 async function traerEsencial(quienEntro) {
-  const [negs, cats, provs, listas, prods, vars, clis, ajustes, usuarios, cajasNube] =
+  const [negs, cats, provs, listas, prods, vars, clis, ajustes, usuarios, cajasNube, repoNube] =
     await Promise.all([
       nube.from("negocios").select("*").order("principal", { ascending: false }),
       nube.from("categorias").select("nombre").order("nombre"),
@@ -5159,7 +5191,8 @@ async function traerEsencial(quienEntro) {
       traerTodo("clientes", "nombre"),
       nube.from("ajustes").select("datos").eq("id", 1).maybeSingle(),
       nube.from("usuarios").select("*").order("creado_en"),
-      nube.from("cajas_abiertas").select("*")
+      nube.from("cajas_abiertas").select("*"),
+      nube.from("reposicion_pendiente").select("*")
     ]);
 
   const primerError = [negs, cats, provs, listas, ajustes, usuarios, cajasNube]
@@ -5210,9 +5243,7 @@ async function traerEsencial(quienEntro) {
     rolesPersonalizados: extra.rolesPersonalizados || [],
     soporteTelefono: extra.soporteTelefono || "",
     costoSoloDueno: !!extra.costoSoloDueno,
-    repoPendiente: extra.repoPendiente || [],
-    repoVentasVistas: extra.repoVentasVistas || [],
-    repoDivision: extra.repoDivision || null,
+    ...repoDesdeNube(repoNube, extra),
     reparto: extra.reparto || null,
     reposicion: extra.reposicion || null,
     _parcial: true
@@ -5222,7 +5253,7 @@ async function traerEsencial(quienEntro) {
 // Trae todo lo que la app necesita. Se piden las tablas en paralelo, que es
 // bastante más rápido que una tras otra.
 async function traerDeLaNube(quienEntro) {
-  const [negs, cats, provs, listas, prods, vars, clis, ventas, items, movsCC, ajustes, usuarios, cajasNube, cierresNube, transfNube, movStockNube, pedidosNube, notasNube, cambiosNube, devolNube, gastosNube, comprasNube] =
+  const [negs, cats, provs, listas, prods, vars, clis, ventas, items, movsCC, ajustes, usuarios, cajasNube, cierresNube, transfNube, movStockNube, pedidosNube, notasNube, cambiosNube, devolNube, gastosNube, comprasNube, repoNube] =
     await Promise.all([
       nube.from("negocios").select("*").order("principal", { ascending: false }),
       nube.from("categorias").select("nombre").order("nombre"),
@@ -5260,7 +5291,8 @@ async function traerDeLaNube(quienEntro) {
       nube.from("cambios").select("*").order("creado_en", { ascending: false }).limit(500),
       nube.from("devoluciones_reparto").select("*").order("creado_en", { ascending: false }).limit(500),
       nube.from("gastos").select("*").order("fecha", { ascending: false }).limit(1000),
-      nube.from("compras").select("*").order("fecha", { ascending: false }).limit(1000)
+      nube.from("compras").select("*").order("fecha", { ascending: false }).limit(1000),
+      nube.from("reposicion_pendiente").select("*")
     ]);
 
   // Las variantes y los renglones se agrupan por su dueño
@@ -5422,11 +5454,7 @@ async function traerDeLaNube(quienEntro) {
     rolesPersonalizados: extra.rolesPersonalizados || [],
     soporteTelefono: extra.soporteTelefono || "",
     costoSoloDueno: !!extra.costoSoloDueno,
-    // La reposición y el reparto se bajan de la nube: así el descuento de lo
-    // repuesto sobrevive al cerrar la app y se comparte entre dispositivos.
-    repoPendiente: extra.repoPendiente || [],
-    repoVentasVistas: extra.repoVentasVistas || [],
-    repoDivision: extra.repoDivision || null,
+    ...repoDesdeNube(repoNube, extra),
     reparto: extra.reparto || null,
     reposicion: extra.reposicion || null
   };
@@ -19614,7 +19642,6 @@ function RepartoView({ data, persist, senalReparto }) {
 
   // Cierra la vuelta: lo entregado se archiva y lo que no, sigue para mañana
   const cerrarVuelta = () => {
-    const acumulado = acumularRepo(data, reparto.fecha || todayISO(), negocioActivo(data).id);
     const quedan = paradas.filter((x) => x.estado === "ausente" || x.estado === "rechazado")
       .map((x) => ({ ...x, estado: "pendiente", intentos: (x.intentos || 0) + 1 }));
     const registro = {
@@ -19627,10 +19654,8 @@ function RepartoView({ data, persist, senalReparto }) {
     persist({
       ...data,
       reparto: { fecha: todayISO(), paradas: quedan },
-      repartos: [registro, ...(data.repartos || [])],
-      // Lo vendido hoy se suma a lo que ya estaba pendiente de reponer
-      repoPendiente: acumulado.items,
-      repoVentasVistas: acumulado.vistas
+      repartos: [registro, ...(data.repartos || [])]
+      // La reposición ya no se arma acá: cada venta se suma a la lista al cobrar
     });
     avisar(entregadas.length + " entregada" + (entregadas.length === 1 ? "" : "s") +
       (quedan.length ? " · " + quedan.length + " quedan para la próxima" : ""));
@@ -20251,6 +20276,24 @@ const CLAVE_REPO = (it) => it.productoId + "|" + (it.talle || "") + "|" + (it.co
 
 const pendienteRepo = (data) => (data.repoPendiente || []);
 
+// Arma repoPendiente/repoDivision a partir de la tabla "reposicion_pendiente".
+// Si la tabla todavía no existe (o vino vacía), se usa lo que pudiera haber
+// quedado en "ajustes" de versiones anteriores, para no perder la lista.
+const repoDesdeNube = (repoNube, extra) => {
+  const filas = (repoNube && !repoNube.error && Array.isArray(repoNube.data)) ? repoNube.data : null;
+  if (!filas || !filas.length) {
+    const viejo = (extra && Array.isArray(extra.repoPendiente)) ? extra.repoPendiente : [];
+    return { repoPendiente: viejo, repoDivision: {} };
+  }
+  const items = [];
+  const division = {};
+  filas.forEach((f) => {
+    (f.items || []).forEach((x) => items.push({ ...x, negocioId: x.negocioId || f.negocio_id }));
+    if (f.division) division[f.negocio_id] = f.division;
+  });
+  return { repoPendiente: items, repoDivision: division };
+};
+
 // Suma los productos de UNA venta a la lista de reposición, en el momento en
 // que se vende. La lista es un acumulador propio: no se reconstruye mirando el
 // historial de ventas (eso fallaba cuando cambiaba el id de la venta). Se
@@ -20579,7 +20622,7 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
     if (!window.confirm("¿Vaciar la lista de reposición y empezar de cero?\n\nLas ventas que ya existen no se van a volver a sumar; sólo las nuevas.")) return;
     const todas = (data.ventas || []).map((v) => v.id);
     const deOtros = pendienteRepo(data).filter((x) => x.negocioId && x.negocioId !== negocioId);
-    persist({ ...data, repoPendiente: deOtros, repoVentasVistas: todas.slice(0, 2000), repoDivision: null });
+    persist({ ...data, repoPendiente: deOtros, repoVentasVistas: todas.slice(0, 2000), repoDivision: { ...(data.repoDivision || {}), [negocioId]: null } });
     setHechos({});
     avisar("Lista de reposición vaciada. Se suman sólo las ventas nuevas.");
   };
@@ -20592,7 +20635,7 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
   // La asignación (qué categoría le toca a cada lista) se guarda en data para
   // que los dos dispositivos vean lo mismo. Cada empleado ve sólo su lista,
   // identificada por su cuenta, así nunca se pisan al tachar.
-  const division = data.repoDivision || null;  // { A: {nombre}, B: {nombre}, cats: { categoria: "A"|"B" } }
+  const division = (data.repoDivision || {})[negocioId] || null;  // { A: {nombre}, B: {nombre}, cats: { categoria: "A"|"B" } }
   const yoNombre = usuarioActivo(data);
   // Qué lista me toca: si soy la persona A o B de la división. Si no estoy en
   // ninguna (un tercero mira), veo todo.
@@ -20608,19 +20651,19 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
     const mapa = {};
     cats.forEach((c, i) => { mapa[c] = i % 2 === 0 ? "A" : "B"; });
     // La persona que divide queda como lista A; la B queda libre para el otro
-    persist({ ...data, repoDivision: { A: { nombre: yoNombre }, B: { nombre: "" }, cats: mapa } });
+    persist({ ...data, repoDivision: { ...(data.repoDivision || {}), [negocioId]: { A: { nombre: yoNombre }, B: { nombre: "" }, cats: mapa } } });
     avisar("Lista dividida en dos por categoría");
   };
 
   const unirListas = () => {
-    persist({ ...data, repoDivision: null });
+    persist({ ...data, repoDivision: { ...(data.repoDivision || {}), [negocioId]: null } });
     avisar("Listas unidas de nuevo");
   };
 
   // Si soy la persona B todavía sin nombre asignado, me tomo la lista B
   const tomarListaB = () => {
     if (!division) return;
-    persist({ ...data, repoDivision: { ...division, B: { nombre: yoNombre } } });
+    persist({ ...data, repoDivision: { ...(data.repoDivision || {}), [negocioId]: { ...division, B: { nombre: yoNombre } } } });
   };
 
   // Filtra el pendiente según la lista que me toca (si hay división y estoy en ella)
