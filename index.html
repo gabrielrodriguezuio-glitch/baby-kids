@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.781";
+const VERSION_APP = "9.782";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -10890,8 +10890,8 @@ const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ onCambiar, onEnt
     "div",
     { onClick: () => setAbierto(true), className: "ct-buscador", style: { flex: isMobilePos ? "1 0 100%" : 1, minWidth: isMobilePos ? "100%" : 190, display: "flex", alignItems: "center", gap: 12, background: "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "1.5px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: RADIO.control, padding: isMobilePos ? "0 18px" : "0 17px", height: 56, minHeight: 56, boxSizing: "border-box", cursor: "text" } },
     React.createElement(Search, { size: 18, color: "var(--denim-light)" }),
-    React.createElement("div", { style: { flex: 1, minWidth: 0, fontSize: isMobilePos ? 17 : 15, fontWeight: 600, color: texto ? "#ffffff" : posColors.muted, WebkitTextFillColor: texto ? "#ffffff" : posColors.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } },
-      texto || (isMobilePos ? "Buscar producto\u2026" : "Buscar producto...")),
+    React.createElement("div", { style: { flex: 1, minWidth: 0, fontSize: isMobilePos ? 18 : 15, fontWeight: 700, color: texto ? "#ffffff" : "#888", WebkitTextFillColor: texto ? "#ffffff" : "#888", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", letterSpacing: 0.5 } },
+      texto ? texto : (isMobilePos ? "Buscar producto\u2026" : "Buscar producto...")),
     texto && React.createElement("button", {
       onClick: (e) => { e.stopPropagation(); fijar(""); },
       title: "Borrar",
@@ -10907,6 +10907,9 @@ const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ onCambiar, onEnt
     abierto && React.createElement(
       "div",
       { style: { marginTop: 10, padding: 10, background: posColors.card, border: "1px solid " + posColors.inputBorder, borderRadius: 12, display: "flex", flexDirection: "column", gap: 7 } },
+      // Lo que vas escribiendo, bien grande y visible arriba del teclado
+      React.createElement("div", { style: { padding: "10px 14px", background: "#0d1b3e", borderRadius: 8, marginBottom: 4, minHeight: 24, fontSize: 20, fontWeight: 700, color: "#ffffff", WebkitTextFillColor: "#ffffff", letterSpacing: 1 } },
+        texto || React.createElement("span", { style: { color: "#6677aa", WebkitTextFillColor: "#6677aa", fontSize: 15, fontWeight: 400 } }, "Escribí acá\u2026")),
       FILAS_TECLADO.map((fila, i) => React.createElement(
         "div",
         { key: i, style: { display: "flex", gap: 5, justifyContent: "center" } },
