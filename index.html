@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.806-DIAG";
+const VERSION_APP = "9.807";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1732,10 +1732,29 @@ function ControlTienda() {
             } else if (c.tipo === "venta") {
               salida = { ...salida, ventas: salida.ventas.map((v) =>
                 v.id === c.viejo ? { ...v, id: c.nuevo } : v) };
+              // La reposición anota qué ventas ya contó por su id. Si el id
+              // cambia y acá no se actualiza, "Traer" no reconoce la venta
+              // y la vuelve a sumar: el producto repuesto reaparecía.
+              if ((salida.repoVentasVistas || []).indexOf(c.viejo) >= 0) {
+                salida = { ...salida, repoVentasVistas: salida.repoVentasVistas.map((id) =>
+                  id === c.viejo ? c.nuevo : id) };
+              }
             }
           });
           return salida;
         });
+        // Si algún id de venta cambió y estaba anotado en la reposición, la
+        // nube quedó con el id viejo: se sube de nuevo con el definitivo, si
+        // no al reabrir la app volvería el id viejo y el producto reaparecería.
+        const vistasViejas = next.repoVentasVistas || [];
+        const mapaIds = {};
+        cambios.forEach((c) => { if (c.tipo === "venta") mapaIds[c.viejo] = c.nuevo; });
+        if (vistasViejas.some((id) => mapaIds[id])) {
+          const vistasNuevas = vistasViejas.map((id) => mapaIds[id] || id);
+          try {
+            await guardarEnLaNube(next, { ...next, repoVentasVistas: vistasNuevas }, () => {});
+          } catch (e) { /* si falla, el próximo guardado lo vuelve a intentar */ }
+        }
       }
       if (errorGuardado) setErrorGuardado("");
       return true;
@@ -20536,6 +20555,17 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
     avisar(acumulado.agregadas + " venta" + (acumulado.agregadas === 1 ? "" : "s") + " sumada" + (acumulado.agregadas === 1 ? "" : "s") + " a la reposición");
   };
 
+  // Empezar de cero: vacía la lista y da por vistas TODAS las ventas que
+  // existen hoy, así sólo se suman las ventas que vengan de ahora en más.
+  // Sirve para limpiar una lista que quedó con ventas mal anotadas.
+  const empezarDeCero = () => {
+    if (!window.confirm("¿Vaciar la lista de reposición y empezar de cero?\n\nLas ventas que ya existen no se van a volver a sumar; sólo las nuevas.")) return;
+    const todas = (data.ventas || []).map((v) => v.id);
+    persist({ ...data, repoPendiente: [], repoVentasVistas: todas.slice(0, 2000), repoDivision: null });
+    setHechos({});
+    avisar("Lista de reposición vaciada. Se suman sólo las ventas nuevas.");
+  };
+
   const pendiente = pendienteRepo(data);
 
   // --- División de la lista entre dos personas, por categoría ---
@@ -20783,7 +20813,12 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
           onClick: traerVendido,
           style: { marginLeft: "auto", padding: "9px 16px" }
         }, React.createElement(Plus, { size: 15 }), " Traer")
-      )
+      ),
+      // Para limpiar una lista que quedó con ventas mal anotadas
+      pendiente.length > 0 && React.createElement("button", {
+        onClick: empezarDeCero,
+        style: { alignSelf: "flex-end", background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 11.5, fontFamily: "'Inter', sans-serif", textDecoration: "underline", padding: "2px 4px" }
+      }, "Vaciar lista y empezar de cero")
     ),
     // Acceso a lo ya repuesto, sin salir de acá
     (data.reposiciones || []).length > 0 && React.createElement("button", {
@@ -29265,4 +29300,4 @@ try {
 }
 </script>
 </body>
-</html>
+</html>-
