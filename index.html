@@ -6036,8 +6036,14 @@ function CeldaStock({ producto: p, negocioId, otrosNegocios }) {
       return React.createElement(
         "div",
         { key: k, style: { display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12.5, padding: "5px 0", borderBottom: k < vs.length - 1 ? "1px solid color-mix(in srgb, var(--line) 50%, transparent)" : "none" } },
-        React.createElement("span", { style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", opacity: cant > 0 ? 1 : 0.5 } },
-          String(v.talle || "—"), v.color ? " · " + v.color : ""),
+        React.createElement("span", { style: { minWidth: 0, overflow: "hidden", opacity: cant > 0 ? 1 : 0.5 } },
+          React.createElement("span", { style: { display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+            String(v.talle || "—"), v.color ? " · " + v.color : ""),
+          // El código de artículo de esa combinación: es lo que se escanea y
+          // lo que va en la etiqueta, así que conviene tenerlo a la vista.
+          v.codigo && React.createElement("span", {
+            style: { display: "block", fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, color: "var(--muted)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }
+          }, v.codigo)),
         React.createElement("span", {
           style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 650, flexShrink: 0, color: cant > 0 ? "var(--ink)" : "var(--rose)" }
         }, cant, " u")
@@ -6657,11 +6663,17 @@ function InventarioStock({ data, persist }) {
                       "td",
                       null,
                       React.createElement("div", { style: { fontSize: 13.5, fontWeight: 650, letterSpacing: -0.01, color: activo ? "var(--ink)" : "var(--muted)", textTransform: "uppercase" } }, p.nombre),
-                      React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "var(--muted)", marginTop: 3 } }, p.codigoBarras || "Sin código")
+                      // El código del local que se está mirando: un producto
+                      // puede tener su propio código en cada negocio.
+                      React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "var(--muted)", marginTop: 3 } },
+                        codigoEn(p, { id: negId }, listaNegocios(data)[0].id) || p.codigoBarras || "Sin código")
                     ),
                     React.createElement("td", null, React.createElement(SwingTag, { tone: "denim", small: true }, (p.categoria || "Sin categoría").toUpperCase())),
                     React.createElement("td", null, React.createElement(Switch, { on: activo, onChange: () => toggleActivo(p), title: activo ? "A la venta" : "Pausado" })),
-                    React.createElement("td", null, React.createElement(CeldaStock, { producto: p, negocioId: negocioActivo(data).id })),
+                    // Se pasa negId, no el negocio activo: si estás mirando el
+                    // stock de otro local, los talles tienen que ser los de ESE
+                    // local. Con el activo se veían siempre los propios.
+                    React.createElement("td", null, React.createElement(CeldaStock, { producto: p, negocioId: negId })),
                     verCostos && React.createElement("td", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 13.5, color: dinero ? "var(--ink)" : "var(--muted)" } }, dinero ? money(dinero) : "–"),
                     verCostos && React.createElement("td", { style: { color: "var(--muted)" } }, p.proveedor || "Sin proveedor"),
                     // Tres puntos: la columna queda angosta y la fila se lee
