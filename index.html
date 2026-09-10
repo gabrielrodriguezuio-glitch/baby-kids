@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.882";
+const VERSION_APP = "9.884";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -1794,6 +1794,8 @@ function ControlTienda() {
               // a subirse en el próximo guardado.
               salida = { ...salida, productos: salida.productos.map((p) =>
                 p.id === c.id ? { ...p, imagenes: c.imagenes, imagen: c.imagenes[0] || "" } : p) };
+            } else if (c.tipo === "cierre") {
+              salida = { ...salida, cajasCerradas: (salida.cajasCerradas || []).map((x) => x.id === c.viejo ? { ...x, id: c.nuevo } : x) };
             } else if (c.tipo === "nota") {
               salida = { ...salida,
                 notasCredito: (salida.notasCredito || []).map((n) => n.id === c.viejo ? { ...n, id: c.nuevo } : n),
@@ -4432,12 +4434,18 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
   }
 
   // ── Cierres de caja ───────────────────────────────────────
-  // Un cierre no se edita ni se borra: sólo se agregan los nuevos.
+  // Un cierre no se edita: se agregan los nuevos y el due\u00F1o puede borrar.
   const cierresAntes = new Set((antes.cajasCerradas || []).map((c) => c.id));
+  const cierresDespues = new Set((despues.cajasCerradas || []).map((c) => c.id));
+  const cierresBorrados = (antes.cajasCerradas || []).filter((c) => !cierresDespues.has(c.id) && esIdDeLaBase(c.id));
+  for (const c of cierresBorrados) {
+    const { error } = await nube.from("caja_cierres").delete().eq("id", c.id);
+    if (error && avisarProblema) avisarProblema("El cierre no se pudo borrar de la nube: " + error.message);
+  }
   const cierresNuevos = (despues.cajasCerradas || []).filter((c) => !cierresAntes.has(c.id));
   for (const c of cierresNuevos) {
     try {
-      const { error } = await nube.from("caja_cierres").insert({
+      const { data: creado, error } = await nube.from("caja_cierres").insert({
         negocio_id: c.negocioId || null,
         usuario: c.usuarioNombre || "",
         monto_inicial: Number(c.montoInicial) || 0,
@@ -4447,8 +4455,11 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
         movimientos: c.movimientos || [],
         abierta_en: c.abiertaEn || null,
         cerrada_en: c.cerradaEn || new Date().toISOString()
-      });
+      }).select("id").single();
       if (error) throw new Error(error.message);
+      // El id que asign\u00F3 la base reemplaza al provisorio de la app: as\u00ED el
+      // cierre se puede borrar sin tener que recargar antes.
+      if (creado && creado.id) cambios.push({ tipo: "cierre", viejo: c.id, nuevo: creado.id });
     } catch (e) {
       console.error("No se pudo subir el cierre", e);
       if (avisarProblema) avisarProblema("El cierre de caja no se pudo guardar en la nube: " +
@@ -11124,6 +11135,42 @@ const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ onCambiar, onEnt
     key: "n" + c, onClick: () => fijar(textoRef.current + c), style: { ...teclaBase, height: 38, fontSize: 16 }
   }, c);
 
+  // En computadora hay teclado f\u00EDsico: campo de texto normal, sin el
+  // teclado en pantalla (que es s\u00F3lo para tel\u00E9fonos y tablets).
+  const inputEscritorioRef = React.useRef(null);
+  useEffect(() => { if (!isMobilePos && inputEscritorioRef.current) inputEscritorioRef.current.focus(); }, [isMobilePos]);
+  useEffect(() => {
+    if (!registrarLimpiador || isMobilePos) return;
+    registrarLimpiador((t) => {
+      if (inputEscritorioRef.current) inputEscritorioRef.current.value = t || "";
+      setTexto(t || ""); textoRef.current = t || "";
+    });
+  }, [isMobilePos]);
+  if (!isMobilePos) {
+    return React.createElement(
+      "div",
+      { className: "ct-buscador", style: { flex: 1, minWidth: 190, display: "flex", alignItems: "center", gap: 12, background: "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "1.5px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: RADIO.control, padding: "0 17px", height: 56, minHeight: 56, boxSizing: "border-box" } },
+      React.createElement(Search, { size: 18, color: "var(--denim-light)", style: { flexShrink: 0 } }),
+      React.createElement("input", {
+        ref: inputEscritorioRef, type: "text", defaultValue: "",
+        placeholder: "Buscar producto... (Enter para agregar)",
+        autoComplete: "off", spellCheck: false,
+        onInput: (e) => { const v = e.target.value; textoRef.current = v; setTexto(v); onCambiar(v); },
+        onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); onEnter(); } },
+        style: { flex: 1, minWidth: 0, height: "100%", background: "transparent", border: "none", outline: "none", color: "var(--ink)", fontSize: 15, padding: 0 }
+      }),
+      texto && React.createElement("button", {
+        onClick: () => { if (inputEscritorioRef.current) { inputEscritorioRef.current.value = ""; inputEscritorioRef.current.focus(); } fijar(""); },
+        title: "Borrar",
+        style: { background: "none", border: "none", cursor: "pointer", color: posColors.muted, display: "flex", padding: 4, flexShrink: 0 }
+      }, React.createElement(X, { size: 16 })),
+      React.createElement("button", {
+        onClick: onEscanear, title: "Escanear con la c\u00E1mara",
+        style: { display: "flex", alignItems: "center", justifyContent: "center", background: "none", border: "none", borderLeft: "1px solid color-mix(in srgb, var(--denim) 30%, transparent)", cursor: "pointer", color: "var(--denim-light)", width: 42, flex: "0 0 42px", flexShrink: 0, padding: "8px 0 8px 12px", marginLeft: 4, boxSizing: "content-box" }
+      }, React.createElement(ScanBarcode, { size: 18 }))
+    );
+  }
+
   return React.createElement(
     "div",
     null,
@@ -11237,6 +11284,7 @@ const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ onCambiar, onEnt
 }, (prev, next) => {
   // Se re-renderiza sólo si cambian las sugerencias (no por otras cosas del
   // padre). Así el teclado muestra los productos sin sufrir los refrescos.
+  if (prev.isMobilePos !== next.isMobilePos) return false;
   if ((prev.sugerencias || []).length !== (next.sugerencias || []).length) return false;
   const a = prev.sugerencias || [], b = next.sugerencias || [];
   for (let i = 0; i < a.length; i++) if (a[i].id !== b[i].id) return false;
@@ -29169,6 +29217,15 @@ function CajaReportes({ data, rango, persist, dataReal }) {
   // cerrar, o la de un usuario que ya no existe. El efectivo esperado se toma
   // como contado, así el cierre queda sin diferencia, con sus movimientos
   // guardados y marcado como forzado.
+  // Borra un cierre del historial (y de la nube). Es del propietario: se
+  // usa para sacar un cierre duplicado, de prueba o hecho por error.
+  const eliminarCierre = (c) => {
+    if (!persist) return;
+    const quien = c.usuarioNombre || "sin usuario";
+    if (!window.confirm("\u00BFEliminar el cierre de " + quien + " del " + fechaNumerica(c.cerradaEn || c.fecha || "") + "?\n\nEsto lo saca del historial y de la nube. Las ventas de ese d\u00EDa no se tocan.")) return;
+    persist({ ...real, cajasCerradas: (real.cajasCerradas || []).filter((x) => x.id !== c.id) });
+    avisar("Cierre eliminado");
+  };
   const forzarCierre = (c) => {
     if (!persist) return;
     const cajaActual = (real.cajas || {})[c.clave];
@@ -29459,11 +29516,13 @@ function CajaReportes({ data, rango, persist, dataReal }) {
                       { ancla: menu.rect, onClose: () => setMenu(null) },
                       [
                         ["Ver el detalle", () => { setDetalle(c); setMenu(null); }, Search],
-                        ["Imprimir el cierre", () => { imprimirCierre(c); setMenu(null); }, Receipt]
-                      ].map(([texto, fn, Icono]) => React.createElement("button", {
+                        ["Imprimir el cierre", () => { imprimirCierre(c); setMenu(null); }, Receipt],
+                        // S\u00F3lo el due\u00F1o puede borrar un cierre (uno duplicado, de prueba o mal hecho)
+                        ...(persist && esPropietario(real) ? [["Eliminar cierre", () => { setMenu(null); eliminarCierre(c); }, Trash2, true]] : [])
+                      ].map(([texto, fn, Icono, peligro]) => React.createElement("button", {
                         key: texto,
                         onClick: fn,
-                        style: { display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left", padding: "10px 16px", border: "none", background: "none", cursor: "pointer", color: "var(--ink)", fontSize: 13.5, fontFamily: "'Inter', sans-serif", whiteSpace: "nowrap" }
+                        style: { display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left", padding: "10px 16px", border: "none", background: "none", cursor: "pointer", color: peligro ? "var(--rose)" : "var(--ink)", fontSize: 13.5, fontFamily: "'Inter', sans-serif", whiteSpace: "nowrap" }
                       }, React.createElement(Icono, { size: 16, color: "var(--muted)", strokeWidth: 1.9 }), texto))
                     )
                   )
