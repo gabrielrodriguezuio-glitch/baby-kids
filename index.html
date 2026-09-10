@@ -20678,14 +20678,23 @@ const moverEntreNegocios = (producto, origenId, destinoId, cantidad, talle) => {
         } }
       };
     }
-    // Si el talle todavía no existe en el destino, se crea con stock cero
+    // Si el talle todavía no existe en el destino, se crea con stock cero.
+    // Se copia el código de artículo, el precio y demás datos de la variante
+    // del origen: sin esto el talle llegaba al otro local sin su código y no
+    // se podía escanear ni etiquetar.
     if (talle) {
       const vs = variantesNegocio(out, destinoId);
       if (!vs.some((v) => esLaVariante(v, talle))) {
+        // La variante equivalente en el origen, para copiarle los datos
+        const vOrigen = origenId
+          ? (variantesNegocio(out, origenId).find((v) => esLaVariante(v, talle)) || null)
+          : null;
         // La clave puede traer color ("M|Rojo"): se crea la variante completa
         const partes = String(talle).split("|");
-        const nueva = { talle: partes[0], stock: 0 };
-        if (partes.length > 1 && partes[1]) nueva.color = partes[1];
+        const nueva = vOrigen
+          ? { ...vOrigen, stock: 0 }
+          : { talle: partes[0], stock: 0 };
+        if (!vOrigen && partes.length > 1 && partes[1]) nueva.color = partes[1];
         const porNegocio = { ...(out.porNegocio || {}) };
         const d = { activo: true, stock: 0, variantes: [], ...(porNegocio[destinoId] || {}) };
         porNegocio[destinoId] = { ...d, variantes: [...(d.variantes || []), nueva] };
@@ -21848,10 +21857,13 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
     : [];
 
   const items = Object.keys(sel).map((k) => {
-    const [id, talle] = k.split("|");
+    // La clave es "productoId|talle|color". Se parte SOLO en el primer "|":
+    // con split("|") plano el color se perdía y el talle llegaba suelto.
+    const corte = k.indexOf("|");
+    const id = corte >= 0 ? k.slice(0, corte) : k;
+    const claveVar = corte >= 0 ? k.slice(corte + 1) : "";
     const prod = data.productos.find((p) => p.id === id);
-    // La clave puede ser "M|Rojo": se guarda talle y color por separado
-    const partes = String(talle || "").split("|");
+    const partes = claveVar.split("|");
     return { productoId: id, nombre: prod ? prod.nombre : "", talle: partes[0] || "", color: partes[1] || "", cantidad: sel[k] };
   }).filter((x) => x.cantidad > 0);
   const totalUnidades = items.reduce((a, x) => a + x.cantidad, 0);
