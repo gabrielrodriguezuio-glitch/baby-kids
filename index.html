@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.885";
+const VERSION_APP = "9.886";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -15990,6 +15990,16 @@ function Clientes({ data, persist, senalNuevoCliente, senalImportarClientes, sen
     return (a.nombre || "").localeCompare(b.nombre || "", "es") * dir;
   });
 
+  // Paginaci\u00F3n, como en Productos: con muchos clientes no hay que
+  // arrastrar la pantalla hasta abajo.
+  const [pagina, setPagina] = useState(1);
+  const [porPagina, setPorPagina] = useState(10);
+  useEffect(() => { setPagina(1); }, [q, orden]);
+  const paginasCli = Math.max(1, Math.ceil(filtrados.length / porPagina));
+  const paginaSeguraCli = Math.min(pagina, paginasCli);
+  const desdeCli = (paginaSeguraCli - 1) * porPagina;
+  const enPantallaCli = filtrados.slice(desdeCli, desdeCli + porPagina);
+
   const guardar = (f) => {
     if (f.id) persist({ ...data, clientes: data.clientes.map((c) => c.id === f.id ? { ...c, ...f } : c) });
     else persist({ ...data, clientes: [...data.clientes, { ...f, id: uid(), fechaRegistro: todayISO() }] });
@@ -16055,7 +16065,7 @@ function Clientes({ data, persist, senalNuevoCliente, senalImportarClientes, sen
                 React.createElement("th", null, "Registro"),
                 React.createElement("th", { style: { textAlign: "right" } }, "Acciones")
               )),
-              React.createElement("tbody", null, filtrados.map((c) => React.createElement(
+              React.createElement("tbody", null, enPantallaCli.map((c) => React.createElement(
                 "tr",
                 { key: c.id },
                 React.createElement(
@@ -16120,11 +16130,40 @@ function Clientes({ data, persist, senalNuevoCliente, senalImportarClientes, sen
       filtrados.length > 0 && React.createElement(
         "div",
         { style: { display: "flex", justifyContent: "space-between", gap: 12, padding: "14px 22px 18px", borderTop: "1px solid var(--line)", flexWrap: "wrap" } },
-        React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)" } }, filtrados.length, " cliente", filtrados.length === 1 ? "" : "s"),
+        React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)" } },
+          paginasCli > 1
+            ? ["Mostrando ", desdeCli + 1, " a ", Math.min(desdeCli + porPagina, filtrados.length), " de ", filtrados.length, " clientes"]
+            : [filtrados.length, " cliente", filtrados.length === 1 ? "" : "s"]),
         React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)" } },
           "Deuda acumulada: ",
           React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, color: "var(--ink)" } },
             money(filtrados.reduce((a, c) => a + c.deuda, 0))))
+      ),
+      // Navegaci\u00F3n entre p\u00E1ginas, s\u00F3lo si hay m\u00E1s de una
+      paginasCli > 1 && React.createElement(
+        "div",
+        { style: { display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, flexWrap: "wrap", padding: "0 22px 18px" } },
+        React.createElement("button", {
+          onClick: () => setPagina(Math.max(1, paginaSeguraCli - 1)),
+          disabled: paginaSeguraCli === 1,
+          style: { width: 36, height: 36, borderRadius: 9, cursor: paginaSeguraCli === 1 ? "default" : "pointer", border: "1.5px solid var(--line)", background: "var(--surface-2)", color: paginaSeguraCli === 1 ? "var(--muted)" : "var(--ink)", opacity: paginaSeguraCli === 1 ? 0.4 : 1, display: "flex", alignItems: "center", justifyContent: "center" }
+        }, React.createElement(ChevronRight, { size: 17, style: { transform: "rotate(180deg)" } })),
+        numerosDePagina(paginaSeguraCli, paginasCli).map((n, k) => n === "..."
+          ? React.createElement("span", { key: "p" + k, style: { color: "var(--muted)", padding: "0 4px", fontSize: 13 } }, "\u2026")
+          : React.createElement("button", {
+              key: n, onClick: () => setPagina(n),
+              style: { minWidth: 36, height: 36, borderRadius: 9, cursor: "pointer", padding: "0 8px", border: "1.5px solid " + (n === paginaSeguraCli ? "var(--denim)" : "var(--line)"), background: n === paginaSeguraCli ? "var(--denim-soft)" : "var(--surface-2)", color: "var(--ink)", fontSize: 13, fontWeight: n === paginaSeguraCli ? 700 : 500, fontFamily: "'Inter', sans-serif" }
+            }, n)),
+        React.createElement("button", {
+          onClick: () => setPagina(Math.min(paginasCli, paginaSeguraCli + 1)),
+          disabled: paginaSeguraCli === paginasCli,
+          style: { width: 36, height: 36, borderRadius: 9, cursor: paginaSeguraCli === paginasCli ? "default" : "pointer", border: "1.5px solid var(--line)", background: "var(--surface-2)", color: paginaSeguraCli === paginasCli ? "var(--muted)" : "var(--ink)", opacity: paginaSeguraCli === paginasCli ? 0.4 : 1, display: "flex", alignItems: "center", justifyContent: "center" }
+        }, React.createElement(ChevronRight, { size: 17 })),
+        React.createElement("select", {
+          value: porPagina,
+          onChange: (e) => { setPorPagina(Number(e.target.value)); setPagina(1); },
+          style: { ...inputStyle, height: 36, width: "auto", marginLeft: 4, fontSize: 12.5 }
+        }, [10, 25, 50, 100].map((n) => React.createElement("option", { key: n, value: n }, n + " por p\u00E1gina")))
       )
     ),
 
@@ -20635,10 +20674,14 @@ const moverEntreNegocios = (producto, origenId, destinoId, cantidad, talle) => {
     // Si el talle todavía no existe en el destino, se crea con stock cero
     if (talle) {
       const vs = variantesNegocio(out, destinoId);
-      if (!vs.some((v) => v.talle === talle)) {
+      if (!vs.some((v) => esLaVariante(v, talle))) {
+        // La clave puede traer color ("M|Rojo"): se crea la variante completa
+        const partes = String(talle).split("|");
+        const nueva = { talle: partes[0], stock: 0 };
+        if (partes.length > 1 && partes[1]) nueva.color = partes[1];
         const porNegocio = { ...(out.porNegocio || {}) };
         const d = { activo: true, stock: 0, variantes: [], ...(porNegocio[destinoId] || {}) };
-        porNegocio[destinoId] = { ...d, variantes: [...(d.variantes || []), { talle, stock: 0 }] };
+        porNegocio[destinoId] = { ...d, variantes: [...(d.variantes || []), nueva] };
         out = { ...out, porNegocio };
       }
     }
@@ -21715,10 +21758,12 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
   // el producto maneja en cualquier negocio. Nunca queda vacío si hay talles.
   const tallesDe = (prod) => {
     const propias = variantesNegocio(prod, origen);
-    if (propias.length) return { lista: propias.map((v) => ({ talle: v.talle, hay: Number(v.stock) || 0 })), exacto: true };
+    // Cada combinaci\u00F3n talle+color es una fila aparte: antes se agrupaba
+    // s\u00F3lo por talle y las unidades ca\u00EDan en el primer color.
+    if (propias.length) return { lista: propias.map((v) => ({ talle: claveVariante(v), etiqueta: String(v.talle || "") + (v.color ? " \u00B7 " + v.color : ""), hay: Number(v.stock) || 0 })), exacto: true };
     const catalogo = tallesDelProducto(prod);
     if (!catalogo.length) return { lista: [], exacto: true };
-    return { lista: catalogo.map((t) => ({ talle: t, hay: null })), exacto: false };
+    return { lista: catalogo.map((t) => ({ talle: t, etiqueta: t, hay: null })), exacto: false };
   };
 
   const enOrigen = (prod) => stockNegocio(prod, origen);
@@ -21794,7 +21839,9 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
   const items = Object.keys(sel).map((k) => {
     const [id, talle] = k.split("|");
     const prod = data.productos.find((p) => p.id === id);
-    return { productoId: id, nombre: prod ? prod.nombre : "", talle: talle || "", cantidad: sel[k] };
+    // La clave puede ser "M|Rojo": se guarda talle y color por separado
+    const partes = String(talle || "").split("|");
+    return { productoId: id, nombre: prod ? prod.nombre : "", talle: partes[0] || "", color: partes[1] || "", cantidad: sel[k] };
   }).filter((x) => x.cantidad > 0);
   const totalUnidades = items.reduce((a, x) => a + x.cantidad, 0);
 
@@ -21831,7 +21878,7 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
       React.createElement(
         "span",
         { style: { fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", color: elegido ? "var(--denim-light)" : "var(--ink)" } },
-        t.talle,
+        t.etiqueta || t.talle,
         React.createElement("span", { style: { fontSize: 11.5, fontWeight: 500, color: "var(--muted)", marginLeft: 6 } },
           t.hay == null ? "" : t.hay + " u")
       ),
@@ -23648,8 +23695,9 @@ function TransferenciasView({ data, persist }) {
   const aplicar = (productos, items, origenId, destinoId) => {
     let out = productos;
     items.forEach((it) => {
+      const claveVar = it.talle ? it.talle + (it.color ? "|" + it.color : "") : "";
       out = out.map((p) => p.id === it.productoId
-        ? moverEntreNegocios(p, origenId, destinoId, it.cantidad, it.talle)
+        ? moverEntreNegocios(p, origenId, destinoId, it.cantidad, claveVar)
         : p);
     });
     return out;
