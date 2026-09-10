@@ -5231,7 +5231,8 @@ async function traerParcial(tablas, quienEntro) {
   // La comprobación va PRIMERO: antes estaba al final y ya se había armado
   // una respuesta incompleta, así que los cierres de caja nunca llegaban.
   const conocidas = ["variantes", "productos", "ventas", "venta_items", "clientes",
-                     "movimientos_cc", "cajas_abiertas", "caja_cierres", "reposicion_pendiente", "reposiciones_hechas"];
+                     "movimientos_cc", "cajas_abiertas", "caja_cierres", "reposicion_pendiente", "reposiciones_hechas",
+                     "transferencias", "movimientos_stock"];
   for (const t of tablas) if (conocidas.indexOf(t) < 0) return null;
 
   const salida = {};
@@ -5310,6 +5311,62 @@ async function traerParcial(tablas, quienEntro) {
       };
       return acc;
     }, { ...cajasLocales() });
+  }
+
+  // Cuando cambia una transferencia (nueva, confirmación de recepción, cancelación)
+  // se trae la lista actualizada sin hacer un full reload. También se actualizan
+  // los productos porque la transferencia modifica el stock de origen y/o destino.
+  if (tablas.has("transferencias")) {
+    const [transfRes, prods, vars, listas] = await Promise.all([
+      nube.from("transferencias").select("*").order("creado_en", { ascending: false }).limit(500),
+      traerTodo("productos", "nombre"),
+      traerTodo("variantes"),
+      nube.from("listas_precio").select("*")
+    ]);
+    salida.transferencias = (transfRes.data || []).map((t) => ({
+      id: t.id,
+      remito: t.remito || "",
+      origen: t.origen || "",
+      destino: t.destino || "",
+      estado: t.estado || "completada",
+      motivo: t.motivo || "",
+      nota: t.nota || "",
+      items: t.items || [],
+      usuarioNombre: t.usuario || "",
+      recibidaPor: t.recibida_por || "",
+      recibidaEn: t.recibida_en || "",
+      recibidaHora: t.recibida_hora || "",
+      fecha: t.fecha,
+      hora: t.hora || ""
+    }));
+    // Actualizar stock junto con las transferencias: la confirmación de
+    // recepción entra el stock al destino y el origen ya lo tenía descontado.
+    const porProd = {};
+    (vars || []).forEach((v) => {
+      (porProd[v.producto_id] = porProd[v.producto_id] || []).push(v);
+    });
+    const lp = (listas.data || []).map((l) => ({ id: l.id, nombre: l.nombre, ajustePct: Number(l.ajuste_pct) || 0 }));
+    const mayor = lp.find((l) => /mayor/i.test(l.nombre));
+    salida.productos = (prods || []).map((p) => deLaNube.producto(p, porProd[p.id], mayor && mayor.id));
+  }
+
+  if (tablas.has("movimientos_stock")) {
+    const { data: movs } = await nube.from("movimientos_stock")
+      .select("*").order("creado_en", { ascending: false }).limit(400);
+    salida.movimientosStock = (movs || []).map((m) => ({
+      id: m.id,
+      productoId: m.producto_id || "",
+      negocioId: m.negocio_id || "",
+      nombre: m.nombre || "",
+      talle: m.talle || "",
+      cantidad: Number(m.cantidad) || 0,
+      origen: m.origen || "",
+      motivo: m.motivo || "",
+      usuario: m.usuario || "",
+      stockResultante: m.stock_resultante,
+      fecha: m.fecha,
+      hora: m.hora || ""
+    }));
   }
 
   return salida;
