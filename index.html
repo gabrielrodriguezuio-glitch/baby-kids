@@ -131,8 +131,8 @@ import { createClient } from "@supabase/supabase-js";
 // viendo la última, sin tener que buscar qué función existe y cuál no.
 const VERSION_APP = "9.886";
 
-const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
-const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
+const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
+const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
 
 const nube = createClient(NUBE_URL, NUBE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true }
@@ -1524,11 +1524,26 @@ function ControlTienda() {
         }
 
         // Con un tope de tiempo: si la conexión es muy lenta, mejor avisar que
-        // dejar la pantalla de carga girando sin explicación.
+        // dejar la pantalla de carga girando sin explicación. Son 60s porque
+        // con muchos productos y una conexión de celular, 20 se quedaban
+        // cortos y cortaban una carga que iba a terminar bien.
         const traer = traerDeLaNube(sesion && sesion.auth_id);
+        const arrancoEn = Date.now();
         const tope = new Promise((_, rechazar) =>
-          setTimeout(() => rechazar(new Error("La conexión está muy lenta y no se pudieron traer los datos.")), 20000));
-        const frescos = migrarCajas(migrarDatos(await Promise.race([traer, tope])));
+          setTimeout(() => rechazar(new Error(
+            "La base no respondió en 60 segundos. Suele pasar cuando el proyecto de Supabase está pausado por inactividad: entrá a supabase.com y fijate si dice \"Paused\"."
+          )), 60000));
+        let frescos;
+        try {
+          frescos = migrarCajas(migrarDatos(await Promise.race([traer, tope])));
+        } catch (eCarga) {
+          // El mensaje real de la base, no uno genérico: sin esto no se puede
+          // saber si es falta de permisos, el proyecto dormido o la conexión.
+          const seg = Math.round((Date.now() - arrancoEn) / 1000);
+          const crudo = String((eCarga && eCarga.message) || eCarga);
+          console.error("Fallo al traer datos de la nube:", eCarga);
+          throw new Error(crudo + " (tardó " + seg + "s)");
+        }
         setData(frescos);
         // Se guarda para la próxima vez, sin el historial: lo que hace falta
         // para abrir y vender son los productos, clientes y cajas. Las ventas
@@ -1894,10 +1909,23 @@ function ControlTienda() {
           /* @__PURE__ */ React.createElement(SectionTitle, null, "No se pudieron traer los datos"),
           /* @__PURE__ */ React.createElement("p", { style: { fontSize: 13, color: "var(--muted)", marginTop: 8, lineHeight: 1.55 } },
             "Revisá la conexión e intentá de nuevo."),
-          /* @__PURE__ */ React.createElement("p", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 10, fontFamily: "'IBM Plex Mono', monospace" } }, errorNube),
+          /* @__PURE__ */ React.createElement("textarea", {
+            readOnly: true,
+            value: errorNube,
+            onFocus: (e) => e.target.select(),
+            style: { width: "100%", minHeight: 96, marginTop: 10, resize: "vertical",
+                     fontSize: 11.5, lineHeight: 1.5, color: "var(--muted)",
+                     fontFamily: "'IBM Plex Mono', monospace", background: "var(--surface-2)",
+                     border: "1px solid var(--line)", borderRadius: 8, padding: "9px 11px", boxSizing: "border-box" }
+          }),
+          /* @__PURE__ */ React.createElement(Button, {
+            tone: "ghost",
+            onClick: () => { try { navigator.clipboard.writeText(errorNube); avisar("Error copiado"); } catch (e) {} },
+            style: { width: "100%", justifyContent: "center", marginTop: 10 }
+          }, "Copiar el error"),
           /* @__PURE__ */ React.createElement(Button, {
             onClick: () => window.location.reload(),
-            style: { width: "100%", justifyContent: "center", marginTop: 16 }
+            style: { width: "100%", justifyContent: "center", marginTop: 8 }
           }, "Reintentar"))));
   }
 
@@ -5225,19 +5253,45 @@ async function traerVentasConRenglones(desde) {
   }
 }
 
+// Cuándo se bajó por última vez el catálogo entero. Sirve para no repetir esa
+// descarga (la más pesada de todas) con cada venta.
+let ultimoCatalogo = 0;
+
 async function traerParcial(tablas, quienEntro) {
   if (!tablas || !tablas.size) return null;
 
   // La comprobación va PRIMERO: antes estaba al final y ya se había armado
   // una respuesta incompleta, así que los cierres de caja nunca llegaban.
+  // TODAS las tablas a las que la app se suscribe tienen que estar acá. Si
+  // falta una, su aviso hace que traerParcial devuelva null y se recargue la
+  // nube ENTERA: productos, variantes, seis meses de ventas y todo lo demás.
+  // Con "movimientos_stock" afuera, cada venta provocaba esa descarga completa
+  // en cada dispositivo conectado, y así se consumían gigabytes por día.
   const conocidas = ["variantes", "productos", "ventas", "venta_items", "clientes",
-                     "movimientos_cc", "cajas_abiertas", "caja_cierres", "reposicion_pendiente", "reposiciones_hechas"];
+                     "movimientos_cc", "cajas_abiertas", "caja_cierres",
+                     "reposicion_pendiente", "reposiciones_hechas",
+                     "transferencias", "movimientos_stock", "pedidos",
+                     "notas_credito", "cambios", "devoluciones_reparto",
+                     "gastos", "compras"];
   for (const t of tablas) if (conocidas.indexOf(t) < 0) return null;
 
   const salida = {};
 
-  // El stock: una venta lo toca siempre, y hay que rearmar los productos
+  // El stock: una venta lo toca siempre, y hay que rearmar los productos.
+  // Pero bajar 1173 productos y 6300 variantes en CADA venta es lo que
+  // disparó el consumo de la nube. El cambio puntual ya lo aplicó alVuelo con
+  // los datos del propio aviso, así que acá se recarga el catálogo completo
+  // como mucho una vez por minuto, para corregir cualquier desvío.
+  const ahora = Date.now();
+  const tocaCatalogo = tablas.has("variantes") || tablas.has("productos");
+  const catalogoVencido = ahora - ultimoCatalogo > 60000;
+  if (tocaCatalogo && !catalogoVencido) {
+    // Nada que bajar: el stock nuevo ya está aplicado en pantalla
+    tablas = new Set([...tablas].filter((t) => t !== "variantes" && t !== "productos"));
+    if (!tablas.size) return {};
+  }
   if (tablas.has("variantes") || tablas.has("productos")) {
+    ultimoCatalogo = ahora;
     const [prods, vars, listas] = await Promise.all([
       traerTodo("productos", "nombre"),
       traerTodo("variantes"),
@@ -5310,6 +5364,107 @@ async function traerParcial(tablas, quienEntro) {
       };
       return acc;
     }, { ...cajasLocales() });
+  }
+
+  if (tablas.has("transferencias")) {
+    const { data: ts } = await nube.from("transferencias")
+      .select("*").order("creado_en", { ascending: false }).limit(500);
+    salida.transferencias = (ts || []).map((t) => ({
+      id: t.id, remito: t.remito || "", origen: t.origen || "", destino: t.destino || "",
+      estado: t.estado || "completada", motivo: t.motivo || "", nota: t.nota || "",
+      items: t.items || [], usuarioNombre: t.usuario || "",
+      recibidaPor: t.recibida_por || "", recibidaEn: t.recibida_en || "",
+      recibidaHora: t.recibida_hora || "", fecha: t.fecha, hora: t.hora || ""
+    }));
+  }
+
+  if (tablas.has("movimientos_stock")) {
+    const { data: ms } = await nube.from("movimientos_stock")
+      .select("*").order("creado_en", { ascending: false }).limit(400);
+    salida.movimientosStock = (ms || []).map((m) => ({
+      id: m.id, productoId: m.producto_id || "", negocioId: m.negocio_id || "",
+      nombre: m.nombre || "", talle: m.talle || "", cantidad: Number(m.cantidad) || 0,
+      origen: m.origen || "", motivo: m.motivo || "", usuario: m.usuario || "",
+      stockResultante: m.stock_resultante, fecha: m.fecha, hora: m.hora || ""
+    }));
+  }
+
+  if (tablas.has("pedidos")) {
+    const { data: ps } = await nube.from("pedidos").select("*")
+      .or("estado.eq.pendiente,creado_en.gte." + haceMeses(6))
+      .order("creado_en", { ascending: false }).limit(1000);
+    salida.pedidos = (ps || []).map((p) => ({
+      id: p.id, numero: p.numero || "", clienteId: p.cliente_id || "",
+      clienteNombre: p.cliente_nombre || "", negocioId: p.negocio_id || "",
+      transferenciaId: p.transferencia_id || "", estado: p.estado || "pendiente",
+      items: p.items || [], nota: p.nota || "", usuario: p.usuario || "",
+      fecha: p.fecha, hora: p.hora || "",
+      entregadoEn: p.entregado_en || "", entregadoHora: p.entregado_hora || "",
+      entregadoPor: p.entregado_por || "", recibidoPor: p.recibido_por || ""
+    }));
+  }
+
+  if (tablas.has("notas_credito")) {
+    const { data: ns } = await nube.from("notas_credito").select("*")
+      .or("estado.eq.activa,creado_en.gte." + haceMeses(12))
+      .order("creado_en", { ascending: false }).limit(1500);
+    salida.notasCredito = (ns || []).map((n) => ({
+      id: n.id, numero: n.numero || "", ventaId: n.venta_id || "",
+      ventaFecha: n.venta_fecha || "", clienteId: n.cliente_id || "",
+      clienteNombre: n.cliente_nombre || "", negocioId: n.negocio_id || "",
+      items: n.items || [], monto: Number(n.monto) || 0,
+      estado: n.estado || "activa", motivo: n.motivo || "",
+      usuario: n.usuario || "", fecha: n.fecha, hora: n.hora || "",
+      usadaEn: n.usada_en || "", usadaHora: n.usada_hora || "",
+      usadaPor: n.usada_por || "", usadaVentaId: n.usada_venta_id || ""
+    }));
+  }
+
+  if (tablas.has("cambios")) {
+    const { data: cs } = await nube.from("cambios")
+      .select("*").order("creado_en", { ascending: false }).limit(500);
+    salida.cambios = (cs || []).map((c) => ({
+      id: c.id, numero: c.numero || "", ventaId: c.venta_id || "",
+      clienteNombre: c.cliente_nombre || "", negocioId: c.negocio_id || "",
+      devuelto: c.devuelto || [], entregado: c.entregado || [],
+      diferencia: Number(c.diferencia) || 0,
+      notaCreditoId: c.nota_credito_id || "", motivo: c.motivo || "",
+      usuario: c.usuario || "", fecha: c.fecha, hora: c.hora || ""
+    }));
+  }
+
+  if (tablas.has("devoluciones_reparto")) {
+    const { data: ds } = await nube.from("devoluciones_reparto")
+      .select("*").order("creado_en", { ascending: false }).limit(500);
+    salida.devolucionesReparto = (ds || []).map((d) => ({
+      id: d.id, pedidoId: d.pedido_id || "", clienteId: d.cliente_id || "",
+      clienteNombre: d.cliente_nombre || "", negocioId: d.negocio_id || "",
+      items: d.items || [], unidades: d.unidades || 0, motivo: d.motivo || "",
+      devueltaPor: d.devuelta_por || "", recibidaPor: d.recibida_por || "",
+      fecha: d.fecha, hora: d.hora || ""
+    }));
+  }
+
+  if (tablas.has("gastos")) {
+    const { data: gs } = await nube.from("gastos")
+      .select("*").order("fecha", { ascending: false }).limit(1000);
+    salida.gastos = (gs || []).map((g) => ({
+      id: g.id, negocioId: g.negocio_id || "", concepto: g.concepto || "",
+      categoria: g.categoria || "", monto: Number(g.monto) || 0,
+      metodo: g.metodo || "", nota: g.nota || "", usuario: g.usuario || "",
+      fecha: g.fecha
+    }));
+  }
+
+  if (tablas.has("compras")) {
+    const { data: cps } = await nube.from("compras")
+      .select("*").order("fecha", { ascending: false }).limit(1000);
+    salida.compras = (cps || []).map((c) => ({
+      id: c.id, negocioId: c.negocio_id || "", proveedor: c.proveedor || "",
+      comprobante: c.comprobante || "", total: Number(c.total) || 0,
+      items: c.items || [], nota: c.nota || "", usuario: c.usuario || "",
+      fecha: c.fecha
+    }));
   }
 
   return salida;
@@ -5432,6 +5587,28 @@ async function traerDeLaNube(quienEntro) {
       nube.from("reposicion_pendiente").select("*"),
       nube.from("reposiciones_hechas").select("*").order("fecha", { ascending: false }).limit(500)
     ]);
+
+  // Si alguna consulta volvió con error, se avisa CUÁL: sin esto la app decía
+  // sólo "no se pudieron traer los datos" y no había forma de saber si era
+  // un permiso, una tabla que no existe o el proyecto dormido.
+  const revisar = [
+    ["negocios", negs], ["categorias", cats], ["proveedores", provs],
+    ["listas_precio", listas], ["ajustes", ajustes], ["usuarios", usuarios],
+    ["cajas_abiertas", cajasNube], ["caja_cierres", cierresNube],
+    ["transferencias", transfNube], ["movimientos_stock", movStockNube],
+    ["pedidos", pedidosNube], ["notas_credito", notasNube],
+    ["cambios", cambiosNube], ["devoluciones_reparto", devolNube],
+    ["gastos", gastosNube], ["compras", comprasNube],
+    ["reposicion_pendiente", repoNube], ["reposiciones_hechas", repoHechasNube]
+  ];
+  const fallaron = revisar
+    .filter(([, r]) => r && r.error)
+    .map(([nombre, r]) => nombre + ": " + (r.error.message || r.error.code || "sin detalle"));
+  if (fallaron.length) {
+    console.error("Tablas que fallaron:", fallaron);
+    throw new Error("La base rechazó " + fallaron.length + " consulta(s) — " + fallaron.join(" | "));
+  }
+
   const [ventas, items] = ventasEItems;
 
   // Las variantes y los renglones se agrupan por su dueño
