@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.884";
+const VERSION_APP = "9.885";
 
 const NUBE_URL = "https://fefepzxybghhsfdxnknq.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlZmVwenh5YmdoaHNmZHhua25xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg0MTQ4MDgsImV4cCI6MjEwMzk5MDgwOH0.68bWjyux1LfdxEnbkTAbNzIfuUTAj4UAos44YAQKbEg";
@@ -4865,20 +4865,6 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
     }
   }
 
-  // ── Cuenta corriente ──────────────────────────────────────
-  const movsAntes = new Set((antes.movimientosCC || []).map((m) => m.id));
-  const movsNuevos = (despues.movimientosCC || []).filter((m) => !movsAntes.has(m.id));
-  for (let i = 0; i < movsNuevos.length; i += 200) {
-    const tanda = movsNuevos.slice(i, i + 200).filter((m) => m.clienteId);
-    if (!tanda.length) continue;
-    const { error } = await nube.from("movimientos_cc").insert(tanda.map((m) => ({
-      cliente_id: idRealCliente(m.clienteId), tipo: m.tipo, monto: m.monto,
-      concepto: m.concepto || null, metodo: m.metodo || null,
-      fecha: m.fecha, usuario: m.usuario || null
-    })));
-    if (error) throw new Error("Al guardar el movimiento de cuenta: " + error.message);
-  }
-
   // ── Equipo ────────────────────────────────────────────────
   // El nombre, el rol y a qué locales entra cada uno. La cuenta de acceso se
   // crea aparte en el panel de la base: acá sólo se guarda quién es.
@@ -4935,6 +4921,23 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
   const clisEnLaBase = clis.borrados.filter(esIdDeLaBase);
   for (let i = 0; i < clisEnLaBase.length; i += 30) {
     await nube.from("clientes").delete().in("id", clisEnLaBase.slice(i, i + 30));
+  }
+
+  // ── Cuenta corriente ──────────────────────────────────────
+  // Va DESPU\u00C9S de los clientes: al importar una planilla, los clientes y sus
+  // movimientos llegan juntos, y el movimiento necesita el id que la base le
+  // acaba de dar al cliente (antes se mandaba el provisorio y fallaba).
+  const movsAntes = new Set((antes.movimientosCC || []).map((m) => m.id));
+  const movsNuevos = (despues.movimientosCC || []).filter((m) => !movsAntes.has(m.id));
+  for (let i = 0; i < movsNuevos.length; i += 200) {
+    const tanda = movsNuevos.slice(i, i + 200).filter((m) => m.clienteId);
+    if (!tanda.length) continue;
+    const { error } = await nube.from("movimientos_cc").insert(tanda.map((m) => ({
+      cliente_id: idRealCliente(m.clienteId), tipo: m.tipo, monto: m.monto,
+      concepto: m.concepto || null, metodo: m.metodo || null,
+      fecha: m.fecha, usuario: m.usuario || null
+    })));
+    if (error) throw new Error("Al guardar el movimiento de cuenta: " + error.message);
   }
 
   // ── Negocios ──────────────────────────────────────────────
