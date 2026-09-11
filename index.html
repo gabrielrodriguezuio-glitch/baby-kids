@@ -11297,7 +11297,7 @@ const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ onCambiar, onEnt
 function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambios }) {
   const isMobilePos = useIsMobile();
   // Todo el punto de venta trabaja sobre el stock del negocio activo
-  const negocioId = (negocioActivo(data) || { id: "principal" }).id;
+  const negocioId = negocioActivo(data).id;
   // Varios carritos en paralelo: cada uno con su cliente, su lista y sus extras.
   // Sirve para atender a alguien que se fue a buscar otro talle sin perder lo cargado.
   // Los carritos quedan guardados en el dispositivo: si la app se cierra sin
