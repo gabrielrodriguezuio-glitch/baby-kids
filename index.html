@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.894";
+const VERSION_APP = "9.895";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -12467,15 +12467,31 @@ const qtyBtnStyle = {
 // la posición del botón: el contenedor de la tabla recorta para poder
 // desplazarse, y eso cortaba los menús que quedaban adentro.
 function MenuFila({ ancla, onClose, children }) {
+  // onClose es una función nueva en cada render; con un ref el oyente se
+  // registra una sola vez y siempre llama a la versión vigente.
+  const cerrarRef = React.useRef(onClose);
+  cerrarRef.current = onClose;
+  const menuRef = React.useRef(null);
+
   useEffect(() => {
-    const cerrar = () => onClose();
+    // Un desplazamiento en los primeros instantes no es el usuario moviendo la
+    // página: es el navegador acomodando el botón de los tres puntos al darle
+    // foco (la columna está al borde de una tabla que se desplaza de costado).
+    // Sin este margen, el menú se cerraba en el mismo instante en que se abría.
+    const abiertoEn = Date.now();
+    const cerrar = (e) => {
+      if (Date.now() - abiertoEn < 350) return;
+      // Desplazar la lista dentro del propio menú tampoco lo cierra
+      if (menuRef.current && e && e.target && e.target.nodeType === 1 && menuRef.current.contains(e.target)) return;
+      cerrarRef.current();
+    };
     document.addEventListener("scroll", cerrar, true);
     window.addEventListener("resize", cerrar);
     return () => {
       document.removeEventListener("scroll", cerrar, true);
       window.removeEventListener("resize", cerrar);
     };
-  }, [onClose]);
+  }, []);
 
   if (!ancla) return null;
   const ancho = 190;
@@ -12490,6 +12506,7 @@ function MenuFila({ ancla, onClose, children }) {
   const menu = React.createElement(
     "div",
     {
+      ref: menuRef,
       onClick: (e) => e.stopPropagation(),
       style: {
         position: "fixed",
