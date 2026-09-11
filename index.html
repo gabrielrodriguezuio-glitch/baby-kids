@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.906";
+const VERSION_APP = "9.907";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -16043,12 +16043,6 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       }, registrando ? "Cerrar" : "Registrar pago"),
       React.createElement(Button, {
         tone: "ghost",
-        onClick: () => imprimirEstadoCuenta(data, cliente, (data.negocio && data.negocio.nombre) || ""),
-        title: "Imprimir o guardar como PDF",
-        style: { padding: "11px 18px" }
-      }, React.createElement(Receipt, { size: 15 }), " Estado de cuenta"),
-      React.createElement(Button, {
-        tone: "ghost",
         onClick: imprimirBluetooth,
         disabled: estadoBT === "conectando" || estadoBT === "imprimiendo",
         title: "Imprimir en impresora t\u00E9rmica Bluetooth",
@@ -21207,9 +21201,7 @@ function RemitoReposicionModal({ data, registro, onClose }) {
         "div",
         { style: { display: "flex", gap: 9 } },
         React.createElement(Button, { tone: "ghost", onClick: () => setEnviar(true), style: { padding: "11px 18px" } },
-          React.createElement(MessageCircle, { size: 15 }), " WhatsApp"),
-        React.createElement(Button, { onClick: imprimir, style: { padding: "11px 20px" } },
-          React.createElement(Receipt, { size: 15 }), " Imprimir")
+          React.createElement(MessageCircle, { size: 15 }), " WhatsApp")
       )
     ),
     enviar && React.createElement(EnviarWhatsAppModal, {
@@ -21943,8 +21935,7 @@ function RemitoTransferencia({ data, transferencia, negocios, onClose }) {
             }
           },
           [["Enviar PDF", () => { setVerPapel(false); compartirPDF(); }],
-           ["Mandar como texto", () => { setVerPapel(false); setEnviarWA(true); }],
-           ["Imprimir", () => { setVerPapel(false); imprimir(); }]]
+           ["Mandar como texto", () => { setVerPapel(false); setEnviarWA(true); }]]
             .map(([label, fn]) => React.createElement("button", {
               key: label, onClick: fn,
               style: { display: "block", width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer", color: "var(--ink)", fontSize: 13, padding: "10px 12px", borderRadius: 8, fontFamily: "'Inter', sans-serif" }
@@ -22940,9 +22931,6 @@ function NotaCreditoModal({ data, nota, onClose }) {
       // archivar o mandar por WhatsApp.
       React.createElement(Button, { onClick: imprimirBluetooth, disabled: /Conectando|Reconectando|Dibujando/.test(estadoBT), style: { padding: "12px 18px" } },
         React.createElement(Receipt, { size: 15 }), " ", /Conectando|Reconectando|Dibujando/.test(estadoBT) ? estadoBT : "Imprimir por Bluetooth"),
-      React.createElement(Button, { tone: "ghost", onClick: () => imprimir(true), style: { padding: "12px 18px" } },
-        React.createElement(Receipt, { size: 15 }), " Ticket (navegador)"),
-      React.createElement(Button, { tone: "ghost", onClick: () => imprimir(false), style: { padding: "12px 16px" } }, "Hoja A4"),
       React.createElement(Button, { tone: "ghost", onClick: compartirPDF, disabled: !!estadoPDF, style: { padding: "12px 16px" } },
         React.createElement(ArrowDownCircle, { size: 15 }), " ", estadoPDF || "PDF"),
       estadoBT && !/Conectando|Reconectando|Dibujando/.test(estadoBT) && React.createElement("p", { style: { width: "100%", margin: "4px 0 0", fontSize: 12, color: /No se pudo/.test(estadoBT) ? "var(--rose)" : "var(--muted)" } }, estadoBT),
@@ -29955,7 +29943,6 @@ function CajaReportes({ data, rango, persist, dataReal }) {
                       { ancla: menu.rect, onClose: () => setMenu(null) },
                       [
                         ["Ver el detalle", () => { setDetalle(c); setMenu(null); }, Search],
-                        ["Imprimir el cierre", () => { imprimirCierre(c); setMenu(null); }, Receipt],
                         // S\u00F3lo el due\u00F1o puede borrar un cierre (uno duplicado, de prueba o mal hecho)
                         ...(persist && esPropietario(real) ? [["Eliminar cierre", () => { setMenu(null); eliminarCierre(c); }, Trash2, true]] : [])
                       ].map(([texto, fn, Icono, peligro]) => React.createElement("button", {
@@ -30279,8 +30266,6 @@ function DetalleCierreModal({ cierre, onClose, data }) {
     React.createElement(
       "div",
       { style: { display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 20 } },
-      React.createElement(Button, { tone: "ghost", onClick: () => imprimirCierre(cierre), style: { padding: "12px 20px" } },
-        React.createElement(Receipt, { size: 15 }), " Imprimir"),
       React.createElement(Button, { onClick: onClose, style: { padding: "12px 24px" } }, "Cerrar")
     )
   );
