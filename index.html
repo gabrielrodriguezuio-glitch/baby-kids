@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.907";
+const VERSION_APP = "9.908";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -5074,16 +5074,24 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
   const repoHechasAntes = new Set((antes.reposiciones || []).map((r) => r.id));
   const repoHechasNuevas = (despues.reposiciones || []).filter((r) => !repoHechasAntes.has(r.id));
   if (repoHechasNuevas.length) {
-    const { error } = await nube.from("reposiciones_hechas").insert(repoHechasNuevas.map((r) => ({
+    // upsert y no insert: si el guardado se reintenta (mala señal, o la misma
+    // reposición llegó por realtime antes de terminar de subir), la fila se
+    // pisa a sí misma en vez de explotar con duplicate key.
+    const { error } = await nube.from("reposiciones_hechas").upsert(repoHechasNuevas.map((r) => ({
       id: r.id, remito: r.remito, fecha: r.fecha, hora: r.hora || "",
       negocio_id: r.negocioId || null, negocio_nombre: r.negocioNombre || "",
       origen: r.origen || null, origen_nombre: r.origenNombre || "",
       usuario: r.usuario || "", items: r.items || [],
       unidades: r.unidades || 0, pendiente_despues: r.pendienteDespues || 0
-    })));
+    })), { onConflict: "id" });
     if (error) {
-      console.error("No se pudo guardar el remito de reposición:", error.message);
-      if (avisarProblema) avisarProblema("El remito de reposición no se guardó en la nube: " + error.message);
+      console.error("No se pudo guardar el remito de reposici\u00F3n:", error.message);
+      // Si la tabla todavía no existe, el mensaje crudo de Postgres no dice
+      // qué hacer. Se traduce para que se entienda sin mirar la consola.
+      const faltaTabla = /does not exist|schema cache|PGRST205|42P01/i.test(error.message || "");
+      if (avisarProblema) avisarProblema(faltaTabla
+        ? "El remito qued\u00F3 guardado en este dispositivo pero no en la nube: falta crear la tabla reposiciones_hechas en Supabase."
+        : "El remito de reposici\u00F3n no se guard\u00F3 en la nube: " + error.message);
     }
   }
 
