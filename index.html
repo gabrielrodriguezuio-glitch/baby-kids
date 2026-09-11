@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.886";
+const VERSION_APP = "9.887";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -4885,12 +4885,23 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
         activo: u.activo !== false,
         negocios: (u.negocios && u.negocios.length) ? u.negocios : null
       };
-      // Sólo se actualiza si la base lo conoce. Un integrante recién creado
-      // todavía tiene el id de la app, y la base no lo reconoce.
-      const { error } = (previo && esIdDeLaBase(u.id))
-        ? await nube.from("usuarios").update(fila).eq("id", u.id)
-        : await nube.from("usuarios").insert(fila);
-      if (error) throw new Error(error.message);
+      // Con id de la base se actualiza por id. Si el id es provisorio pero
+      // ya tiene cuenta (lo creó el servidor con crear-usuario), la ficha
+      // YA existe: se actualiza por auth_id. Insertarla de nuevo chocaba
+      // con "usuarios_auth_id_key" en cada guardado.
+      const idAuth = u.auth_id || u.authId || null;
+      let res;
+      if (esIdDeLaBase(u.id)) {
+        res = await nube.from("usuarios").update(fila).eq("id", u.id);
+      } else if (idAuth) {
+        res = await nube.from("usuarios").update(fila).eq("auth_id", idAuth).select("id");
+        if (!res.error && !(res.data || []).length) {
+          res = await nube.from("usuarios").insert({ ...fila, auth_id: idAuth });
+        }
+      } else {
+        res = await nube.from("usuarios").insert(fila);
+      }
+      if (res.error) throw new Error(res.error.message);
     } catch (e) {
       console.error("No se pudo guardar el usuario", e);
       if (avisarProblema) avisarProblema("No se pudo guardar el integrante: " +
@@ -25012,8 +25023,14 @@ function UsuariosView({ data, persist, senalUsuario, senalInvitaciones, senalRol
     if (!resp.ok || r.error) {
       throw new Error(r.error || "No se pudo crear el usuario. Probá de nuevo.");
     }
-    // Reflejar el nuevo en la lista local, ya con su auth_id del servidor
-    const nuevo = { id: uid(), auth_id: r.auth_id, nombre: f.nombre,
+    // El servidor ya guardó la ficha: se toma su id real. Con un id
+    // provisorio, el próximo guardado la mandaba como nueva y chocaba.
+    let idReal = null;
+    try {
+      const { data: ficha } = await nube.from("usuarios").select("id").eq("auth_id", r.auth_id).maybeSingle();
+      idReal = ficha && ficha.id;
+    } catch (e) {}
+    const nuevo = { id: idReal || uid(), auth_id: r.auth_id, nombre: f.nombre,
       usuario: f.usuario || handleDesde(f.nombre), email: f.email,
       rol: f.rol, negocios: f.negocios || [], telefono: f.telefono || "",
       activo: true, ultimoAcceso: todayISO(), esVos: false };
