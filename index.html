@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.905";
+const VERSION_APP = "9.906";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -139,7 +139,7 @@ const nube = createClient(NUBE_URL, NUBE_KEY, {
 });
 import { createPortal } from "react-dom";
 import { Tag, Package, ShoppingBag, Users, Wallet, Plus, Trash2, X, AlertTriangle, Search, Pencil, TrendingUp, TrendingDown, Minus, CreditCard, Banknote, ArrowRightLeft, Check, ShoppingCart, Share2, UserCog, BarChart3, MessageCircle, ArrowDownCircle, ArrowUpCircle, Truck, QrCode, ScanBarcode, Receipt, DollarSign, ChevronDown, ChevronLeft, ChevronRight, Lock, Unlock, Calculator, SlidersHorizontal, LayoutGrid, Archive, MoreHorizontal, Sparkles, Clock3, Boxes, Tags, Sun, Moon, Crown, UserPlus, Mail,
-  Menu
+  Menu, Bluetooth
 } from "lucide-react";
 const STORAGE_KEY = "control-tienda-ropa-v1";
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -15281,6 +15281,85 @@ const imprimirEstadoCuenta = (data, cliente, negocioNombre) => {
   return abrirImpresion("Estado de cuenta · " + cliente.nombre, estilos, cuerpo);
 };
 
+// Versión ESC/POS para impresora térmica Bluetooth
+const escposEstadoCuenta = (data, cliente, negocioNombre) => {
+  const ANCHO = 32;
+  const negocio = data.negocio || {};
+  const movs = (data.movimientosCC || []).filter((m) => m.clienteId === cliente.id);
+  const ventas = (data.ventas || []).filter((v) => v.clienteId === cliente.id && !esDevolucion(v));
+  const saldo = saldoDeCliente(data, cliente.id);
+
+  const filas = [
+    ...ventas.map((v) => ({
+      fecha: v.fecha,
+      concepto: (v.items || []).map((it) => it.cantidad + "x " + it.nombre).join(", ") || "Venta",
+      tipo: v.metodoPago === "cuenta_corriente" ? "Cuenta" : "Pagado",
+      debe: v.metodoPago === "cuenta_corriente" ? v.total : 0,
+      haber: v.metodoPago !== "cuenta_corriente" ? v.total : 0
+    })),
+    ...movs.filter((m) => m.tipo !== "cargo").map((m) => ({
+      fecha: m.fecha,
+      concepto: m.concepto || "Pago recibido",
+      tipo: "Pago", debe: 0, haber: m.monto
+    }))
+  ].sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+
+  const linea = (izq, der) => {
+    izq = String(izq || "");
+    der = String(der || "");
+    const esp = Math.max(1, ANCHO - izq.length - der.length);
+    return izq + " ".repeat(esp) + der;
+  };
+  const separador = "-".repeat(ANCHO);
+
+  const out = [];
+  out.push(CENTRO + NEGRITA + (negocioNombre || negocio.nombre || "Mi negocio").toUpperCase() + SIN_NEGRITA);
+  out.push(CENTRO + "ESTADO DE CUENTA");
+  out.push(IZQ + separador);
+  out.push(NEGRITA + escposEncode(cliente.nombre) + SIN_NEGRITA);
+  if (cliente.telefono) out.push(escposEncode(cliente.telefono));
+  out.push("Al " + fechaNumerica(todayISO()));
+  out.push(separador);
+
+  if (filas.length === 0) {
+    out.push("Sin movimientos registrados.");
+  } else {
+    filas.forEach((f) => {
+      // Fecha + tipo en una línea
+      out.push(linea(fechaNumerica(f.fecha), f.tipo));
+      // Concepto (cortado si no entra)
+      const concepto = escposEncode(String(f.concepto || "").slice(0, ANCHO - 2));
+      out.push("  " + concepto);
+      // Debe / Haber
+      if (f.debe > 0) out.push(linea("  Deuda", money(f.debe)));
+      if (f.haber > 0) out.push(linea("  Pago", money(f.haber)));
+      out.push("");
+    });
+  }
+
+  out.push(separador);
+  out.push(ALTO + linea(saldo > 0 ? "SALDO PENDIENTE" : "SALDO", saldo > 0 ? money(saldo) : "AL DIA") + NORMAL);
+  out.push(separador);
+  if (negocio.mensaje) out.push(CENTRO + escposEncode(negocio.mensaje));
+  out.push(IZQ + ESC + "!" + "\x00" + GS + "!" + "\x00");
+  out.push(""); out.push(""); out.push("");
+  return escposEncode(out.join("\n"));
+};
+
+// Función que conecta y manda el estado de cuenta a la impresora BLE
+async function imprimirEstadoCuentaBluetooth(data, cliente, negocioNombre, avisarEstado) {
+  if (!window.__blePrinter || !window.__blePrinter.device) {
+    avisarEstado && avisarEstado("Conectando con la impresora\u2026");
+    const nombre = await conectarImpresoraBLE();
+    avisarEstado && avisarEstado("Conectado a " + nombre + ". Imprimiendo\u2026");
+  } else if (!window.__blePrinter.device.gatt.connected) {
+    avisarEstado && avisarEstado("Reconectando con la impresora\u2026");
+    await caracteristicaImpresora();
+  }
+  avisarEstado && avisarEstado("Imprimiendo estado de cuenta\u2026");
+  await imprimirEscPos(escposEstadoCuenta(data, cliente, negocioNombre));
+}
+
 // Versión corta para el chat: el PDF no se puede adjuntar desde un enlace
 const textoEstadoCuenta = (data, cliente, negocioNombre) => {
   const ventas = (data.ventas || []).filter((v) => v.clienteId === cliente.id && !esDevolucion(v));
@@ -15808,6 +15887,25 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
   const [enviarCuenta, setEnviarCuenta] = useState(false);
   const [movForm, setMovForm] = useState({ tipo: "pago", monto: "", concepto: "", metodo: "Efectivo" });
   const [movError, setMovError] = useState("");
+  const [estadoBT, setEstadoBT] = useState("idle"); // idle | conectando | imprimiendo | ok | error
+  const [mensajeBT, setMensajeBT] = useState("");
+
+  const imprimirBluetooth = async () => {
+    setEstadoBT("conectando");
+    setMensajeBT("");
+    try {
+      await imprimirEstadoCuentaBluetooth(
+        data, cliente, (data.negocio && data.negocio.nombre) || "",
+        (msg) => { setMensajeBT(msg); setEstadoBT("imprimiendo"); }
+      );
+      setEstadoBT("ok");
+      setMensajeBT("Impreso correctamente.");
+      setTimeout(() => { setEstadoBT("idle"); setMensajeBT(""); }, 3000);
+    } catch (e) {
+      setEstadoBT("error");
+      setMensajeBT(String((e && e.message) || e));
+    }
+  };
 
   const movimientos = (data.movimientosCC || []).filter((m) => m.clienteId === cliente.id);
   // Solo las ventas en cuenta corriente son deuda. Una venta pagada al contado
@@ -15938,7 +16036,7 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
     // Las acciones en su propia fila: entran completas y se leen con su nombre
     React.createElement(
       "div",
-      { style: { display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 18 } },
+      { style: { display: "flex", gap: 9, flexWrap: "wrap", marginBottom: mensajeBT ? 8 : 18 } },
       React.createElement(Button, {
         onClick: () => setRegistrando(!registrando),
         style: { padding: "11px 20px" }
@@ -15951,11 +16049,33 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       }, React.createElement(Receipt, { size: 15 }), " Estado de cuenta"),
       React.createElement(Button, {
         tone: "ghost",
+        onClick: imprimirBluetooth,
+        disabled: estadoBT === "conectando" || estadoBT === "imprimiendo",
+        title: "Imprimir en impresora t\u00E9rmica Bluetooth",
+        style: { padding: "11px 18px" }
+      },
+        React.createElement(Bluetooth, { size: 15 }),
+        " ", estadoBT === "conectando" ? "Conectando\u2026" : estadoBT === "imprimiendo" ? "Imprimiendo\u2026" : "Bluetooth"
+      ),
+      React.createElement(Button, {
+        tone: "ghost",
         onClick: () => setEnviarCuenta(true),
         title: "Mandarle el detalle por WhatsApp",
         style: { padding: "11px 18px" }
       }, React.createElement(MessageCircle, { size: 15 }), " WhatsApp")
     ),
+    // Feedback del Bluetooth (error o progreso)
+    mensajeBT && React.createElement("div", {
+      style: {
+        fontSize: 12.5, marginBottom: 14, padding: "8px 12px", borderRadius: 8,
+        color: estadoBT === "error" ? "var(--rose)" : estadoBT === "ok" ? "var(--sage)" : "var(--muted)",
+        background: estadoBT === "error"
+          ? "color-mix(in srgb, var(--rose) 10%, transparent)"
+          : estadoBT === "ok"
+          ? "color-mix(in srgb, var(--sage) 10%, transparent)"
+          : "var(--surface-2)"
+      }
+    }, mensajeBT),
 
     // El formulario aparece solo cuando se lo pide
     registrando && React.createElement(
