@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.895";
+const VERSION_APP = "9.896";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -15207,30 +15207,107 @@ function ClienteFormModal({ inicial, listasPrecio, onGuardar, onClose }) {
 
 // ===== Estado de cuenta del cliente =====
 // Todo lo que compró y todo lo que pagó, con el saldo al pie. Se imprime o se
-// guarda como PDF, y se puede mandar por WhatsApp resumido.
-const imprimirEstadoCuenta = (data, cliente, negocioNombre) => {
+// guarda como PDF, sale por la impresora térmica Bluetooth, y se puede mandar
+// por WhatsApp resumido.
+
+// Las filas del estado de cuenta, ordenadas por fecha. Se calculan una sola
+// vez y las usan las tres salidas (PDF, térmica, chat).
+const filasEstadoCuenta = (data, cliente) => {
   const movs = (data.movimientosCC || []).filter((m) => m.clienteId === cliente.id);
   const ventas = (data.ventas || []).filter((v) => v.clienteId === cliente.id && !esDevolucion(v));
-  const saldo = saldoDeCliente(data, cliente.id);
-
-  const filas = [
+  return [
     ...ventas.map((v) => ({
       fecha: v.fecha, hora: v.horaTexto || "",
-      concepto: (v.items || []).map((it) =>
-        it.cantidad + "× " + it.nombre +
+      // Cada producto por separado: la salida decide cómo juntarlos
+      items: (v.items || []).map((it) =>
+        it.cantidad + "x " + it.nombre +
         ([it.talla, it.color].filter(Boolean).length
-          ? " (" + [it.talla && "Talle " + it.talla, it.color].filter(Boolean).join(" · ") + ")" : "")
-      ).join("<br>") || "Venta",
+          ? " (" + [it.talla && "Talle " + it.talla, it.color].filter(Boolean).join(" · ") + ")" : "")),
       tipo: v.metodoPago === "cuenta_corriente" ? "A cuenta" : (METODO_LABELS[v.metodoPago] || "Contado"),
       debe: v.metodoPago === "cuenta_corriente" ? v.total : 0,
       haber: v.metodoPago === "cuenta_corriente" ? 0 : v.total
     })),
     ...movs.filter((m) => m.tipo !== "cargo").map((m) => ({
       fecha: m.fecha, hora: "",
-      concepto: m.concepto || "Pago recibido",
+      items: [m.concepto || "Pago recibido"],
       tipo: "Pago", debe: 0, haber: m.monto
     }))
   ].sort((a, b) => (a.fecha + a.hora).localeCompare(b.fecha + b.hora));
+};
+
+// Versión para la impresora térmica de 58 mm: 32 columnas, mismos comandos
+// ESC/POS que el ticket, así sale con la misma letra y el mismo resaltado.
+const construirEstadoCuentaTexto = (data, cliente, negocioNombre) => {
+  const ANCHO = 32;
+  const negocio = data.negocio || {};
+  const filas = filasEstadoCuenta(data, cliente);
+  const saldo = saldoDeCliente(data, cliente.id);
+  const totalDebe = filas.reduce((a, f) => a + (f.debe || 0), 0);
+  const totalPago = filas.reduce((a, f) => a + (f.haber || 0), 0);
+
+  const linea = (izq, der) => {
+    izq = izq || ""; der = der || "";
+    const espacio = Math.max(1, ANCHO - izq.length - der.length);
+    return izq + " ".repeat(espacio) + der;
+  };
+  const partir = (texto, ancho) => {
+    const palabras = String(texto || "").split(" ");
+    const lineas = [];
+    let actual = "";
+    palabras.forEach((pal) => {
+      if (!actual) { actual = pal; return; }
+      if ((actual + " " + pal).length <= ancho) actual += " " + pal;
+      else { lineas.push(actual); actual = pal; }
+    });
+    if (actual) lineas.push(actual);
+    return lineas.length ? lineas : [""];
+  };
+  const dashes = SUBRAYADO + " ".repeat(ANCHO) + SIN_SUBRAYADO;
+  const out = [];
+  out.push(CURSIVA + NEGRITA);
+
+  out.push(CENTRO + GRANDE + NEGRITA + (negocioNombre || negocio.nombre || "Mi negocio").toUpperCase() + NORMAL + SIN_NEGRITA);
+  if (negocio.telefono) out.push(CENTRO + "Tel " + negocio.telefono);
+  out.push(CENTRO + ALTO + "ESTADO DE CUENTA" + NORMAL);
+  out.push(IZQ + dashes);
+
+  out.push(NEGRITA + cliente.nombre + NORMAL);
+  if (cliente.telefono) out.push("Tel " + cliente.telefono);
+  out.push(linea("Al", fecha(todayISO())));
+  out.push(dashes);
+
+  if (!filas.length) {
+    out.push("Sin movimientos registrados.");
+  } else {
+    filas.forEach((f) => {
+      // Fecha y tipo a la izquierda, el importe a la derecha: lo que debe con
+      // signo, lo que pagó sin nada, para que se distingan de un vistazo.
+      const importe = f.debe ? "+" + money(f.debe) : "-" + money(f.haber);
+      out.push(NEGRITA + linea(fecha(f.fecha) + " " + f.tipo, importe) + SIN_NEGRITA);
+      // El punto medio no es ASCII y la impresora lo borra: va un guion
+      f.items.forEach((it) => partir(it.replace(/ \u00B7 /g, " - "), ANCHO - 2).forEach((l) => out.push("  " + l)));
+    });
+  }
+  out.push(dashes);
+
+  out.push(linea("Total a cuenta", money(totalDebe)));
+  out.push(linea("Total pagado", money(totalPago)));
+  out.push("");
+  out.push(ALTO + linea(saldo > 0 ? "SALDO PENDIENTE" : "SALDO", saldo > 0 ? money(saldo) : "AL DIA") + NORMAL);
+  out.push(dashes);
+  out.push(CENTRO + (saldo > 0 ? "Podes abonarlo en el local" : "Gracias!"));
+  if (saldo > 0) out.push(CENTRO + "o por transferencia.");
+  out.push(IZQ + SIN_CURSIVA + ESC + "!" + "\x00" + GS + "!" + "\x00");
+  out.push("");
+  out.push("");
+  return escposEncode(out.join("\n"));
+};
+
+const imprimirEstadoCuenta = (data, cliente, negocioNombre) => {
+  const saldo = saldoDeCliente(data, cliente.id);
+  const filas = filasEstadoCuenta(data, cliente).map((f) => ({
+    ...f, concepto: f.items.map(escaparHTML).join("<br>") || "Venta"
+  }));
 
   const estilos =
     "h1{font-size:17pt;margin:0 0 1mm}.sub{font-size:9.5pt;color:#555;margin-bottom:7mm}" +
@@ -15787,9 +15864,113 @@ function BorrarClientesModal({ data, persist, onClose }) {
   );
 }
 
+// Modal del estado de cuenta: vista previa y tres salidas. La térmica
+// Bluetooth es la que se usa en el mostrador; el PDF sirve para archivar o
+// mandar por mail; WhatsApp para el cliente que no está.
+function EstadoCuentaModal({ data, cliente, onClose }) {
+  const negocioNombre = (data.negocio && data.negocio.nombre) || "";
+  const [enviarWA, setEnviarWA] = useState(false);
+  const [estado, setEstado] = useState("idle");
+  const [mensaje, setMensaje] = useState("");
+  const filas = filasEstadoCuenta(data, cliente);
+  const saldo = saldoDeCliente(data, cliente.id);
+  const totalDebe = filas.reduce((a, f) => a + (f.debe || 0), 0);
+  const totalPago = filas.reduce((a, f) => a + (f.haber || 0), 0);
+
+  // Mismo camino que el ticket de venta: si ya se emparejó, reconecta sola
+  const imprimirBluetooth = async () => {
+    setMensaje("");
+    try {
+      if (!window.__blePrinter || !window.__blePrinter.device) {
+        setEstado("conectando");
+        const nombre = await conectarImpresoraBLE();
+        setMensaje("Conectado a " + nombre + ". Imprimiendo\u2026");
+      } else if (!window.__blePrinter.device.gatt.connected) {
+        setEstado("conectando");
+        setMensaje("Reconectando con la impresora\u2026");
+        await caracteristicaImpresora();
+      }
+      setEstado("imprimiendo");
+      await imprimirEscPos(construirEstadoCuentaTexto(data, cliente, negocioNombre));
+      setEstado("ok");
+      setMensaje("Estado de cuenta enviado a la impresora.");
+    } catch (e) {
+      setEstado("error");
+      setMensaje(e && e.message ? e.message : "No se pudo imprimir.");
+    }
+  };
+
+  const mono = { fontFamily: "'IBM Plex Mono', monospace" };
+  const ocupado = estado === "conectando" || estado === "imprimiendo";
+
+  return React.createElement(
+    ModalOverlay,
+    { width: 420 },
+    React.createElement(ModalHeader, { icon: Receipt, title: "Estado de cuenta", onClose }),
+
+    // Vista previa: lo mismo que va a salir del papel, en pantalla
+    React.createElement(
+      "div",
+      { style: { background: "var(--surface-2)", borderRadius: 12, padding: "14px 16px", maxHeight: 340, overflowY: "auto" } },
+      React.createElement("div", { style: { fontSize: 14, fontWeight: 700 } }, cliente.nombre),
+      React.createElement("div", { style: { fontSize: 12, color: "var(--muted)", marginBottom: 10 } },
+        (cliente.telefono ? cliente.telefono + " \u00B7 " : "") + "al " + fechaNumerica(todayISO())),
+      filas.length === 0
+        ? React.createElement("div", { style: { fontSize: 13, color: "var(--muted)" } }, "Sin movimientos registrados.")
+        : filas.map((f, i) => React.createElement(
+            "div",
+            { key: i, style: { padding: "7px 0", borderBottom: "1px solid var(--line)" } },
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13 } },
+              React.createElement("span", { style: { fontWeight: 600 } }, fechaNumerica(f.fecha) + " \u00B7 " + f.tipo),
+              React.createElement("span", { style: { ...mono, fontWeight: 650, color: f.debe ? "var(--rose)" : "var(--sage)" } },
+                f.debe ? "+" + money(f.debe) : "\u2212" + money(f.haber))),
+            f.items.map((it, k) => React.createElement("div", { key: k, style: { fontSize: 12, color: "var(--muted)", marginTop: 2 } }, it))
+          )),
+      React.createElement("div", { style: { marginTop: 12, fontSize: 12.5, color: "var(--muted)", display: "flex", justifyContent: "space-between" } },
+        React.createElement("span", null, "Total a cuenta"), React.createElement("span", { style: mono }, money(totalDebe))),
+      React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", display: "flex", justifyContent: "space-between", marginTop: 3 } },
+        React.createElement("span", null, "Total pagado"), React.createElement("span", { style: mono }, money(totalPago))),
+      React.createElement("div", { style: { marginTop: 10, paddingTop: 10, borderTop: "2px solid var(--ink)", display: "flex", justifyContent: "space-between", fontSize: 15, fontWeight: 700 } },
+        React.createElement("span", null, saldo > 0 ? "Saldo pendiente" : "Saldo"),
+        React.createElement("span", { style: { ...mono, color: saldo > 0 ? "var(--rose)" : "var(--sage)" } }, saldo > 0 ? money(saldo) : "Al d\u00EDa"))
+    ),
+
+    mensaje && React.createElement("p", { style: { fontSize: 12, marginTop: 10, color: estado === "error" ? "var(--rose)" : "var(--muted)" } }, mensaje),
+
+    React.createElement(
+      "div",
+      { style: { display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" } },
+      React.createElement(Button, {
+        onClick: imprimirBluetooth, disabled: ocupado,
+        style: { flex: 1, justifyContent: "center", minWidth: 170 }
+      }, React.createElement(Receipt, { size: 14 }), " ",
+        estado === "conectando" ? "Conectando\u2026" : estado === "imprimiendo" ? "Imprimiendo\u2026" : "Imprimir por Bluetooth"),
+      React.createElement(Button, {
+        tone: "ghost",
+        onClick: () => imprimirEstadoCuenta(data, cliente, negocioNombre),
+        title: "Imprimir en A4 o guardar como PDF",
+        style: { justifyContent: "center" }
+      }, "PDF / A4"),
+      React.createElement(Button, {
+        tone: "ghost", onClick: () => setEnviarWA(true),
+        style: { justifyContent: "center" }
+      }, React.createElement(MessageCircle, { size: 14 }), " WhatsApp")
+    ),
+
+    enviarWA && React.createElement(EnviarWhatsAppModal, {
+      data,
+      titulo: "Enviar el estado de cuenta",
+      texto: textoEstadoCuenta(data, cliente, negocioNombre),
+      sugerido: cliente.telefono || "",
+      onClose: () => setEnviarWA(false)
+    })
+  );
+}
+
 function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
   const [registrando, setRegistrando] = useState(false);
   const [enviarCuenta, setEnviarCuenta] = useState(false);
+  const [verCuenta, setVerCuenta] = useState(false);
   const [movForm, setMovForm] = useState({ tipo: "pago", monto: "", concepto: "", metodo: "Efectivo" });
   const [movError, setMovError] = useState("");
 
@@ -15918,8 +16099,8 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       }, registrando ? "Cerrar" : "Registrar pago"),
       React.createElement(Button, {
         tone: "ghost",
-        onClick: () => imprimirEstadoCuenta(data, cliente, (data.negocio && data.negocio.nombre) || ""),
-        title: "Imprimir o guardar como PDF",
+        onClick: () => setVerCuenta(true),
+        title: "Ver, imprimir por Bluetooth o guardar como PDF",
         style: { padding: "11px 18px" }
       }, React.createElement(Receipt, { size: 15 }), " Estado de cuenta"),
       React.createElement(Button, {
@@ -16028,6 +16209,9 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
             )
           )
         ),
+    verCuenta && React.createElement(EstadoCuentaModal, {
+      data, cliente, onClose: () => setVerCuenta(false)
+    }),
     enviarCuenta && React.createElement(EnviarWhatsAppModal, {
       data,
       titulo: "Enviar el estado de cuenta",
