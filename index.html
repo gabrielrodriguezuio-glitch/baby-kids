@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.909";
+const VERSION_APP = "9.900";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -139,63 +139,38 @@ const nube = createClient(NUBE_URL, NUBE_KEY, {
 });
 import { createPortal } from "react-dom";
 import { Tag, Package, ShoppingBag, Users, Wallet, Plus, Trash2, X, AlertTriangle, Search, Pencil, TrendingUp, TrendingDown, Minus, CreditCard, Banknote, ArrowRightLeft, Check, ShoppingCart, Share2, UserCog, BarChart3, MessageCircle, ArrowDownCircle, ArrowUpCircle, Truck, QrCode, ScanBarcode, Receipt, DollarSign, ChevronDown, ChevronLeft, ChevronRight, Lock, Unlock, Calculator, SlidersHorizontal, LayoutGrid, Archive, MoreHorizontal, Sparkles, Clock3, Boxes, Tags, Sun, Moon, Crown, UserPlus, Mail,
-  Menu, Bluetooth
+  Menu
 } from "lucide-react";
 const STORAGE_KEY = "control-tienda-ropa-v1";
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+// Clave para ordenar productos por orden de carga (el más viejo primero).
+// No hay un solo dato confiable para esto, así que se usa el mejor disponible:
+//  · creadoEn: lo pone la nube, es el más preciso (trae fecha y hora)
+//  · fechaAlta: lo pone la app al crear, pero sólo guarda el día
+//  · el id de desempate: uid() arranca con la hora en base36, así que dos
+//    productos del mismo día quedan igual en el orden en que se cargaron.
+// Las partes van con largo fijo para que la comparación sea siempre la misma
+// y no dependa de cómo el idioma ordena los símbolos.
+// Lo que no tiene ninguna fecha (importaciones viejas) queda al principio,
+// que es lo correcto: son los más antiguos. Y lo recién cargado en el
+// teléfono, que todavía no tiene hora de la nube, queda al final de su día.
+const claveDeCarga = (p) => {
+  const f = (p && (p.creadoEn || p.fechaAlta)) || "";
+  const dia = f ? f.slice(0, 10) : "0000-00-00";
+  const hora = (f && f.length > 10) ? f.slice(11, 19) : "99:99:99";
+  return dia + " " + hora + " " + ((p && p.id) || "");
+};
+// El día en que se cargó, para mostrar en la lista. Vacío si no se sabe.
+const diaDeCarga = (p) => {
+  const f = (p && (p.creadoEn || p.fechaAlta)) || "";
+  if (!f) return "";
+  const [a, m, d] = f.slice(0, 10).split("-");
+  return (a && m && d) ? d + "/" + m + "/" + a.slice(2) : "";
+};
 // Id definitivo con formato de la base (UUID). Se usa para las ventas: así el
 // id que se les pone en la app es el MISMO que queda en la nube, y nada que
 // lo anote (como la lista de reposición) queda apuntando a un id viejo.
 const uidUUID = () => (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : uid();
-
-// ===== Remitos de reposición: qué se sabe que YA está en la nube =====
-// Antes se subía sólo lo nuevo respecto del estado anterior. Si ese único
-// intento fallaba (tabla sin crear, sin señal, RLS), el remito quedaba en el
-// teléfono y la próxima bajada completa de la nube lo pisaba: "se borraba".
-// Con este registro se reintenta en cada guardado todo lo que no esté
-// confirmado, y la bajada nunca descarta un remito local que la nube no tenga.
-const remitosEnNube = new Set();
-
-// Une los remitos que ya tenía el dispositivo con los que llegan de la nube.
-// - nube === null: la lectura falló → no se toca nada, se deja lo local.
-// - nube es lista: gana la nube en lo que exista en las dos; lo local que la
-//   nube no tenga se conserva (todavía no subió, o falló al subir).
-const fusionarRemitos = (locales, nube) => {
-  if (nube === null || nube === undefined) return locales || [];
-  const ids = new Set(nube.map((r) => r.id));
-  const soloLocales = (locales || []).filter((r) => r && r.id && !ids.has(r.id));
-  return [...nube, ...soloLocales]
-    .sort((a, b) => ((b.fecha || "") + " " + (b.hora || "")).localeCompare((a.fecha || "") + " " + (a.hora || "")))
-    .slice(0, 500);
-};
-
-// Aplica la fusión sobre un estado que viene de la nube, respetando lo local
-const conRemitosLocales = (deNube, actual) => {
-  if (!deNube || !Object.prototype.hasOwnProperty.call(deNube, "reposiciones")) return deNube;
-  return { ...deNube, reposiciones: fusionarRemitos(actual && actual.reposiciones, deNube.reposiciones) };
-};
-
-// Reintento en segundo plano de remitos que no entraron: 5s, 20s, 60s.
-// No depende de que el usuario haga otro cambio. Si aun así no entra, el
-// próximo guardado lo vuelve a intentar (sigue sin estar en remitosEnNube).
-const reintentosRemitos = new Map(); // id -> cuántos intentos van
-const reintentarRemitos = (filas) => {
-  const pendientes = filas.filter((f) => !remitosEnNube.has(f.id));
-  if (!pendientes.length) return;
-  const intento = Math.max(...pendientes.map((f) => reintentosRemitos.get(f.id) || 0));
-  if (intento >= 3) return;
-  const espera = [5000, 20000, 60000][intento];
-  setTimeout(async () => {
-    const aun = pendientes.filter((f) => !remitosEnNube.has(f.id));
-    if (!aun.length) return;
-    aun.forEach((f) => reintentosRemitos.set(f.id, intento + 1));
-    try {
-      const { error } = await nube.from("reposiciones_hechas").upsert(aun, { onConflict: "id" });
-      if (!error) { aun.forEach((f) => { remitosEnNube.add(f.id); reintentosRemitos.delete(f.id); }); return; }
-    } catch (e) {}
-    reintentarRemitos(aun);
-  }, espera);
-};
 // La fecha de HOY según el reloj de acá, no el de Greenwich. Con toISOString,
 // después de las 21:00 en Argentina la app creía que ya era el día siguiente:
 // las ventas de la noche quedaban con fecha equivocada y no aparecían en el
@@ -1045,38 +1020,11 @@ const registrarDevolucion = (data, venta, seleccion, motivo, reintegro) => {
     motivo: motivo || ""
   };
 
-  // Reponer stock en el negocio donde se hizo la venta.
-  // La venta descuenta de la variante EXACTA (talle + color). La reposición
-  // tiene que apuntar a la misma: si se repone solo por talle y el producto
-  // tiene varios colores del mismo talle, la unidad vuelve a la variante
-  // equivocada. Se reconstruye la clave "talle|color" cuando hay color.
-  const claveVarianteItem = (it) => {
-    const t = it.talla || "";
-    if (it.color) return t + "|" + it.color;
-    return t;
-  };
+  // Reponer stock en el negocio donde se hizo la venta
   const negocioVenta = venta.negocioId || listaNegocios(data)[0].id;
   const productos = data.productos.map((p) => {
     const it = items.find((i) => i.productoId === p.id);
-    if (!it) return p;
-    const clave = claveVarianteItem(it);
-    let salida = p;
-    // Si la variante fue borrada entre la venta y la devolución, se recrea con
-    // stock cero para que ajustarEnNegocio tenga dónde reponer. Sin esto, la
-    // unidad devuelta se perdería en silencio.
-    if (clave) {
-      const vs = variantesNegocio(p, negocioVenta);
-      if (vs.length && !vs.some((v) => esLaVariante(v, clave))) {
-        const partes = String(clave).split("|");
-        const nueva = { talle: partes[0], stock: 0 };
-        if (partes[1]) nueva.color = partes[1];
-        const porNegocio = { ...(p.porNegocio || {}) };
-        const d = { activo: true, stock: 0, variantes: [], ...(porNegocio[negocioVenta] || {}) };
-        porNegocio[negocioVenta] = { ...d, variantes: [...(d.variantes || []), nueva] };
-        salida = { ...p, porNegocio };
-      }
-    }
-    return ajustarEnNegocio(salida, negocioVenta, clave, Math.abs(it.cantidad));
+    return it ? ajustarEnNegocio(p, negocioVenta, it.talla || "", Math.abs(it.cantidad)) : p;
   });
 
   // Cuenta corriente: si se paga con CC o se acredita en la cuenta
@@ -1594,7 +1542,7 @@ function ControlTienda() {
         if (!mostradoDeLaCopia) {
           try {
             const minimo = migrarCajas(migrarDatos(await traerEsencial(sesion && sesion.auth_id)));
-            setData((actual) => conRemitosLocales(minimo, actual));
+            setData(minimo);
             setLoading(false);
           } catch (e) {}
         }
@@ -1604,43 +1552,33 @@ function ControlTienda() {
         const traer = traerDeLaNube(sesion && sesion.auth_id);
         const tope = new Promise((_, rechazar) =>
           setTimeout(() => rechazar(new Error("La conexión está muy lenta y no se pudieron traer los datos.")), 20000));
-        const bajado = migrarCajas(migrarDatos(await Promise.race([traer, tope])));
+        const frescos = migrarCajas(migrarDatos(await Promise.race([traer, tope])));
+        setData(frescos);
         // Se guarda para la próxima vez, sin el historial: lo que hace falta
         // para abrir y vender son los productos, clientes y cajas. Las ventas
         // viejas llegan enseguida con los datos frescos.
-        const guardarCopia = (frescos) => {
+        try {
+          const liviano = { ...frescos,
+            ventas: (frescos.ventas || []).slice(0, 200),
+            movimientosStock: [], cambios: [], gastos: [], compras: [],
+            devolucionesReparto: [], cajasCerradas: (frescos.cajasCerradas || []).slice(0, 30)
+          };
+          localStorage.setItem("ct-copia", JSON.stringify({ quien: sesion.auth_id, datos: liviano }));
+        } catch (e) {
+          // Si no entra, se guarda una versión más chica antes de rendirse:
+          // con los productos alcanza para abrir y vender.
           try {
-            const liviano = { ...frescos,
-              ventas: (frescos.ventas || []).slice(0, 200),
-              movimientosStock: [], cambios: [], gastos: [], compras: [],
-              devolucionesReparto: [], cajasCerradas: (frescos.cajasCerradas || []).slice(0, 30)
-            };
-            localStorage.setItem("ct-copia", JSON.stringify({ quien: sesion.auth_id, datos: liviano }));
-          } catch (e) {
-            // Si no entra, se guarda una versión más chica antes de rendirse:
-            // con los productos alcanza para abrir y vender.
-            try {
-              localStorage.setItem("ct-copia", JSON.stringify({
-                quien: sesion.auth_id,
-                datos: { ...EMPTY, productos: frescos.productos, negocios: frescos.negocios,
-                         listasPrecio: frescos.listasPrecio, categorias: frescos.categorias,
-                         usuarios: frescos.usuarios, negocio: frescos.negocio,
-                         clientes: (frescos.clientes || []).slice(0, 300) }
-              }));
-            } catch (e2) {
-              try { localStorage.removeItem("ct-copia"); } catch (e3) {}
-            }
+            localStorage.setItem("ct-copia", JSON.stringify({
+              quien: sesion.auth_id,
+              datos: { ...EMPTY, productos: frescos.productos, negocios: frescos.negocios,
+                       listasPrecio: frescos.listasPrecio, categorias: frescos.categorias,
+                       usuarios: frescos.usuarios, negocio: frescos.negocio,
+                       clientes: (frescos.clientes || []).slice(0, 300) }
+            }));
+          } catch (e2) {
+            try { localStorage.removeItem("ct-copia"); } catch (e3) {}
           }
-        };
-        // Los remitos de reposición que estén sólo en este dispositivo (no
-        // subieron todavía) se conservan en vez de pisarlos con la nube. La
-        // copia se escribe adentro del updater porque es el único lugar donde
-        // se tiene el estado actual real (afuera, `data` está desactualizado).
-        setData((actual) => {
-          const frescos = conRemitosLocales(bajado, actual);
-          guardarCopia(frescos);
-          return frescos;
-        });
+        }
       } catch (e) {
         // Con la copia en pantalla no se corta el trabajo: se avisa y listo
         if (!mostradoDeLaCopia) setErrorNube(String((e && e.message) || e));
@@ -1723,11 +1661,8 @@ function ControlTienda() {
           // Sólo las tablas que cambiaron: una venta trae ventas, renglones y
           // el stock, no el catálogo entero.
           const parcial = await traerParcial(cuales, sesion && sesion.auth_id);
-          if (parcial) setData((actual) => migrarCajas(migrarDatos({ ...actual, ...conRemitosLocales(parcial, actual) })));
-          else {
-            const todo = migrarCajas(migrarDatos(await traerDeLaNube(sesion && sesion.auth_id)));
-            setData((actual) => conRemitosLocales(todo, actual));
-          }
+          if (parcial) setData((actual) => migrarCajas(migrarDatos({ ...actual, ...parcial })));
+          else setData(migrarCajas(migrarDatos(await traerDeLaNube(sesion && sesion.auth_id))));
         } catch (e) {}
       }, 250);
     };
@@ -2513,12 +2448,16 @@ function Wrapper({ children, mobile, tema = "oscuro" }) {
         .ct-buscador input:focus-visible { outline: none !important; box-shadow: none !important; }
         /* El texto del buscador siempre visible: en algunos Android con
            autocompletado el texto quedaba pintado transparente (se veía el
-           campo vacío aunque hubiera texto). Esto lo fuerza a mostrarse. */
+           campo vacío aunque hubiera texto). El color se fija en el inline
+           style del input también, para que no lo pise ninguna hoja de
+           estilos del navegador. */
         .ct-buscador input {
           -webkit-text-fill-color: var(--ink) !important;
+          color: var(--ink) !important;
+          caret-color: var(--ink) !important;
           opacity: 1 !important;
         }
-        .ct-buscador input::placeholder { -webkit-text-fill-color: var(--muted) !important; opacity: 1 !important; }
+        .ct-buscador input::placeholder { -webkit-text-fill-color: var(--muted) !important; color: var(--muted) !important; opacity: 1 !important; }
         /* Al apretar un botón se hunde y se ilumina: confirma el toque */
         .ct-pos-btn { transition: transform .08s ease, box-shadow .12s ease, filter .12s ease; }
         .ct-pos-btn:active { transform: scale(.96); filter: brightness(1.12); }
@@ -4908,12 +4847,8 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
 
   for (let i = 0; i < ventasNuevas.length; i += 50) {
     const tanda = ventasNuevas.slice(i, i + 50);
-    // id_local: el UUID que generó la app. La base tiene UNIQUE sobre esta
-    // columna, así que si la red corta y el teléfono reintenta, el segundo
-    // insert lanza un conflict 409 y se ignora: no queda la venta duplicada.
     const { data: filas, error } = await nube.from("ventas").insert(
       tanda.map((v) => ({
-        id_local: v.id || null,
         negocio_id: v.negocioId || null,
         cliente_id: v.clienteId ? idRealCliente(v.clienteId) : null,
         cliente_nombre: v.clienteNombre || null,
@@ -4934,19 +4869,6 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
         numero_operacion: v.numeroOperacion || null
       }))
     ).select("id");
-    // 409 / duplicate: la venta ya está en la base (reintento por corte de red)
-    if (error && (error.code === "23505" || (error.message || "").includes("id_local"))) {
-      // Recuperar el id real de la base para mapear los renglones correctamente
-      const ids = tanda.map((v) => v.id).filter(Boolean);
-      const { data: existing } = await nube.from("ventas").select("id,id_local").in("id_local", ids);
-      const mapaExist = {};
-      (existing || []).forEach((r) => { mapaExist[r.id_local] = r.id; });
-      tanda.forEach((v, k) => {
-        const idReal = mapaExist[v.id];
-        if (idReal) cambios.push({ tipo: "venta", viejo: v.id, nuevo: idReal });
-      });
-      continue;
-    }
     if (error) throw new Error("Al guardar la venta: " + error.message);
     tanda.forEach((v, k) => cambios.push({ tipo: "venta", viejo: v.id, nuevo: filas[k].id }));
 
@@ -4968,6 +4890,21 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
     for (let j = 0; j < renglones.length; j += 500) {
       const { error: e2 } = await nube.from("venta_items").insert(renglones.slice(j, j + 500));
       if (e2) throw new Error("Al guardar el detalle de la venta: " + e2.message);
+    }
+  }
+
+  // Ventas que el Propietario eliminó: se borran también de la nube. Sin esto
+  // desaparecían del teléfono pero volvían al recargar. Sólo las que ya tenían
+  // id de la base (las recién creadas sin subir todavía no están allá).
+  const ventasDespues = new Set((despues.ventas || []).map((v) => v.id));
+  const ventasBorradas = (antes.ventas || []).filter((v) => !ventasDespues.has(v.id) && esIdDeLaBase(v.id));
+  for (const v of ventasBorradas) {
+    try {
+      await nube.from("venta_items").delete().eq("venta_id", v.id);
+      const { error } = await nube.from("ventas").delete().eq("id", v.id);
+      if (error) throw new Error(error.message);
+    } catch (e) {
+      if (avisarProblema) avisarProblema("No se pudo borrar una venta de la nube: " + String((e && e.message) || e));
     }
   }
 
@@ -5057,6 +4994,18 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
     if (error) throw new Error("Al guardar el movimiento de cuenta: " + error.message);
   }
 
+  // Pagos/movimientos que el Propietario eliminó: se borran también de la nube
+  const movsDespues = new Set((despues.movimientosCC || []).map((m) => m.id));
+  const movsBorrados = (antes.movimientosCC || []).filter((m) => !movsDespues.has(m.id) && esIdDeLaBase(m.id));
+  for (const m of movsBorrados) {
+    try {
+      const { error } = await nube.from("movimientos_cc").delete().eq("id", m.id);
+      if (error) throw new Error(error.message);
+    } catch (e) {
+      if (avisarProblema) avisarProblema("No se pudo borrar un pago de la nube: " + String((e && e.message) || e));
+    }
+  }
+
   // ── Negocios ──────────────────────────────────────────────
   // Editar el nombre o los datos de un local no llegaba a la base.
   const negsAntes = {};
@@ -5133,34 +5082,19 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
   // ── Historial de reposiciones (remitos) ──────────────────
   // Cada reposición confirmada se sube como una fila propia, así se ve
   // desde cualquier dispositivo quién repuso, cuándo y qué.
-  //
-  // Se sube TODO lo que no esté confirmado en la nube, no sólo lo nuevo de
-  // este guardado. Así un remito cuya subida falló (tabla sin crear, sin
-  // señal) se reintenta en el guardado siguiente, y el que le sigue, hasta
-  // que entre. El upsert es idempotente: repetirlo no duplica nada.
-  const repoHechasASubir = (despues.reposiciones || [])
-    .filter((r) => r && r.id && !remitosEnNube.has(r.id))
-    .slice(0, 50);
-  if (repoHechasASubir.length) {
-    const filas = repoHechasASubir.map((r) => ({
+  const repoHechasAntes = new Set((antes.reposiciones || []).map((r) => r.id));
+  const repoHechasNuevas = (despues.reposiciones || []).filter((r) => !repoHechasAntes.has(r.id));
+  if (repoHechasNuevas.length) {
+    const { error } = await nube.from("reposiciones_hechas").insert(repoHechasNuevas.map((r) => ({
       id: r.id, remito: r.remito, fecha: r.fecha, hora: r.hora || "",
       negocio_id: r.negocioId || null, negocio_nombre: r.negocioNombre || "",
       origen: r.origen || null, origen_nombre: r.origenNombre || "",
       usuario: r.usuario || "", items: r.items || [],
       unidades: r.unidades || 0, pendiente_despues: r.pendienteDespues || 0
-    }));
-    const { error } = await nube.from("reposiciones_hechas").upsert(filas, { onConflict: "id" });
-    if (!error) {
-      repoHechasASubir.forEach((r) => remitosEnNube.add(r.id));
-    } else {
-      console.error("No se pudo guardar el remito de reposici\u00F3n:", error.message);
-      const faltaTabla = /does not exist|schema cache|PGRST205|42P01/i.test(error.message || "");
-      if (avisarProblema) avisarProblema(faltaTabla
-        ? "El remito qued\u00F3 guardado en este dispositivo pero no en la nube: falta crear la tabla reposiciones_hechas en Supabase."
-        : "El remito de reposici\u00F3n no se guard\u00F3 en la nube: " + error.message);
-      // Si no fue por la tabla, seguramente fue la señal: se reintenta solo
-      // sin esperar a que el usuario haga otro cambio.
-      if (!faltaTabla) reintentarRemitos(filas);
+    })));
+    if (error) {
+      console.error("No se pudo guardar el remito de reposición:", error.message);
+      if (avisarProblema) avisarProblema("El remito de reposición no se guardó en la nube: " + error.message);
     }
   }
 
@@ -5194,12 +5128,18 @@ async function guardarVariantesEnTanda(items) {
   const aBorrar = [];
   // Cuánto había antes de cada variante, para poder calcular la diferencia
   const stockPrevio = {};
+  // Y qué código tenía: si llegó mercadería a un local donde esa variante no
+  // tenía código, hay que subir el que se le acaba de poner. Sin esto la
+  // etiqueta funciona en la app pero no queda guardada en la nube.
+  const codigoPrevio = {};
   items.forEach(({ id, previo }) => {
     Object.entries((previo && previo.porNegocio) || {}).forEach(([negId, d]) => {
       const vs = (d && d.variantes) || [];
       if (vs.length) {
         vs.forEach((v) => {
-          stockPrevio[id + "|" + negId + "|" + (v.talle || "") + "|" + (v.color || "")] = Number(v.stock) || 0;
+          const k = id + "|" + negId + "|" + (v.talle || "") + "|" + (v.color || "");
+          stockPrevio[k] = Number(v.stock) || 0;
+          codigoPrevio[k] = String(v.codigo || "").trim();
         });
       } else if (d && d.stock != null) {
         stockPrevio[id + "|" + negId + "||"] = Number(d.stock) || 0;
@@ -5250,16 +5190,34 @@ async function guardarVariantesEnTanda(items) {
   //      pisaría lo que hizo el otro vendedor en el medio; restar "1" no.
   const nuevas = [];
   const ajustes = [];
+  // Variantes que ya estaban pero a las que se les completó el código
+  const codigosNuevos = [];
   filas.forEach((f) => {
-    const previo = stockPrevio[f.producto_id + "|" + f.negocio_id + "|" + f.talle + "|" + f.color];
-    if (previo == null) nuevas.push(f);
-    else if (previo !== f.stock) ajustes.push({ ...f, delta: f.stock - previo });
+    const k = f.producto_id + "|" + f.negocio_id + "|" + f.talle + "|" + f.color;
+    const previo = stockPrevio[k];
+    if (previo == null) { nuevas.push(f); return; }
+    if (previo !== f.stock) ajustes.push({ ...f, delta: f.stock - previo });
+    // El código se mira aparte del stock: puede haber cambiado sin que se
+    // mueva una sola unidad, y al revés.
+    const codAntes = codigoPrevio[k] || "";
+    const codAhora = String(f.codigo || "").trim();
+    if (codAhora && codAhora !== codAntes) codigosNuevos.push(f);
   });
 
   for (let i = 0; i < nuevas.length; i += 500) {
     const { error } = await nube.from("variantes")
       .upsert(nuevas.slice(i, i + 500), { onConflict: "producto_id,negocio_id,talle,color" });
     if (error) throw new Error("Al guardar el stock: " + error.message);
+  }
+
+  // El código va con update y no con upsert: así no se toca el stock, que es
+  // lo único que no se puede pisar con dos personas vendiendo a la vez.
+  for (const f of codigosNuevos) {
+    const { error } = await nube.from("variantes")
+      .update({ codigo: f.codigo })
+      .eq("producto_id", f.producto_id).eq("negocio_id", f.negocio_id)
+      .eq("talle", f.talle).eq("color", f.color);
+    if (error) console.error("No se pudo guardar el código de la variante:", error.message);
   }
 
   for (const a of ajustes) {
@@ -7459,7 +7417,8 @@ const informeCompleto = (data, desde, hasta, negocioId, negocioNombre) => {
       tabla(["Fecha", "Cliente", "Concepto", { t: "Monto", num: true }], filasP), "Sin pagos de saldo en el período.") +
     seccion("Saldos pendientes al día de hoy",
       tabla(["Cliente", "Teléfono", { t: "Debe", num: true }], filasS) +
-      (filasS.length ? "<p class='vacio'>Total adeudado: " + money(totalDeuda) + "</p>" : ""),
+      // El total adeudado es sólo para el Propietario; el detalle por cliente sí
+      (filasS.length && esPropietario(data) ? "<p class='vacio'>Total adeudado: " + money(totalDeuda) + "</p>" : ""),
       "Ningún cliente tiene saldo pendiente.") +
     seccion("Stock a reponer",
       tabla(["Producto", "Variante", { t: "Quedan", num: true }], filasR), "No falta stock.") +
@@ -9078,7 +9037,10 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
   }, [showForm, onEditando]);
   const [mostrarFiltros, setMostrarFiltros] = useState(false);
   const [filtros, setFiltros] = useState(FILTROS_VACIOS);
-  const [orden, setOrden] = useState({ campo: "nombre", asc: true });
+  // Arranca por orden de carga: lo recién cargado queda en la última página,
+  // que es donde uno lo va a buscar apenas termina de darlo de alta.
+  // Tocando "Producto" se vuelve al orden alfabético de siempre.
+  const [orden, setOrden] = useState({ campo: "carga", asc: true });
   const [pagina, setPagina] = useState(1);
   const [porPagina, setPorPagina] = useState(10);
   // Al buscar o filtrar se vuelve a la primera página: si no, se puede quedar
@@ -9201,6 +9163,12 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
   });
   return filtrados.sort((a, b) => {
     const dir = orden.asc ? 1 : -1;
+    // Orden de carga: los más viejos arriba, los recién cargados al final.
+    // Comparación directa: la clave ya viene armada para eso.
+    if (orden.campo === "carga") {
+      const ka = claveDeCarga(a), kb = claveDeCarga(b);
+      return (ka < kb ? -1 : ka > kb ? 1 : 0) * dir;
+    }
     if (orden.campo === "stock") return (a.stock - b.stock) * dir;
     if (orden.campo === "precio") return (a.precioVenta - b.precioVenta) * dir;
     return (a.nombre || "").localeCompare(b.nombre || "", "es") * dir;
@@ -9607,6 +9575,8 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
                   React.createElement("th", { style: { width: 34 } },
                     React.createElement("input", { type: "checkbox", className: "ct-check", checked: todosSel, onChange: toggleTodos, style: { cursor: "pointer", width: 15, height: 15, accentColor: "var(--denim)" } })),
                   React.createElement(Th, { campo: "nombre" }, "Producto"),
+                  // Deja volver al orden de carga después de ordenar por otra cosa
+                  React.createElement(Th, { campo: "carga", style: { width: 96 } }, "Cargado"),
                   React.createElement(Th, { campo: "stock", style: { width: 120 } }, "Stock"),
                   React.createElement(Th, { campo: "precio", style: { width: 120, textAlign: "right" } },
                     listasDe(data).some((l) => /mayor/i.test(l.nombre)) ? "Minorista / Mayorista" : "Precio"),
@@ -9646,6 +9616,9 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
                         )
                       )
                     ),
+                    React.createElement("td", {
+                      style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "var(--muted)", whiteSpace: "nowrap" }
+                    }, diaDeCarga(p) || "—"),
                     React.createElement("td", null, celdaStock(p)),
                     React.createElement("td", { style: { textAlign: "right" } },
                       React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, fontWeight: 650, letterSpacing: -0.02 } }, money(p.precioVenta)),
@@ -9985,6 +9958,18 @@ function EditorVariantes({ variantes, onCambiar, productosExistentes }) {
       )
     ),
 
+    // Cargar de a muchas: se escriben los talles separados por coma. Va acá,
+    // junto al resto de los talles, para que los colores queden todos abajo.
+    React.createElement(
+      "div",
+      { style: { display: "flex", gap: 10, alignItems: "flex-end", marginTop: 12, flexWrap: "wrap" } },
+      React.createElement("div", { style: { flex: 1, minWidth: 150 } },
+        React.createElement(Field, { label: "Talles" },
+          React.createElement("input", { style: inputStyle, value: talles, onChange: (e) => setTalles(e.target.value), placeholder: "36, 38, 40, 42" }))),
+      React.createElement(Button, { onClick: combinar, disabled: !talles.trim(), style: { padding: "10px 15px", fontSize: 12.5 } },
+        "Armar combinaciones")
+    ),
+
     // El bloque de colores va siempre: antes sólo aparecía si ya había
     // colores usados, así que el primer producto no tenía dónde cargarlos.
     React.createElement(
@@ -10055,17 +10040,6 @@ function EditorVariantes({ variantes, onCambiar, productosExistentes }) {
           })
         )
       )
-    ),
-
-    // Cargar de a muchas: se escriben los talles y los colores separados por coma
-    React.createElement(
-      "div",
-      { style: { display: "flex", gap: 10, alignItems: "flex-end", marginTop: 12, flexWrap: "wrap" } },
-      React.createElement("div", { style: { flex: 1, minWidth: 150 } },
-        React.createElement(Field, { label: "Talles" },
-          React.createElement("input", { style: inputStyle, value: talles, onChange: (e) => setTalles(e.target.value), placeholder: "36, 38, 40, 42" }))),
-      React.createElement(Button, { onClick: combinar, disabled: !talles.trim(), style: { padding: "10px 15px", fontSize: 12.5 } },
-        "Armar combinaciones")
     ),
 
     usarVariantes && React.createElement(
@@ -11292,7 +11266,7 @@ const CampoBusquedaPOS = React.memo(function CampoBusquedaPOS({ onCambiar, onEnt
         autoComplete: "off", spellCheck: false,
         onInput: (e) => { const v = e.target.value; textoRef.current = v; setTexto(v); onCambiar(v); },
         onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); onEnter(); } },
-        style: { flex: 1, minWidth: 0, height: "100%", background: "transparent", border: "none", outline: "none", color: "var(--ink)", fontSize: 15, padding: 0 }
+        style: { flex: 1, minWidth: 0, height: "100%", background: "color-mix(in srgb, var(--denim) 12%, " + posColors.input + ")", border: "none", outline: "none", color: "var(--ink)", WebkitTextFillColor: "var(--ink)", caretColor: "var(--ink)", fontSize: 15, padding: 0 }
       }),
       texto && React.createElement("button", {
         onClick: () => { if (inputEscritorioRef.current) { inputEscritorioRef.current.value = ""; inputEscritorioRef.current.focus(); } fijar(""); },
@@ -11640,18 +11614,13 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
 
   // Se puede cobrar todo el saldo o sólo una parte: el cliente queda debiendo
   // la diferencia. Sin monto, se toma la deuda completa.
-  // Suma la deuda (total o parcial) como una línea más del carrito
-  const sumarDeuda = (montoParcial) => {
+  // Suma la deuda completa del cliente como una línea más del carrito
+  const sumarDeuda = () => {
     if (!clienteDelCarrito || saldoCliente <= 0 || deudaEnCarrito) return;
-    // El monto no puede superar lo que debe. Si no llega monto, se cobra todo.
-    let monto = Number(montoParcial);
-    if (!monto || monto <= 0 || monto > saldoCliente) monto = saldoCliente;
-    monto = Math.round(monto * 100) / 100;
-    const parcial = monto < saldoCliente;
     setCart([...cart, {
       productoId: null, manualId: uid(), esDeuda: true, clienteDeuda: clienteId,
-      nombre: (parcial ? "Pago a cuenta de " : "Saldo pendiente de ") + clienteDelCarrito.nombre,
-      precioUnit: monto, costo: 0, cantidad: 1, stockDisp: Infinity
+      nombre: "Saldo pendiente de " + clienteDelCarrito.nombre,
+      precioUnit: saldoCliente, costo: 0, cantidad: 1, stockDisp: Infinity
     }]);
   };
   // Prefijo por tipo para que una línea manual y una de producto nunca puedan
@@ -11965,15 +11934,12 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     // La deuda que se sumó al carrito se descuenta de la cuenta del cliente
     const lineaDeuda = cart.find((it) => it.esDeuda);
     if (lineaDeuda && lineaDeuda.clienteDeuda) {
-      const montoPago = lineaDeuda.precioUnit * lineaDeuda.cantidad;
-      const saldoPrevio = saldoDeCliente(data, lineaDeuda.clienteDeuda);
-      const esParcial = montoPago < saldoPrevio - 0.01;
       movimientosCC = [
         {
           id: uid(), clienteId: lineaDeuda.clienteDeuda, fecha: todayISO(),
-          tipo: "pago", monto: montoPago,
+          tipo: "pago", monto: lineaDeuda.precioUnit * lineaDeuda.cantidad,
           metodo: metodoPago === "efectivo" ? "Efectivo" : (METODO_LABELS[metodoPago] || metodoPago),
-          concepto: esParcial ? "Pago parcial de saldo" : "Saldo cobrado con una venta"
+          concepto: "Saldo cobrado con una venta"
         },
         ...movimientosCC
       ];
@@ -12533,15 +12499,31 @@ const qtyBtnStyle = {
 // la posición del botón: el contenedor de la tabla recorta para poder
 // desplazarse, y eso cortaba los menús que quedaban adentro.
 function MenuFila({ ancla, onClose, children }) {
+  // onClose es una función nueva en cada render; con un ref el oyente se
+  // registra una sola vez y siempre llama a la versión vigente.
+  const cerrarRef = React.useRef(onClose);
+  cerrarRef.current = onClose;
+  const menuRef = React.useRef(null);
+
   useEffect(() => {
-    const cerrar = () => onClose();
+    // Un desplazamiento en los primeros instantes no es el usuario moviendo la
+    // página: es el navegador acomodando el botón de los tres puntos al darle
+    // foco (la columna está al borde de una tabla que se desplaza de costado).
+    // Sin este margen, el menú se cerraba en el mismo instante en que se abría.
+    const abiertoEn = Date.now();
+    const cerrar = (e) => {
+      if (Date.now() - abiertoEn < 350) return;
+      // Desplazar la lista dentro del propio menú tampoco lo cierra
+      if (menuRef.current && e && e.target && e.target.nodeType === 1 && menuRef.current.contains(e.target)) return;
+      cerrarRef.current();
+    };
     document.addEventListener("scroll", cerrar, true);
     window.addEventListener("resize", cerrar);
     return () => {
       document.removeEventListener("scroll", cerrar, true);
       window.removeEventListener("resize", cerrar);
     };
-  }, [onClose]);
+  }, []);
 
   if (!ancla) return null;
   const ancho = 190;
@@ -12556,6 +12538,7 @@ function MenuFila({ ancla, onClose, children }) {
   const menu = React.createElement(
     "div",
     {
+      ref: menuRef,
       onClick: (e) => e.stopPropagation(),
       style: {
         position: "fixed",
@@ -13135,9 +13118,6 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
   const [extras, setExtras] = useState({ ...EXTRAS_VACIOS });
   const [comprobantes, setComprobantes] = useState([]);
   const [error, setError] = useState("");
-  // Cobro de saldo: por defecto se cobra todo, pero se puede escribir menos
-  const [mostrarSaldo, setMostrarSaldo] = useState(false);
-  const [montoSaldo, setMontoSaldo] = useState("");
 
   // El precio depende de cómo pague: efectivo va mayorista siempre, y
   // transferencia también a partir de 2 prendas. En pago dividido sólo cuenta
@@ -13328,9 +13308,9 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
             }))
           ]
         }),
-        // Si el cliente debe plata, se puede cobrar todo o una parte
-        cliente && saldoCliente > 0 && !deudaEnCarrito && !mostrarSaldo && React.createElement("button", {
-          onClick: () => setMostrarSaldo(true),
+        // Si el cliente debe plata, se suma la deuda completa de un toque
+        cliente && saldoCliente > 0 && !deudaEnCarrito && React.createElement("button", {
+          onClick: () => onSumarDeuda(),
           style: {
             display: "flex", alignItems: "center", gap: 9, width: "100%", marginTop: 9,
             padding: "11px 12px", borderRadius: 9, cursor: "pointer",
@@ -13343,50 +13323,9 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
           React.createElement("span", { style: { flex: 1 } }, "Debe ", money(saldoCliente)),
           React.createElement("span", { style: { color: "var(--denim)", fontWeight: 600 } }, "Cobrar saldo")
         ),
-        // Panel para elegir cuánto cobrar del saldo
-        cliente && saldoCliente > 0 && !deudaEnCarrito && mostrarSaldo && React.createElement("div", {
-          style: {
-            marginTop: 9, padding: "13px 14px", borderRadius: 10,
-            border: "1px solid color-mix(in srgb, var(--rose) 30%, transparent)",
-            background: "color-mix(in srgb, var(--rose) 8%, transparent)"
-          }
-        },
-          React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginBottom: 9 } },
-            "Debe ", React.createElement("b", { style: { color: "var(--ink)" } }, money(saldoCliente)),
-            ". Cobrá todo o escribí cuánto entrega ahora."),
-          React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
-            React.createElement("input", {
-              type: "number",
-              inputMode: "decimal",
-              placeholder: "Todo (" + money(saldoCliente) + ")",
-              value: montoSaldo,
-              onChange: (e) => setMontoSaldo(e.target.value),
-              style: { ...inputStyle, flex: 1 }
-            }),
-            React.createElement(Button, {
-              onClick: () => {
-                const m = Number(montoSaldo);
-                onSumarDeuda(m > 0 && m < saldoCliente ? m : undefined);
-                setMostrarSaldo(false);
-                setMontoSaldo("");
-              },
-              style: { padding: "11px 16px", whiteSpace: "nowrap" }
-            }, "Agregar")
-          ),
-          React.createElement("div", { style: { display: "flex", gap: 12, marginTop: 9 } },
-            React.createElement("button", {
-              onClick: () => setMontoSaldo(String(saldoCliente)),
-              style: { background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--denim)", fontSize: 12.5, fontFamily: "'Inter', sans-serif" }
-            }, "Cobrar todo"),
-            React.createElement("button", {
-              onClick: () => { setMostrarSaldo(false); setMontoSaldo(""); },
-              style: { background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--muted)", fontSize: 12.5, fontFamily: "'Inter', sans-serif" }
-            }, "Cancelar")
-          )
-        ),
         deudaEnCarrito && React.createElement("div", {
           style: { marginTop: 9, fontSize: 12.5, color: "var(--sage)", display: "flex", alignItems: "center", gap: 7 }
-        }, React.createElement(Check, { size: 14 }), "Pago de saldo agregado al total")
+        }, React.createElement(Check, { size: 14 }), "Saldo pendiente agregado al total")
       ),
 
       // --- Métodos de pago ---
@@ -15300,30 +15239,107 @@ function ClienteFormModal({ inicial, listasPrecio, onGuardar, onClose }) {
 
 // ===== Estado de cuenta del cliente =====
 // Todo lo que compró y todo lo que pagó, con el saldo al pie. Se imprime o se
-// guarda como PDF, y se puede mandar por WhatsApp resumido.
-const imprimirEstadoCuenta = (data, cliente, negocioNombre) => {
+// guarda como PDF, sale por la impresora térmica Bluetooth, y se puede mandar
+// por WhatsApp resumido.
+
+// Las filas del estado de cuenta, ordenadas por fecha. Se calculan una sola
+// vez y las usan las tres salidas (PDF, térmica, chat).
+const filasEstadoCuenta = (data, cliente) => {
   const movs = (data.movimientosCC || []).filter((m) => m.clienteId === cliente.id);
   const ventas = (data.ventas || []).filter((v) => v.clienteId === cliente.id && !esDevolucion(v));
-  const saldo = saldoDeCliente(data, cliente.id);
-
-  const filas = [
+  return [
     ...ventas.map((v) => ({
       fecha: v.fecha, hora: v.horaTexto || "",
-      concepto: (v.items || []).map((it) =>
-        it.cantidad + "× " + it.nombre +
+      // Cada producto por separado: la salida decide cómo juntarlos
+      items: (v.items || []).map((it) =>
+        it.cantidad + "x " + it.nombre +
         ([it.talla, it.color].filter(Boolean).length
-          ? " (" + [it.talla && "Talle " + it.talla, it.color].filter(Boolean).join(" · ") + ")" : "")
-      ).join("<br>") || "Venta",
+          ? " (" + [it.talla && "Talle " + it.talla, it.color].filter(Boolean).join(" · ") + ")" : "")),
       tipo: v.metodoPago === "cuenta_corriente" ? "A cuenta" : (METODO_LABELS[v.metodoPago] || "Contado"),
       debe: v.metodoPago === "cuenta_corriente" ? v.total : 0,
       haber: v.metodoPago === "cuenta_corriente" ? 0 : v.total
     })),
     ...movs.filter((m) => m.tipo !== "cargo").map((m) => ({
       fecha: m.fecha, hora: "",
-      concepto: m.concepto || "Pago recibido",
+      items: [m.concepto || "Pago recibido"],
       tipo: "Pago", debe: 0, haber: m.monto
     }))
   ].sort((a, b) => (a.fecha + a.hora).localeCompare(b.fecha + b.hora));
+};
+
+// Versión para la impresora térmica de 58 mm: 32 columnas, mismos comandos
+// ESC/POS que el ticket, así sale con la misma letra y el mismo resaltado.
+const construirEstadoCuentaTexto = (data, cliente, negocioNombre) => {
+  const ANCHO = 32;
+  const negocio = data.negocio || {};
+  const filas = filasEstadoCuenta(data, cliente);
+  const saldo = saldoDeCliente(data, cliente.id);
+  const totalDebe = filas.reduce((a, f) => a + (f.debe || 0), 0);
+  const totalPago = filas.reduce((a, f) => a + (f.haber || 0), 0);
+
+  const linea = (izq, der) => {
+    izq = izq || ""; der = der || "";
+    const espacio = Math.max(1, ANCHO - izq.length - der.length);
+    return izq + " ".repeat(espacio) + der;
+  };
+  const partir = (texto, ancho) => {
+    const palabras = String(texto || "").split(" ");
+    const lineas = [];
+    let actual = "";
+    palabras.forEach((pal) => {
+      if (!actual) { actual = pal; return; }
+      if ((actual + " " + pal).length <= ancho) actual += " " + pal;
+      else { lineas.push(actual); actual = pal; }
+    });
+    if (actual) lineas.push(actual);
+    return lineas.length ? lineas : [""];
+  };
+  const dashes = SUBRAYADO + " ".repeat(ANCHO) + SIN_SUBRAYADO;
+  const out = [];
+  out.push(CURSIVA + NEGRITA);
+
+  out.push(CENTRO + GRANDE + NEGRITA + (negocioNombre || negocio.nombre || "Mi negocio").toUpperCase() + NORMAL + SIN_NEGRITA);
+  if (negocio.telefono) out.push(CENTRO + "Tel " + negocio.telefono);
+  out.push(CENTRO + ALTO + "ESTADO DE CUENTA" + NORMAL);
+  out.push(IZQ + dashes);
+
+  out.push(NEGRITA + cliente.nombre + NORMAL);
+  if (cliente.telefono) out.push("Tel " + cliente.telefono);
+  out.push(linea("Al", fecha(todayISO())));
+  out.push(dashes);
+
+  if (!filas.length) {
+    out.push("Sin movimientos registrados.");
+  } else {
+    filas.forEach((f) => {
+      // Fecha y tipo a la izquierda, el importe a la derecha: lo que debe con
+      // signo, lo que pagó sin nada, para que se distingan de un vistazo.
+      const importe = f.debe ? "+" + money(f.debe) : "-" + money(f.haber);
+      out.push(NEGRITA + linea(fecha(f.fecha) + " " + f.tipo, importe) + SIN_NEGRITA);
+      // El punto medio no es ASCII y la impresora lo borra: va un guion
+      f.items.forEach((it) => partir(it.replace(/ \u00B7 /g, " - "), ANCHO - 2).forEach((l) => out.push("  " + l)));
+    });
+  }
+  out.push(dashes);
+
+  out.push(linea("Total a cuenta", money(totalDebe)));
+  out.push(linea("Total pagado", money(totalPago)));
+  out.push("");
+  out.push(ALTO + linea(saldo > 0 ? "SALDO PENDIENTE" : "SALDO", saldo > 0 ? money(saldo) : "AL DIA") + NORMAL);
+  out.push(dashes);
+  out.push(CENTRO + (saldo > 0 ? "Podes abonarlo en el local" : "Gracias!"));
+  if (saldo > 0) out.push(CENTRO + "o por transferencia.");
+  out.push(IZQ + SIN_CURSIVA + ESC + "!" + "\x00" + GS + "!" + "\x00");
+  out.push("");
+  out.push("");
+  return escposEncode(out.join("\n"));
+};
+
+const imprimirEstadoCuenta = (data, cliente, negocioNombre) => {
+  const saldo = saldoDeCliente(data, cliente.id);
+  const filas = filasEstadoCuenta(data, cliente).map((f) => ({
+    ...f, concepto: f.items.map(escaparHTML).join("<br>") || "Venta"
+  }));
 
   const estilos =
     "h1{font-size:17pt;margin:0 0 1mm}.sub{font-size:9.5pt;color:#555;margin-bottom:7mm}" +
@@ -15357,85 +15373,6 @@ const imprimirEstadoCuenta = (data, cliente, negocioNombre) => {
 
   return abrirImpresion("Estado de cuenta · " + cliente.nombre, estilos, cuerpo);
 };
-
-// Versión ESC/POS para impresora térmica Bluetooth
-const escposEstadoCuenta = (data, cliente, negocioNombre) => {
-  const ANCHO = 32;
-  const negocio = data.negocio || {};
-  const movs = (data.movimientosCC || []).filter((m) => m.clienteId === cliente.id);
-  const ventas = (data.ventas || []).filter((v) => v.clienteId === cliente.id && !esDevolucion(v));
-  const saldo = saldoDeCliente(data, cliente.id);
-
-  const filas = [
-    ...ventas.map((v) => ({
-      fecha: v.fecha,
-      concepto: (v.items || []).map((it) => it.cantidad + "x " + it.nombre).join(", ") || "Venta",
-      tipo: v.metodoPago === "cuenta_corriente" ? "Cuenta" : "Pagado",
-      debe: v.metodoPago === "cuenta_corriente" ? v.total : 0,
-      haber: v.metodoPago !== "cuenta_corriente" ? v.total : 0
-    })),
-    ...movs.filter((m) => m.tipo !== "cargo").map((m) => ({
-      fecha: m.fecha,
-      concepto: m.concepto || "Pago recibido",
-      tipo: "Pago", debe: 0, haber: m.monto
-    }))
-  ].sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
-
-  const linea = (izq, der) => {
-    izq = String(izq || "");
-    der = String(der || "");
-    const esp = Math.max(1, ANCHO - izq.length - der.length);
-    return izq + " ".repeat(esp) + der;
-  };
-  const separador = "-".repeat(ANCHO);
-
-  const out = [];
-  out.push(CENTRO + NEGRITA + (negocioNombre || negocio.nombre || "Mi negocio").toUpperCase() + SIN_NEGRITA);
-  out.push(CENTRO + "ESTADO DE CUENTA");
-  out.push(IZQ + separador);
-  out.push(NEGRITA + escposEncode(cliente.nombre) + SIN_NEGRITA);
-  if (cliente.telefono) out.push(escposEncode(cliente.telefono));
-  out.push("Al " + fechaNumerica(todayISO()));
-  out.push(separador);
-
-  if (filas.length === 0) {
-    out.push("Sin movimientos registrados.");
-  } else {
-    filas.forEach((f) => {
-      // Fecha + tipo en una línea
-      out.push(linea(fechaNumerica(f.fecha), f.tipo));
-      // Concepto (cortado si no entra)
-      const concepto = escposEncode(String(f.concepto || "").slice(0, ANCHO - 2));
-      out.push("  " + concepto);
-      // Debe / Haber
-      if (f.debe > 0) out.push(linea("  Deuda", money(f.debe)));
-      if (f.haber > 0) out.push(linea("  Pago", money(f.haber)));
-      out.push("");
-    });
-  }
-
-  out.push(separador);
-  out.push(ALTO + linea(saldo > 0 ? "SALDO PENDIENTE" : "SALDO", saldo > 0 ? money(saldo) : "AL DIA") + NORMAL);
-  out.push(separador);
-  if (negocio.mensaje) out.push(CENTRO + escposEncode(negocio.mensaje));
-  out.push(IZQ + ESC + "!" + "\x00" + GS + "!" + "\x00");
-  out.push(""); out.push(""); out.push("");
-  return escposEncode(out.join("\n"));
-};
-
-// Función que conecta y manda el estado de cuenta a la impresora BLE
-async function imprimirEstadoCuentaBluetooth(data, cliente, negocioNombre, avisarEstado) {
-  if (!window.__blePrinter || !window.__blePrinter.device) {
-    avisarEstado && avisarEstado("Conectando con la impresora\u2026");
-    const nombre = await conectarImpresoraBLE();
-    avisarEstado && avisarEstado("Conectado a " + nombre + ". Imprimiendo\u2026");
-  } else if (!window.__blePrinter.device.gatt.connected) {
-    avisarEstado && avisarEstado("Reconectando con la impresora\u2026");
-    await caracteristicaImpresora();
-  }
-  avisarEstado && avisarEstado("Imprimiendo estado de cuenta\u2026");
-  await imprimirEscPos(escposEstadoCuenta(data, cliente, negocioNombre));
-}
 
 // Versión corta para el chat: el PDF no se puede adjuntar desde un enlace
 const textoEstadoCuenta = (data, cliente, negocioNombre) => {
@@ -15959,30 +15896,115 @@ function BorrarClientesModal({ data, persist, onClose }) {
   );
 }
 
+// Modal del estado de cuenta: vista previa y tres salidas. La térmica
+// Bluetooth es la que se usa en el mostrador; el PDF sirve para archivar o
+// mandar por mail; WhatsApp para el cliente que no está.
+function EstadoCuentaModal({ data, cliente, onClose }) {
+  const negocioNombre = (data.negocio && data.negocio.nombre) || "";
+  const [enviarWA, setEnviarWA] = useState(false);
+  const [estado, setEstado] = useState("idle");
+  const [mensaje, setMensaje] = useState("");
+  const filas = filasEstadoCuenta(data, cliente);
+  const saldo = saldoDeCliente(data, cliente.id);
+  const totalDebe = filas.reduce((a, f) => a + (f.debe || 0), 0);
+  const totalPago = filas.reduce((a, f) => a + (f.haber || 0), 0);
+
+  // Mismo camino que el ticket de venta: si ya se emparejó, reconecta sola
+  const imprimirBluetooth = async () => {
+    setMensaje("");
+    try {
+      if (!window.__blePrinter || !window.__blePrinter.device) {
+        setEstado("conectando");
+        const nombre = await conectarImpresoraBLE();
+        setMensaje("Conectado a " + nombre + ". Imprimiendo\u2026");
+      } else if (!window.__blePrinter.device.gatt.connected) {
+        setEstado("conectando");
+        setMensaje("Reconectando con la impresora\u2026");
+        await caracteristicaImpresora();
+      }
+      setEstado("imprimiendo");
+      await imprimirEscPos(construirEstadoCuentaTexto(data, cliente, negocioNombre));
+      setEstado("ok");
+      setMensaje("Estado de cuenta enviado a la impresora.");
+    } catch (e) {
+      setEstado("error");
+      setMensaje(e && e.message ? e.message : "No se pudo imprimir.");
+    }
+  };
+
+  const mono = { fontFamily: "'IBM Plex Mono', monospace" };
+  const ocupado = estado === "conectando" || estado === "imprimiendo";
+
+  return React.createElement(
+    ModalOverlay,
+    { width: 420 },
+    React.createElement(ModalHeader, { icon: Receipt, title: "Estado de cuenta", onClose }),
+
+    // Vista previa: lo mismo que va a salir del papel, en pantalla
+    React.createElement(
+      "div",
+      { style: { background: "var(--surface-2)", borderRadius: 12, padding: "14px 16px", maxHeight: 340, overflowY: "auto" } },
+      React.createElement("div", { style: { fontSize: 14, fontWeight: 700 } }, cliente.nombre),
+      React.createElement("div", { style: { fontSize: 12, color: "var(--muted)", marginBottom: 10 } },
+        (cliente.telefono ? cliente.telefono + " \u00B7 " : "") + "al " + fechaNumerica(todayISO())),
+      filas.length === 0
+        ? React.createElement("div", { style: { fontSize: 13, color: "var(--muted)" } }, "Sin movimientos registrados.")
+        : filas.map((f, i) => React.createElement(
+            "div",
+            { key: i, style: { padding: "7px 0", borderBottom: "1px solid var(--line)" } },
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13 } },
+              React.createElement("span", { style: { fontWeight: 600 } }, fechaNumerica(f.fecha) + " \u00B7 " + f.tipo),
+              React.createElement("span", { style: { ...mono, fontWeight: 650, color: f.debe ? "var(--rose)" : "var(--sage)" } },
+                f.debe ? "+" + money(f.debe) : "\u2212" + money(f.haber))),
+            f.items.map((it, k) => React.createElement("div", { key: k, style: { fontSize: 12, color: "var(--muted)", marginTop: 2 } }, it))
+          )),
+      React.createElement("div", { style: { marginTop: 12, fontSize: 12.5, color: "var(--muted)", display: "flex", justifyContent: "space-between" } },
+        React.createElement("span", null, "Total a cuenta"), React.createElement("span", { style: mono }, money(totalDebe))),
+      React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", display: "flex", justifyContent: "space-between", marginTop: 3 } },
+        React.createElement("span", null, "Total pagado"), React.createElement("span", { style: mono }, money(totalPago))),
+      React.createElement("div", { style: { marginTop: 10, paddingTop: 10, borderTop: "2px solid var(--ink)", display: "flex", justifyContent: "space-between", fontSize: 15, fontWeight: 700 } },
+        React.createElement("span", null, saldo > 0 ? "Saldo pendiente" : "Saldo"),
+        React.createElement("span", { style: { ...mono, color: saldo > 0 ? "var(--rose)" : "var(--sage)" } }, saldo > 0 ? money(saldo) : "Al d\u00EDa"))
+    ),
+
+    mensaje && React.createElement("p", { style: { fontSize: 12, marginTop: 10, color: estado === "error" ? "var(--rose)" : "var(--muted)" } }, mensaje),
+
+    React.createElement(
+      "div",
+      { style: { display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" } },
+      React.createElement(Button, {
+        onClick: imprimirBluetooth, disabled: ocupado,
+        style: { flex: 1, justifyContent: "center", minWidth: 170 }
+      }, React.createElement(Receipt, { size: 14 }), " ",
+        estado === "conectando" ? "Conectando\u2026" : estado === "imprimiendo" ? "Imprimiendo\u2026" : "Imprimir por Bluetooth"),
+      React.createElement(Button, {
+        tone: "ghost",
+        onClick: () => imprimirEstadoCuenta(data, cliente, negocioNombre),
+        title: "Imprimir en A4 o guardar como PDF",
+        style: { justifyContent: "center" }
+      }, "PDF / A4"),
+      React.createElement(Button, {
+        tone: "ghost", onClick: () => setEnviarWA(true),
+        style: { justifyContent: "center" }
+      }, React.createElement(MessageCircle, { size: 14 }), " WhatsApp")
+    ),
+
+    enviarWA && React.createElement(EnviarWhatsAppModal, {
+      data,
+      titulo: "Enviar el estado de cuenta",
+      texto: textoEstadoCuenta(data, cliente, negocioNombre),
+      sugerido: cliente.telefono || "",
+      onClose: () => setEnviarWA(false)
+    })
+  );
+}
+
 function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
   const [registrando, setRegistrando] = useState(false);
   const [enviarCuenta, setEnviarCuenta] = useState(false);
+  const [verCuenta, setVerCuenta] = useState(false);
   const [movForm, setMovForm] = useState({ tipo: "pago", monto: "", concepto: "", metodo: "Efectivo" });
   const [movError, setMovError] = useState("");
-  const [estadoBT, setEstadoBT] = useState("idle"); // idle | conectando | imprimiendo | ok | error
-  const [mensajeBT, setMensajeBT] = useState("");
-
-  const imprimirBluetooth = async () => {
-    setEstadoBT("conectando");
-    setMensajeBT("");
-    try {
-      await imprimirEstadoCuentaBluetooth(
-        data, cliente, (data.negocio && data.negocio.nombre) || "",
-        (msg) => { setMensajeBT(msg); setEstadoBT("imprimiendo"); }
-      );
-      setEstadoBT("ok");
-      setMensajeBT("Impreso correctamente.");
-      setTimeout(() => { setEstadoBT("idle"); setMensajeBT(""); }, 3000);
-    } catch (e) {
-      setEstadoBT("error");
-      setMensajeBT(String((e && e.message) || e));
-    }
-  };
 
   const movimientos = (data.movimientosCC || []).filter((m) => m.clienteId === cliente.id);
   // Solo las ventas en cuenta corriente son deuda. Una venta pagada al contado
@@ -15992,19 +16014,6 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
   // Las demás compras se listan igual, para tener el historial completo
   const ventasPagadas = data.ventas.filter((v) =>
     v.clienteId === cliente.id && !esDevolucion(v) && v.metodoPago !== "cuenta_corriente");
-  // Notas de crédito sobre ventas fiadas: reducen el saldo aunque el reintegro
-  // haya sido en efectivo. Sin esto la venta original sigue figurando como deuda
-  // y el saldo de la ficha no coincide con el real.
-  const idsVentasFiadas = new Set(ventasFiadas.map((v) => v.id));
-  const devolucionesFiadas = data.ventas.filter((v) =>
-    v.clienteId === cliente.id && esDevolucion(v) && idsVentasFiadas.has(v.ventaOriginalId));
-  // Para evitar doble conteo: si la devolución ya generó un movimiento CC
-  // (reintegro = cuenta_corriente), no la sumamos de nuevo.
-  const idsMovCC = new Set(movimientos.map((m) => m.concepto || ""));
-  const devolSinMovCC = devolucionesFiadas.filter((v) => {
-    const etiqueta = "Devolución de venta #" + v.ventaOriginalId.slice(-6);
-    return !movimientos.some((m) => m.concepto === etiqueta);
-  });
 
   // Una sola línea de tiempo con las ventas y los pagos, del más nuevo al más viejo
   const filas = [
@@ -16014,7 +16023,8 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       fecha: v.fecha,
       titulo: "Venta",
       detalle: (v.items || []).map((it) => it.cantidad + "x " + it.nombre).join(", "),
-      monto: v.total
+      monto: v.total,
+      venta: v
     })),
     ...ventasPagadas.map((v) => ({
       id: v.id,
@@ -16022,17 +16032,8 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       fecha: v.fecha,
       titulo: "Compra pagada",
       detalle: (v.items || []).map((it) => it.cantidad + "x " + it.nombre).join(", "),
-      monto: v.total
-    })),
-    // Notas de crédito sobre ventas fiadas (reintegro en efectivo o sin CC)
-    ...devolSinMovCC.map((v) => ({
-      id: v.id,
-      clase: "pago",
-      fecha: v.fecha,
-      titulo: "Nota de crédito",
-      detalle: (v.items || []).map((it) => Math.abs(it.cantidad) + "x " + it.nombre).join(", "),
-      monto: Math.abs(v.total),
-      esDevolucion: true
+      monto: v.total,
+      venta: v
     })),
     ...movimientos.map((m) => ({
       id: m.id,
@@ -16062,15 +16063,16 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
     if (!movForm.monto || isNaN(monto) || monto <= 0) return setMovError("Ingresá un monto válido.");
     setMovError("");
     const mov = {
-      id: uid(), clienteId: cliente.id, fecha: todayISO(), tipo: "pago", monto,
+      id: uid(), clienteId: cliente.id, fecha: todayISO(), tipo: movForm.tipo, monto,
       metodo: movForm.metodo,
-      concepto: "Pago recibido"
+      concepto: movForm.concepto || (movForm.tipo === "cargo" ? "Fiado" : "Pago recibido")
     };
     const anterior = data;
     persist({ ...data, movimientosCC: [mov, ...(data.movimientosCC || [])] });
     setMovForm({ tipo: "pago", monto: "", concepto: "", metodo: "Efectivo" });
     setRegistrando(false);
-    avisar("Pago registrado", { deshacer: () => persist(anterior) });
+    avisar(movForm.tipo === "cargo" ? "Fiado registrado" : "Pago registrado",
+      { deshacer: () => persist(anterior) });
   };
 
   const borrarMovimiento = (id) => {
@@ -16078,6 +16080,41 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
     persist({ ...data, movimientosCC: (data.movimientosCC || []).filter((m) => m.id !== id) });
     avisar("Movimiento eliminado", { deshacer: () => persist(anterior) });
   };
+
+  // Eliminar una venta entera. Sólo el Propietario. Devuelve el stock al local
+  // donde se hizo (por talle y color, no sólo el talle) y borra la venta. Es
+  // una acción delicada, así que pide confirmación y deja deshacer.
+  const borrarVenta = (venta) => {
+    if (!window.confirm(
+      "¿Eliminar esta venta de " + money(venta.total) + "?\n\n" +
+      "Se va a devolver el stock al local y la venta desaparece del historial y de la cuenta del cliente. Se puede deshacer."
+    )) return;
+    const anterior = data;
+    const negocioVenta = venta.negocioId || listaNegocios(data)[0].id;
+    // Repone lo vendido en cada variante exacta (talle|color)
+    const productos = data.productos.map((p) => {
+      let out = p;
+      (venta.items || []).forEach((it) => {
+        if (it.productoId !== p.id) return;
+        const clave = it.talla ? it.talla + (it.color ? "|" + it.color : "") : "";
+        out = ajustarEnNegocio(out, negocioVenta, clave, Math.abs(it.cantidad));
+      });
+      return out;
+    });
+    persist({ ...data, productos, ventas: data.ventas.filter((v) => v.id !== venta.id) });
+    avisar("Venta eliminada · stock devuelto", { deshacer: () => persist(anterior) });
+  };
+
+  const botonTipo = (id, label) => React.createElement("button", {
+    key: id,
+    onClick: () => setMovForm({ ...movForm, tipo: id }),
+    style: {
+      flex: 1, padding: "10px 8px", borderRadius: 9, cursor: "pointer", fontSize: 13, fontWeight: 600, fontFamily: "'Inter', sans-serif",
+      border: "1px solid " + (movForm.tipo === id ? "var(--denim)" : "var(--line)"),
+      background: movForm.tipo === id ? "var(--denim)" : "var(--surface-2)",
+      color: movForm.tipo === id ? "var(--on-accent)" : "var(--ink)"
+    }
+  }, label);
 
   return React.createElement(
     ModalOverlay,
@@ -16113,21 +16150,17 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
     // Las acciones en su propia fila: entran completas y se leen con su nombre
     React.createElement(
       "div",
-      { style: { display: "flex", gap: 9, flexWrap: "wrap", marginBottom: mensajeBT ? 8 : 18 } },
+      { style: { display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 18 } },
       React.createElement(Button, {
         onClick: () => setRegistrando(!registrando),
         style: { padding: "11px 20px" }
       }, registrando ? "Cerrar" : "Registrar pago"),
       React.createElement(Button, {
         tone: "ghost",
-        onClick: imprimirBluetooth,
-        disabled: estadoBT === "conectando" || estadoBT === "imprimiendo",
-        title: "Imprimir en impresora t\u00E9rmica Bluetooth",
+        onClick: () => setVerCuenta(true),
+        title: "Ver, imprimir por Bluetooth o guardar como PDF",
         style: { padding: "11px 18px" }
-      },
-        React.createElement(Bluetooth, { size: 15 }),
-        " ", estadoBT === "conectando" ? "Conectando\u2026" : estadoBT === "imprimiendo" ? "Imprimiendo\u2026" : "Bluetooth"
-      ),
+      }, React.createElement(Receipt, { size: 15 }), " Estado de cuenta"),
       React.createElement(Button, {
         tone: "ghost",
         onClick: () => setEnviarCuenta(true),
@@ -16135,23 +16168,13 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
         style: { padding: "11px 18px" }
       }, React.createElement(MessageCircle, { size: 15 }), " WhatsApp")
     ),
-    // Feedback del Bluetooth (error o progreso)
-    mensajeBT && React.createElement("div", {
-      style: {
-        fontSize: 12.5, marginBottom: 14, padding: "8px 12px", borderRadius: 8,
-        color: estadoBT === "error" ? "var(--rose)" : estadoBT === "ok" ? "var(--sage)" : "var(--muted)",
-        background: estadoBT === "error"
-          ? "color-mix(in srgb, var(--rose) 10%, transparent)"
-          : estadoBT === "ok"
-          ? "color-mix(in srgb, var(--sage) 10%, transparent)"
-          : "var(--surface-2)"
-      }
-    }, mensajeBT),
 
     // El formulario aparece solo cuando se lo pide
     registrando && React.createElement(
       "div",
       { style: { border: "none", borderRadius: 12, padding: "16px 18px", marginBottom: 18 } },
+      React.createElement("div", { style: { display: "flex", gap: 9, marginBottom: 13 } },
+        botonTipo("pago", "Pago recibido"), botonTipo("cargo", "Nuevo fiado")),
       React.createElement(
         "div",
         { style: { display: "grid", gridTemplateColumns: "150px minmax(0, 1fr) auto", gap: 10, alignItems: "end" } },
@@ -16163,13 +16186,19 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
             placeholder: "0"
           })),
         React.createElement("div", { style: { minWidth: 0 } },
-          React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginBottom: 6 } }, "Método"),
-          React.createElement("select", {
-            style: { ...inputStyle, width: "100%" }, value: movForm.metodo,
-            onChange: (e) => setMovForm({ ...movForm, metodo: e.target.value })
-          }, ["Efectivo", "Transferencia", "Débito", "Crédito"].map((m) =>
-            React.createElement("option", { key: m, value: m }, m))),
-        ),
+          React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginBottom: 6 } },
+            movForm.tipo === "pago" ? "Método" : "Concepto"),
+          movForm.tipo === "pago"
+            ? React.createElement("select", {
+                style: { ...inputStyle, width: "100%" }, value: movForm.metodo,
+                onChange: (e) => setMovForm({ ...movForm, metodo: e.target.value })
+              }, ["Efectivo", "Transferencia", "Débito", "Crédito"].map((m) =>
+                React.createElement("option", { key: m, value: m }, m)))
+            : React.createElement("input", {
+                style: { ...inputStyle, width: "100%" }, value: movForm.concepto,
+                onChange: (e) => setMovForm({ ...movForm, concepto: e.target.value }),
+                placeholder: "Mercadería que se lleva"
+              })),
         React.createElement(Button, { onClick: registrar, style: { padding: "12px 20px" } }, "Guardar")
       ),
       movError && React.createElement("p", { style: { color: "var(--rose)", fontSize: 12.5, marginTop: 10 } }, movError)
@@ -16198,7 +16227,6 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
               filas.map((f) => {
                 const esVenta = f.clase === "venta";
                 const esPagada = f.clase === "pagada";
-                const esNota = f.esDevolucion;
                 return React.createElement(
                   "tr",
                   { key: f.id },
@@ -16206,8 +16234,8 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
                     React.createElement(
                       "span",
                       { style: { display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13.5, fontWeight: 650 } },
-                      React.createElement("span", { style: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: esVenta ? "var(--rose)" : esPagada ? "var(--muted)" : esNota ? "var(--mustard)" : "var(--sage)" } }),
-                      esVenta ? "Fiado" : esPagada ? "Contado" : esNota ? "Nota cr\u00E9dito" : "Pago"
+                      React.createElement("span", { style: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: esVenta ? "var(--rose)" : esPagada ? "var(--muted)" : "var(--sage)" } }),
+                      esVenta ? "Fiado" : esPagada ? "Contado" : "Pago"
                     )),
                   React.createElement("td", { style: { color: "var(--muted)", whiteSpace: "nowrap", fontSize: 13 } }, fechaHoraLabel(f.fecha)),
                   React.createElement(
@@ -16228,17 +16256,29 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
                     style: { textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: saldos[f.id] > 0 ? "var(--ink)" : "var(--muted)" }
                   }, saldos[f.id] > 0 ? money(saldos[f.id]) : "—"),
                   React.createElement("td", { style: { textAlign: "right" } },
-                    f.esMovimiento && esPropietario(data)
-                      ? React.createElement("button", {
-                          onClick: () => borrarMovimiento(f.id), title: "Eliminar el movimiento",
-                          style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", display: "inline-flex", padding: 5 }
-                        }, React.createElement(Trash2, { size: 15 }))
-                      : null)
+                    // Eliminar pagos y ventas es sólo del Propietario. Los
+                    // empleados ven el historial pero no lo pueden borrar.
+                    !esPropietario(data)
+                      ? null
+                      : f.esMovimiento
+                        ? React.createElement("button", {
+                            onClick: () => borrarMovimiento(f.id), title: "Eliminar el movimiento",
+                            style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", display: "inline-flex", padding: 5 }
+                          }, React.createElement(Trash2, { size: 15 }))
+                        : f.venta
+                          ? React.createElement("button", {
+                              onClick: () => borrarVenta(f.venta), title: "Eliminar la venta y devolver el stock",
+                              style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", display: "inline-flex", padding: 5 }
+                            }, React.createElement(Trash2, { size: 15 }))
+                          : null)
                 );
               })
             )
           )
         ),
+    verCuenta && React.createElement(EstadoCuentaModal, {
+      data, cliente, onClose: () => setVerCuenta(false)
+    }),
     enviarCuenta && React.createElement(EnviarWhatsAppModal, {
       data,
       titulo: "Enviar el estado de cuenta",
@@ -17229,9 +17269,39 @@ function GestionarCajaModal({ data, caja, onIngresar, onRetirar, onCerrar, onCor
 // herramientas del navegador, que en el celular es incómodo.
 function DiagnosticoCaja({ data, onClose }) {
   const [enNube, setEnNube] = useState(null);
+  // Estado de la copia local: es lo que hace que la app abra al instante.
+  // Si no se pudo guardar, la apertura vuelve a depender de internet.
+  const [copiaInfo, setCopiaInfo] = useState(null);
+  const [fotosCache, setFotosCache] = useState(null);
   const mio = usuarioActualId(data);
   const negId = negocioActivo(data).id;
   const clave = claveCaja(negId, mio);
+
+  useEffect(() => {
+    try {
+      const cruda = localStorage.getItem("ct-copia");
+      if (!cruda) { setCopiaInfo({ activa: false }); }
+      else {
+        const copia = JSON.parse(cruda);
+        setCopiaInfo({
+          activa: true,
+          mb: cruda.length / 1048576,
+          productos: ((copia.datos && copia.datos.productos) || []).length,
+          minima: !((copia.datos && copia.datos.ventas) || []).length
+        });
+      }
+    } catch (e) { setCopiaInfo({ activa: false, error: true }); }
+
+    // Fotos guardadas por el trabajador (sw.js) en este teléfono
+    (async () => {
+      try {
+        if (!("caches" in window)) { setFotosCache(-1); return; }
+        const cache = await caches.open("fotos-v1");
+        const claves = await cache.keys();
+        setFotosCache(claves.length);
+      } catch (e) { setFotosCache(-1); }
+    })();
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -17281,6 +17351,23 @@ function DiagnosticoCaja({ data, onClose }) {
             fila("Filas en la tabla", enNube.filas.length),
             enNube.filas.map((f, k) => fila("· " + (f.usuario_nombre || "?"), (f.abierta ? "abierta" : "cerrada") + " " + money(Number(f.monto_inicial) || 0)))
           ),
+
+    // Cómo abre la app en este teléfono: desde la copia guardada (rápido)
+    // o esperando a internet (lento). El límite del navegador es ~5 MB.
+    React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, margin: "16px 0 6px" } }, "Apertura de la app"),
+    copiaInfo === null
+      ? React.createElement("p", { style: { fontSize: 12, color: "var(--muted)" } }, "Revisando\u2026")
+      : React.createElement(
+          React.Fragment,
+          null,
+          fila("Copia local", copiaInfo.activa
+            ? (copiaInfo.minima ? "\u26A0\uFE0F activa (versi\u00F3n m\u00EDnima)" : "\u2705 activa")
+            : (copiaInfo.error ? "\u274C da\u00F1ada" : "\u274C no guardada")),
+          copiaInfo.activa && fila("Espacio usado", copiaInfo.mb.toFixed(1).replace(".", ",") + " MB de ~5 MB"),
+          copiaInfo.activa && fila("Productos en la copia", copiaInfo.productos)
+        ),
+    fila("Fotos en el tel\u00E9fono", fotosCache === null ? "revisando\u2026" : (fotosCache < 0 ? "sin soporte" : fotosCache)),
+
     React.createElement(Button, { onClick: onClose, style: { width: "100%", justifyContent: "center", marginTop: 18 } }, "Cerrar")
   );
 }
@@ -19140,7 +19227,8 @@ const textoResumen = (data, desde, hasta, negocioId, negocioNombre) => {
     "Operaciones: " + ventas.length + "\n" +
     "Prendas vendidas: " + unidades + "\n" +
     "Ticket promedio: " + money(ventas.length ? Math.round(total / ventas.length) : 0) +
-    (deuda > 0 ? "\n\nPor cobrar: " + money(deuda) : "");
+    // El total por cobrar es sólo para el Propietario, igual que en pantalla
+    (esPropietario(data) && deuda > 0 ? "\n\nPor cobrar: " + money(deuda) : "");
 };
 
 function FiltrosNegocios({ data, negocios, filtroNegocio, setFiltroNegocio, rango, exportar, filtros, setFiltros }) {
@@ -20961,6 +21049,25 @@ async function compartirComoPDF(titulo, estilos, cuerpo, avisar2) {
   }
 }
 
+// El código de barras de una variante es el de la etiqueta que lleva pegada la
+// prenda, así que es el MISMO en todos los locales: la prenda viaja con su
+// etiqueta. Cuando la mercadería llega a un local donde ese talle/color todavía
+// no existía, hay que traerle el código de donde ya esté cargado; si no, el
+// lector no la encuentra y no se puede vender.
+const codigoDeVarianteEnCualquierNegocio = (producto, pedido, exceptoNegocioId) => {
+  const negs = (producto && producto.porNegocio) || {};
+  for (const negId of Object.keys(negs)) {
+    if (exceptoNegocioId && negId === exceptoNegocioId) continue;
+    const vs = (negs[negId] && negs[negId].variantes) || [];
+    const v = vs.find((x) => esLaVariante(x, pedido) && String(x.codigo || "").trim());
+    if (v) return String(v.codigo).trim();
+  }
+  // Puede estar en las variantes sueltas del producto (formato viejo)
+  const sueltas = (producto && producto.variantes) || [];
+  const s = sueltas.find((x) => esLaVariante(x, pedido) && String(x.codigo || "").trim());
+  return s ? String(s.codigo).trim() : "";
+};
+
 const moverEntreNegocios = (producto, origenId, destinoId, cantidad, talle) => {
   let out = producto;
   if (origenId) out = ajustarEnNegocio(out, origenId, talle, -cantidad);
@@ -20976,14 +21083,29 @@ const moverEntreNegocios = (producto, origenId, destinoId, cantidad, talle) => {
     // Si el talle todavía no existe en el destino, se crea con stock cero
     if (talle) {
       const vs = variantesNegocio(out, destinoId);
-      if (!vs.some((v) => esLaVariante(v, talle))) {
+      const existente = vs.find((v) => esLaVariante(v, talle));
+      // El código sale de donde ya esté cargado: es el de la etiqueta física
+      const codigo = codigoDeVarianteEnCualquierNegocio(out, talle, destinoId);
+      if (!existente) {
         // La clave puede traer color ("M|Rojo"): se crea la variante completa
         const partes = String(talle).split("|");
         const nueva = { talle: partes[0], stock: 0 };
         if (partes.length > 1 && partes[1]) nueva.color = partes[1];
+        // Sin esto la mercadería llegaba sin código y no se podía vender
+        if (codigo) nueva.codigo = codigo;
         const porNegocio = { ...(out.porNegocio || {}) };
         const d = { activo: true, stock: 0, variantes: [], ...(porNegocio[destinoId] || {}) };
         porNegocio[destinoId] = { ...d, variantes: [...(d.variantes || []), nueva] };
+        out = { ...out, porNegocio };
+      } else if (codigo && !String(existente.codigo || "").trim()) {
+        // Ya estaba en el destino pero sin código: es lo que quedó de las
+        // transferencias hechas antes de este arreglo. Se le pone el que falta.
+        const porNegocio = { ...(out.porNegocio || {}) };
+        const d = porNegocio[destinoId] || {};
+        porNegocio[destinoId] = {
+          ...d,
+          variantes: (d.variantes || []).map((v) => v === existente ? { ...v, codigo } : v)
+        };
         out = { ...out, porNegocio };
       }
     }
@@ -21005,17 +21127,10 @@ const pendienteRepo = (data) => (data.repoPendiente || []);
 // Arma repoPendiente/repoDivision a partir de la tabla "reposicion_pendiente".
 // Si la tabla todavía no existe (o vino vacía), se usa lo que pudiera haber
 // quedado en "ajustes" de versiones anteriores, para no perder la lista.
-// Historial de reposiciones desde la nube.
-// Devuelve null si la lectura FALLÓ (tabla sin crear, sin permiso, sin red):
-// el que lo reciba no debe pisar lo local. Devuelve [] sólo si la tabla
-// realmente está vacía. Antes las dos cosas eran [], y un error de lectura
-// borraba el historial del teléfono.
+// Historial de reposiciones desde la nube (si la tabla no existe, lista vacía)
 const reposicionesDesdeNube = (res) => {
-  if (!res || res.error || !Array.isArray(res.data)) {
-    if (res && res.error) console.warn("No se pudo leer reposiciones_hechas:", res.error.message);
-    return null;
-  }
-  const filas = res.data
+  const filas = (res && !res.error && Array.isArray(res.data)) ? res.data : [];
+  return filas
     .map((f) => ({
       id: f.id, remito: f.remito, fecha: f.fecha, hora: f.hora || "",
       negocioId: f.negocio_id || "", negocioNombre: f.negocio_nombre || "",
@@ -21024,9 +21139,6 @@ const reposicionesDesdeNube = (res) => {
       unidades: f.unidades || 0, pendienteDespues: f.pendiente_despues || 0
     }))
     .sort((a, b) => (b.fecha + " " + b.hora).localeCompare(a.fecha + " " + a.hora));
-  // Lo que bajó de la nube está confirmado: no hace falta volver a subirlo
-  filas.forEach((r) => remitosEnNube.add(r.id));
-  return filas;
 };
 
 const repoDesdeNube = (repoNube, extra) => {
@@ -21288,7 +21400,9 @@ function RemitoReposicionModal({ data, registro, onClose }) {
         "div",
         { style: { display: "flex", gap: 9 } },
         React.createElement(Button, { tone: "ghost", onClick: () => setEnviar(true), style: { padding: "11px 18px" } },
-          React.createElement(MessageCircle, { size: 15 }), " WhatsApp")
+          React.createElement(MessageCircle, { size: 15 }), " WhatsApp"),
+        React.createElement(Button, { onClick: imprimir, style: { padding: "11px 20px" } },
+          React.createElement(Receipt, { size: 15 }), " Imprimir")
       )
     ),
     enviar && React.createElement(EnviarWhatsAppModal, {
@@ -21484,15 +21598,9 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
       if (tocaAlguno) yaVistas.add(v.id);
     });
 
-    // El número sale del mayor que exista y no de cuántos hay: si la lista se
-    // pierde y se recupera a medias, contar filas repite números.
-    const ultimoNumero = (data.reposiciones || []).reduce((m, r) => {
-      const n = parseInt(String(r.remito || "").replace(/\D/g, ""), 10);
-      return isNaN(n) ? m : Math.max(m, n);
-    }, 0);
     const registro = {
       id: uid(),
-      remito: "R-" + String(ultimoNumero + 1).padStart(4, "0"),
+      remito: "R-" + String((data.reposiciones || []).length + 1).padStart(4, "0"),
       fecha: todayISO(),
       hora: new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }),
       negocioId, negocioNombre,
@@ -21740,19 +21848,25 @@ function RemitoTransferencia({ data, transferencia, negocios, onClose }) {
 
   const detalleProducto = (it) => {
     const prod = data.productos.find((p) => p.id === it.productoId);
-    // El talle puede venir como clave "38|Negro": se parte para mostrarlo
+    // El talle puede venir como clave "38|Negro" (formato viejo) o ya partido
+    // en talle y color por separado, que es como se guarda ahora.
     const partes = String(it.talle || "").split("|");
     const talle = partes[0] || "";
-    const color = partes[1] || "";
+    const color = it.color || partes[1] || "";
     // Si la variante tiene su propio código, ese es el que va: al recibir se
     // controla contra la etiqueta de la prenda, no contra la del modelo.
-    const variante = prod
-      ? (prod.porNegocio && prod.porNegocio[t.origen] && (prod.porNegocio[t.origen].variantes || []))
-          .find((v) => (v.talle || "") === talle && (v.color || "") === (color || (v.color || "")))
-      : null;
+    // Se busca por talle Y color: con varios colores del mismo talle, mirar
+    // sólo el talle traía el código de otro color.
+    const clave = talle ? talle + (color ? "|" + color : "") : "";
+    const vsOrigen = (prod && prod.porNegocio && prod.porNegocio[t.origen] && prod.porNegocio[t.origen].variantes) || [];
+    const variante = clave ? vsOrigen.find((v) => esLaVariante(v, clave)) : null;
+    // Si en el origen no tiene código, se busca en los demás locales: es la
+    // misma prenda con la misma etiqueta.
+    const codigoVar = (variante && String(variante.codigo || "").trim())
+      || (prod && clave ? codigoDeVarianteEnCualquierNegocio(prod, clave, null) : "");
     return {
       nombre: it.nombre,
-      codigo: (variante && variante.codigo) || (prod ? (prod.codigoBarras || "") : ""),
+      codigo: codigoVar || (prod ? (prod.codigoBarras || "") : ""),
       imagen: prod ? (prod.imagen || "") : "",
       talle: talle,
       color: color || (prod ? (prod.color || "") : ""),
@@ -22028,7 +22142,8 @@ function RemitoTransferencia({ data, transferencia, negocios, onClose }) {
             }
           },
           [["Enviar PDF", () => { setVerPapel(false); compartirPDF(); }],
-           ["Mandar como texto", () => { setVerPapel(false); setEnviarWA(true); }]]
+           ["Mandar como texto", () => { setVerPapel(false); setEnviarWA(true); }],
+           ["Imprimir", () => { setVerPapel(false); imprimir(); }]]
             .map(([label, fn]) => React.createElement("button", {
               key: label, onClick: fn,
               style: { display: "block", width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer", color: "var(--ink)", fontSize: 13, padding: "10px 12px", borderRadius: 8, fontFamily: "'Inter', sans-serif" }
@@ -22101,6 +22216,21 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
   const porCodigo = (code) => {
     const limpio = String(code || "").trim();
     if (!limpio) return;
+    // Primero la etiqueta de la prenda: si el código es de un talle y color
+    // puntual, entra derecho con los dos, sin preguntar nada.
+    const hallada = buscarVariantePorCodigo(data.productos, origen, limpio);
+    if (hallada) {
+      const hay = Number(hallada.variante.stock) || 0;
+      if (!sinControl && hay <= 0) {
+        pitido(false);
+        setError('"' + hallada.producto.nombre + '" ' + etiquetaVariante(hallada.variante) + ' no tiene stock en el origen.');
+        return;
+      }
+      pitido(true);
+      setQuery("");
+      sumar(hallada.producto, claveVariante(hallada.variante), 1, true, hay);
+      return;
+    }
     const prod = data.productos.find((p) =>
       (p.codigoBarras || "").trim() === limpio || mismoCodigo(p.codigoBarras, limpio));
     if (!prod) {
@@ -22111,7 +22241,9 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
     const vs = variantesNegocio(prod, origen).filter((v) => sinControl || (Number(v.stock) || 0) > 0);
     const sinTalles = !variantesNegocio(prod, origen).length && !tallesDelProducto(prod).length;
     if (sinTalles || vs.length === 1) {
-      const talle = sinTalles ? "" : vs[0].talle;
+      // La clave completa (talle y color): con vs[0].talle solo, el color
+      // se perdía y la prenda llegaba al otro local sin él.
+      const talle = sinTalles ? "" : claveVariante(vs[0]);
       const hay = sinTalles ? stockNegocio(prod, origen) : Number(vs[0].stock) || 0;
       pitido(true);
       setQuery("");
@@ -22152,9 +22284,14 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
     : [];
 
   const items = Object.keys(sel).map((k) => {
-    const [id, talle] = k.split("|");
+    // La clave es id + "|" + talle, y el talle puede ser a su vez "M|Rojo".
+    // Con [id, talle] = split("|") el color quedaba afuera y la mercadería
+    // llegaba al otro local sin color. Se corta sólo en la primera barra.
+    const corte = k.indexOf("|");
+    const id = corte >= 0 ? k.slice(0, corte) : k;
+    const talle = corte >= 0 ? k.slice(corte + 1) : "";
     const prod = data.productos.find((p) => p.id === id);
-    // La clave puede ser "M|Rojo": se guarda talle y color por separado
+    // Y de "M|Rojo" se guarda talle y color por separado
     const partes = String(talle || "").split("|");
     return { productoId: id, nombre: prod ? prod.nombre : "", talle: partes[0] || "", color: partes[1] || "", cantidad: sel[k] };
   }).filter((x) => x.cantidad > 0);
@@ -22822,9 +22959,42 @@ function NuevoPedidoModal({ data, persist, negocioId, onClose }) {
 // La nota de crédito, para imprimir o mandar. Lleva todo lo que hace falta
 // para que el cliente vuelva: qué dejó, cuánto vale, cuándo compró y quién se
 // la hizo.
+// ===== Nota de crédito para WhatsApp =====
+// Igual que el ticket para chat: sin códigos ESC/POS, con el formato de
+// WhatsApp (*negrita* y viñetas). Es lo que se le manda al cliente para que
+// tenga el vale a mano en su teléfono.
+function notaParaChat(data, nota, negocioNombre) {
+  const L = [];
+  L.push("*" + (negocioNombre || (data.negocio && data.negocio.nombre) || "Nota de crédito").toUpperCase() + "*");
+  L.push("*NOTA DE CRÉDITO " + nota.numero + "*");
+  L.push(fechaNumerica(nota.fecha) + (nota.hora ? " · " + nota.hora : ""));
+  if (nota.clienteNombre) L.push(nota.clienteNombre);
+  L.push("");
+  L.push("*VALE POR " + money(nota.monto) + "*");
+  L.push("");
+  if ((nota.items || []).length) {
+    L.push("Lo que dejaste:");
+    (nota.items || []).forEach((it) => {
+      const det = [it.talla && "Talle " + it.talla, it.color].filter(Boolean).join(" · ");
+      L.push("• " + it.cantidad + "× " + it.nombre + (det ? "  (" + det + ")" : ""));
+    });
+    L.push("");
+  }
+  if (nota.motivo) { L.push("Motivo: " + nota.motivo); L.push(""); }
+  L.push("Presentala en cualquiera de nuestros locales. No se cambia por dinero; si la compra supera el valor, se abona la diferencia. Esta nota no vence.");
+  return L.join("\n");
+}
+
 function NotaCreditoModal({ data, nota, onClose }) {
   const [estadoPDF, setEstadoPDF] = useState("");
+  const [enviarWA, setEnviarWA] = useState(false);
   const neg = listaNegocios(data).find((n) => n.id === nota.negocioId) || {};
+  // Teléfono del cliente de la nota, para no tener que buscarlo
+  const telefonoDelCliente = (() => {
+    const c = (data.clientes || []).find((x) =>
+      x.id === nota.clienteId || (nota.clienteNombre && x.nombre === nota.clienteNombre));
+    return c && c.telefono ? c.telefono : "";
+  })();
 
   const armarDocumento = () => {
     const esc = escaparHTML;
@@ -23020,15 +23190,26 @@ function NotaCreditoModal({ data, nota, onClose }) {
     React.createElement(
       "div",
       { className: "ct-pie-fijo", style: { display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" } },
-      // El ticket es lo que se entrega en el mostrador; la hoja A4 queda para
+      // Bluetooth es lo que se entrega en el mostrador; la hoja A4 queda para
       // archivar o mandar por WhatsApp.
       React.createElement(Button, { onClick: imprimirBluetooth, disabled: /Conectando|Reconectando|Dibujando/.test(estadoBT), style: { padding: "12px 18px" } },
         React.createElement(Receipt, { size: 15 }), " ", /Conectando|Reconectando|Dibujando/.test(estadoBT) ? estadoBT : "Imprimir por Bluetooth"),
+      React.createElement(Button, { tone: "ghost", onClick: () => imprimir(false), style: { padding: "12px 16px" } }, "Hoja A4"),
       React.createElement(Button, { tone: "ghost", onClick: compartirPDF, disabled: !!estadoPDF, style: { padding: "12px 16px" } },
         React.createElement(ArrowDownCircle, { size: 15 }), " ", estadoPDF || "PDF"),
+      React.createElement(Button, { tone: "ghost", onClick: () => setEnviarWA(true), style: { padding: "12px 16px" } },
+        React.createElement(MessageCircle, { size: 15 }), " WhatsApp"),
       estadoBT && !/Conectando|Reconectando|Dibujando/.test(estadoBT) && React.createElement("p", { style: { width: "100%", margin: "4px 0 0", fontSize: 12, color: /No se pudo/.test(estadoBT) ? "var(--rose)" : "var(--muted)" } }, estadoBT),
       React.createElement(Button, { tone: "ghost", onClick: onClose, style: { padding: "12px 16px" } }, "Listo")
-    )
+    ),
+
+    enviarWA && React.createElement(EnviarWhatsAppModal, {
+      data,
+      titulo: "Enviar la nota de crédito",
+      texto: notaParaChat(data, nota, neg.nombre || ""),
+      sugerido: telefonoDelCliente,
+      onClose: () => setEnviarWA(false)
+    })
   );
 }
 
@@ -24360,6 +24541,124 @@ function MigrarFotosModal({ data, persist, onClose }) {
   );
 }
 
+// Baja todas las fotos del catálogo al teléfono de una sola vez.
+// El trabajador (sw.js) las va guardando a medida que pasan; después de esto
+// el catálogo se ve al instante y sin gastar internet, aunque no haya señal.
+// Se puede cortar en cualquier momento: lo ya bajado queda guardado.
+function BajarFotosModal({ data, onClose }) {
+  const [estado, setEstado] = useState("listo");
+  const [hechos, setHechos] = useState(0);
+  const [fallados, setFallados] = useState(0);
+  const cortar = React.useRef(false);
+
+  // Las fotos grandes son el total real. Las miniaturas se bajan aparte y en
+  // silencio: muchos productos no tienen (la miniatura es opcional), así que
+  // un "no existe" en una miniatura NO es un error y no debe alarmar.
+  const { fotos, minis } = React.useMemo(() => {
+    const grandes = new Set();
+    const chicas = new Set();
+    for (const p of (data.productos || [])) {
+      for (const f of imagenesDe(p)) {
+        if (!esFotoGuardada(f)) continue;
+        grandes.add(f);
+        const m = miniDe(f);
+        if (m) chicas.add(m);
+      }
+    }
+    return { fotos: Array.from(grandes), minis: Array.from(chicas) };
+  }, [data.productos]);
+
+  const bajar = async () => {
+    setEstado("trabajando");
+    cortar.current = false;
+    let ok = 0, mal = 0;
+
+    // Baja una lista de a tandas. cuentaErrores: true sólo para las fotos
+    // grandes; en las miniaturas un fallo es esperado y no se cuenta.
+    const bajarLista = async (lista, cuentaErrores) => {
+      const TANDA = 6;
+      for (let i = 0; i < lista.length; i += TANDA) {
+        if (cortar.current) break;
+        const tanda = lista.slice(i, i + TANDA);
+        await Promise.all(tanda.map(async (u) => {
+          try {
+            // Pedirla alcanza: el trabajador la intercepta y la guarda
+            const r = await fetch(u);
+            if (r && r.ok) { if (cuentaErrores) ok++; }
+            else if (cuentaErrores) mal++;
+          } catch (e) { if (cuentaErrores) mal++; }
+        }));
+        if (cuentaErrores) { setHechos(ok); setFallados(mal); }
+      }
+    };
+
+    // Primero las fotos grandes (son las que se ven en grande y las que más
+    // pesan). Después las miniaturas, en silencio.
+    await bajarLista(fotos, true);
+    if (!cortar.current) await bajarLista(minis, false);
+    setEstado("terminado");
+  };
+
+  const hayTrabajador = typeof navigator !== "undefined" && "serviceWorker" in navigator;
+  const pct = fotos.length ? Math.round((hechos / fotos.length) * 100) : 0;
+
+  return React.createElement(
+    ModalOverlay,
+    { width: 460 },
+    React.createElement(ModalHeader, { icon: ArrowDownCircle, title: "Descargar las fotos", onClose }),
+    React.createElement("p", { style: { fontSize: 13.5, color: "var(--muted)", lineHeight: 1.6, marginTop: -6 } },
+      "Baja todo el cat\u00E1logo al tel\u00E9fono de una vez. Despu\u00E9s las fotos se ven al instante, sin esperar y sin gastar internet. Conviene hacerlo con wifi."),
+
+    !hayTrabajador && React.createElement("div", {
+      style: { fontSize: 12.5, color: "var(--rose)", marginTop: 10, lineHeight: 1.5 }
+    }, "Este navegador no guarda fotos. Prob\u00E1 desde la app instalada en el tel\u00E9fono."),
+
+    React.createElement(
+      "div",
+      { style: { background: "var(--surface-2)", borderRadius: 10, padding: "14px 16px", margin: "16px 0" } },
+      React.createElement("div", { style: { fontFamily: "'Inter Tight', sans-serif", fontSize: 26, fontWeight: 700 } },
+        fotos.length),
+      React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: 2 } },
+        fotos.length === 1 ? "foto para descargar" : "fotos para descargar")
+    ),
+
+    estado === "trabajando" && React.createElement(
+      "div",
+      { style: { marginBottom: 14 } },
+      React.createElement("div", { style: { fontSize: 13 } },
+        "Descargando\u2026 ", React.createElement("strong", null, hechos), " de ", fotos.length),
+      React.createElement("div", {
+        style: { height: 6, background: "var(--surface-2)", borderRadius: 99, marginTop: 8, overflow: "hidden" }
+      }, React.createElement("div", {
+        style: { height: "100%", width: pct + "%", background: "var(--sage)", transition: "width .2s" }
+      })),
+      fallados > 0 && React.createElement("div", { style: { color: "var(--rose)", fontSize: 12.5, marginTop: 6 } },
+        fallados, " no se pudieron bajar")
+    ),
+
+    estado === "terminado" && React.createElement(
+      "div",
+      { style: { fontSize: 13, marginBottom: 14, color: fallados > 0 ? "var(--ink)" : "var(--sage)", fontWeight: 600 } },
+      React.createElement("div", { style: { color: "var(--sage)" } },
+        "Listo: ", hechos, " de ", fotos.length, " fotos guardadas en el tel\u00E9fono"),
+      fallados > 0 && React.createElement("div", {
+        style: { color: "var(--muted)", fontWeight: 400, fontSize: 12, marginTop: 4, lineHeight: 1.5 }
+      }, fallados, " no se pudieron bajar. Suele ser porque el producto no tiene foto cargada o la conexi\u00F3n se cort\u00F3 un momento; prob\u00E1 \"Descargar de nuevo\".")
+    ),
+
+    React.createElement(
+      "div",
+      { style: { display: "flex", justifyContent: "flex-end", gap: 10 } },
+      estado === "trabajando"
+        ? React.createElement(Button, { tone: "ghost", onClick: () => { cortar.current = true; }, style: { padding: "12px 20px" } }, "Detener")
+        : React.createElement(Button, { tone: "ghost", onClick: onClose, style: { padding: "12px 20px" } }, "Cerrar"),
+      estado !== "trabajando" && fotos.length > 0 && React.createElement(
+        Button, { onClick: bajar, style: { padding: "12px 22px" } },
+        estado === "terminado" ? "Descargar de nuevo" : "Descargar")
+    )
+  );
+}
+
 function RestablecerModal({ data, persist, onClose }) {
   const [texto, setTexto] = useState("");
   const [respaldado, setRespaldado] = useState(false);
@@ -24443,126 +24742,12 @@ function RestablecerModal({ data, persist, onClose }) {
   );
 }
 
-// ===== Parche masivo de fechaAlta =====
-// Asigna la fecha de hoy a todos los productos que no tienen fecha de carga.
-// Se usa una sola vez para normalizar el catálogo viejo.
-function ParcheFechaAltaModal({ data, persist, onClose }) {
-  const [estado, setEstado] = useState("listo"); // listo | yendo | ok
-  const [sinFecha, setSinFecha] = useState(() =>
-    (data.productos || []).filter((p) => !p.fechaAlta).length
-  );
-  const [hechos, setHechos] = useState(0);
-  const [fechaElegida, setFechaElegida] = useState(todayISO().slice(0, 10));
-
-  const aplicar = async () => {
-    setEstado("yendo");
-    const hoy = fechaElegida || todayISO().slice(0, 10);
-    const productos = (data.productos || []).map((p) =>
-      p.fechaAlta ? p : { ...p, fechaAlta: hoy }
-    );
-    const cant = productos.filter((p) => p.fechaAlta === hoy && !(data.productos || []).find((x) => x.id === p.id && x.fechaAlta)).length;
-
-    // Actualizar local
-    persist({ ...data, productos });
-
-    // Actualizar en Supabase: los que no tenían fecha
-    const sinFechaIds = (data.productos || [])
-      .filter((p) => !p.fechaAlta && p.id)
-      .map((p) => p.id)
-      .filter((id) => /^[0-9a-f-]{36}$/.test(id)); // solo UUIDs reales de la base
-
-    if (sinFechaIds.length) {
-      for (let i = 0; i < sinFechaIds.length; i += 100) {
-        const tanda = sinFechaIds.slice(i, i + 100);
-        await nube.from("productos").update({ fecha_alta: hoy }).in("id", tanda);
-      }
-    }
-
-    setHechos(sinFechaIds.length || (data.productos || []).filter((p) => !p.fechaAlta).length);
-    setEstado("ok");
-  };
-
-  return React.createElement(
-    ModalOverlay,
-    { width: 440 },
-    React.createElement(ModalHeader, { icon: Clock3, title: "Asignar fecha de carga", onClose }),
-    estado === "listo" && React.createElement(
-      React.Fragment,
-      null,
-      React.createElement("p", { style: { fontSize: 13, color: "var(--muted)", marginTop: -8, marginBottom: 14, lineHeight: 1.55 } },
-        sinFecha > 0
-          ? sinFecha + " producto" + (sinFecha !== 1 ? "s" : "") + " no tienen fecha de carga. Se les asigna la fecha que elijas."
-          : "Todos los productos ya tienen fecha de carga. No hay nada que corregir."
-      ),
-      sinFecha > 0 && React.createElement(
-        React.Fragment,
-        null,
-        React.createElement(Field, { label: "Fecha a asignar" },
-          React.createElement("input", {
-            type: "date",
-            style: { ...inputStyle, width: "100%" },
-            value: fechaElegida,
-            onChange: (e) => setFechaElegida(e.target.value)
-          })
-        ),
-        React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 } },
-          React.createElement(Button, { tone: "ghost", onClick: onClose }, "Cancelar"),
-          React.createElement(Button, { onClick: aplicar, style: { padding: "11px 20px" } },
-            React.createElement(Check, { size: 14 }), " Asignar a " + sinFecha + " productos")
-        )
-      ),
-      sinFecha === 0 && React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", marginTop: 8 } },
-        React.createElement(Button, { tone: "ghost", onClick: onClose }, "Cerrar")
-      )
-    ),
-    estado === "yendo" && React.createElement(
-      "div",
-      { style: { textAlign: "center", padding: "24px 0", color: "var(--muted)", fontSize: 13 } },
-      "Aplicando\u2026"
-    ),
-    estado === "ok" && React.createElement(
-      React.Fragment,
-      null,
-      React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, color: "var(--sage)", fontSize: 14, marginBottom: 16 } },
-        React.createElement(Check, { size: 18 }),
-        hechos > 0
-          ? "Se asignó la fecha a " + hechos + " producto" + (hechos !== 1 ? "s" : "") + "."
-          : "Sin cambios: todos ya tenían fecha."
-      ),
-      React.createElement("div", { style: { display: "flex", justifyContent: "flex-end" } },
-        React.createElement(Button, { onClick: onClose }, "Listo")
-      )
-    )
-  );
-}
-
-// ===== Fix de transferencias viejas sin color =====
-// Recorre el historial de transferencias y, para cada ítem que tenga talle
-// con formato "T|C" (por ej. "M|Rojo"), separa los campos talle y color.
-// Las transferencias hechas antes de v9.894 guardaban la clave compuesta en
-// el campo talle sin separar el color.
-function fixTransferenciasViejasColor(data) {
-  if (!data.transferencias || !data.transferencias.length) return data;
-  let cambiado = false;
-  const transferencias = data.transferencias.map((t) => {
-    if (!t.items || !t.items.length) return t;
-    const items = t.items.map((it) => {
-      if (!it.talle || it.color || !String(it.talle).includes("|")) return it;
-      const partes = String(it.talle).split("|");
-      cambiado = true;
-      return { ...it, talle: partes[0], color: partes[1] || "" };
-    });
-    return { ...t, items };
-  });
-  return cambiado ? { ...data, transferencias } : data;
-}
-
 function ConfiguracionView({ data, persist, tema, setTema }) {
   const [restablecer, setRestablecer] = useState(false);
   const [migrarFotos, setMigrarFotos] = useState(false);
+  const [bajarFotos, setBajarFotos] = useState(false);
   const [importarVentas, setImportarVentas] = useState(false);
   const [migrar, setMigrar] = useState(false);
-  const [parcheFecha, setParcheFecha] = useState(false);
   const [sonido, setSonido] = useState(() => {
     try { return localStorage.getItem("ct-sonido") !== "0"; } catch (e) { return true; }
   });
@@ -24700,41 +24885,23 @@ function ConfiguracionView({ data, persist, tema, setTema }) {
       data, persist, onClose: () => setMigrarFotos(false)
     }),
 
-    // Parche de fechaAlta: asigna fecha a los productos sin fecha de carga
-    puede(data, "gestionarUsuarios") && (data.productos || []).some((p) => !p.fechaAlta) && React.createElement(
+    // Descargar las fotos: las deja en el teléfono, así el catálogo vuela.
+    // Lo puede usar cualquiera, no sólo el dueño: cada teléfono baja las suyas.
+    React.createElement(
       BloqueCatalogo,
       {
-        icono: Clock3,
-        titulo: "Asignar fecha de carga masivamente",
-        ayuda: "Hay productos sin fecha de carga (columna \u2018Cargado\u2019 vac\u00EDa). Este bot\u00F3n les asigna una fecha a todos de una vez.",
+        icono: ArrowDownCircle,
+        titulo: "Descargar las fotos al tel\u00E9fono",
+        ayuda: "Baja todo el cat\u00E1logo de una vez y lo deja guardado en este tel\u00E9fono. Despu\u00E9s las fotos se ven al instante y sin gastar internet. Conviene hacerlo con wifi.",
         extra: React.createElement(Button, {
-          onClick: () => setParcheFecha(true),
+          onClick: () => setBajarFotos(true),
           style: { padding: "11px 20px" }
-        }, "Asignar fecha")
+        }, React.createElement(ArrowDownCircle, { size: 15 }), " Descargar")
       }
     ),
-    parcheFecha && React.createElement(ParcheFechaAltaModal, {
-      data, persist, onClose: () => setParcheFecha(false)
+    bajarFotos && React.createElement(BajarFotosModal, {
+      data, onClose: () => setBajarFotos(false)
     }),
-
-    // Fix transferencias viejas sin color separado
-    puede(data, "gestionarUsuarios") && (data.transferencias || []).some((t) =>
-      (t.items || []).some((it) => it.talle && !it.color && String(it.talle).includes("|"))
-    ) && React.createElement(
-      BloqueCatalogo,
-      {
-        icono: ArrowRightLeft,
-        titulo: "Reparar transferencias viejas",
-        ayuda: "Transferencias hechas antes de v9.894 guardaron el color dentro del talle (\"M|Rojo\"). Este botón los separa.",
-        extra: React.createElement(Button, {
-          onClick: () => {
-            const fixed = fixTransferenciasViejasColor(data);
-            persist(fixed);
-          },
-          style: { padding: "11px 20px" }
-        }, "Reparar")
-      }
-    ),
 
     // Zona de riesgo: va al final y separada, para no tocarla sin querer
     puede(data, "gestionarUsuarios") && React.createElement(
@@ -28132,7 +28299,10 @@ function ResumenReportes({ data, rango, setSub }) {
       mini(TrendingUp, "var(--sage)", "rgba(122,155,122,0.14)", "Ticket promedio",
         ticketProm ? money(ticketProm) : "Sin datos",
         totalOperaciones ? "sobre " + totalOperaciones + " venta" + (totalOperaciones === 1 ? "" : "s") : "sin operaciones"),
-      mini(Wallet, deudaTotal ? "var(--rose)" : "var(--muted)",
+      // El total adeudado (la suma de todas las deudas) es sólo para el
+      // Propietario. Los empleados ven la deuda de cada cliente en su ficha,
+      // pero no el acumulado del negocio.
+      esPropietario(data) && mini(Wallet, deudaTotal ? "var(--rose)" : "var(--muted)",
         deudaTotal ? "rgba(198,93,93,0.12)" : "var(--surface-2)", "Te deben",
         deudaTotal ? money(deudaTotal) : "Nada",
         deudaTotal
@@ -30036,6 +30206,7 @@ function CajaReportes({ data, rango, persist, dataReal }) {
                       { ancla: menu.rect, onClose: () => setMenu(null) },
                       [
                         ["Ver el detalle", () => { setDetalle(c); setMenu(null); }, Search],
+                        ["Imprimir el cierre", () => { imprimirCierre(c); setMenu(null); }, Receipt],
                         // S\u00F3lo el due\u00F1o puede borrar un cierre (uno duplicado, de prueba o mal hecho)
                         ...(persist && esPropietario(real) ? [["Eliminar cierre", () => { setMenu(null); eliminarCierre(c); }, Trash2, true]] : [])
                       ].map(([texto, fn, Icono, peligro]) => React.createElement("button", {
@@ -30359,6 +30530,8 @@ function DetalleCierreModal({ cierre, onClose, data }) {
     React.createElement(
       "div",
       { style: { display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 20 } },
+      React.createElement(Button, { tone: "ghost", onClick: () => imprimirCierre(cierre), style: { padding: "12px 20px" } },
+        React.createElement(Receipt, { size: 15 }), " Imprimir"),
       React.createElement(Button, { onClick: onClose, style: { padding: "12px 24px" } }, "Cerrar")
     )
   );
