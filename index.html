@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.900";
+const VERSION_APP = "9.902";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -11536,13 +11536,18 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
 
   // Se puede cobrar todo el saldo o sólo una parte: el cliente queda debiendo
   // la diferencia. Sin monto, se toma la deuda completa.
-  // Suma la deuda completa del cliente como una línea más del carrito
-  const sumarDeuda = () => {
+  // Suma la deuda (total o parcial) como una línea más del carrito
+  const sumarDeuda = (montoParcial) => {
     if (!clienteDelCarrito || saldoCliente <= 0 || deudaEnCarrito) return;
+    // El monto no puede superar lo que debe. Si no llega monto, se cobra todo.
+    let monto = Number(montoParcial);
+    if (!monto || monto <= 0 || monto > saldoCliente) monto = saldoCliente;
+    monto = Math.round(monto * 100) / 100;
+    const parcial = monto < saldoCliente;
     setCart([...cart, {
       productoId: null, manualId: uid(), esDeuda: true, clienteDeuda: clienteId,
-      nombre: "Saldo pendiente de " + clienteDelCarrito.nombre,
-      precioUnit: saldoCliente, costo: 0, cantidad: 1, stockDisp: Infinity
+      nombre: (parcial ? "Pago a cuenta de " : "Saldo pendiente de ") + clienteDelCarrito.nombre,
+      precioUnit: monto, costo: 0, cantidad: 1, stockDisp: Infinity
     }]);
   };
   // Prefijo por tipo para que una línea manual y una de producto nunca puedan
@@ -11856,12 +11861,15 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     // La deuda que se sumó al carrito se descuenta de la cuenta del cliente
     const lineaDeuda = cart.find((it) => it.esDeuda);
     if (lineaDeuda && lineaDeuda.clienteDeuda) {
+      const montoPago = lineaDeuda.precioUnit * lineaDeuda.cantidad;
+      const saldoPrevio = saldoDeCliente(data, lineaDeuda.clienteDeuda);
+      const esParcial = montoPago < saldoPrevio - 0.01;
       movimientosCC = [
         {
           id: uid(), clienteId: lineaDeuda.clienteDeuda, fecha: todayISO(),
-          tipo: "pago", monto: lineaDeuda.precioUnit * lineaDeuda.cantidad,
+          tipo: "pago", monto: montoPago,
           metodo: metodoPago === "efectivo" ? "Efectivo" : (METODO_LABELS[metodoPago] || metodoPago),
-          concepto: "Saldo cobrado con una venta"
+          concepto: esParcial ? "Pago parcial de saldo" : "Saldo cobrado con una venta"
         },
         ...movimientosCC
       ];
@@ -13023,6 +13031,9 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
   const [extras, setExtras] = useState({ ...EXTRAS_VACIOS });
   const [comprobantes, setComprobantes] = useState([]);
   const [error, setError] = useState("");
+  // Cobro de saldo: por defecto se cobra todo, pero se puede escribir menos
+  const [mostrarSaldo, setMostrarSaldo] = useState(false);
+  const [montoSaldo, setMontoSaldo] = useState("");
 
   // El precio depende de cómo pague: efectivo va mayorista siempre, y
   // transferencia también a partir de 2 prendas. En pago dividido sólo cuenta
@@ -13213,9 +13224,9 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
             }))
           ]
         }),
-        // Si el cliente debe plata, se suma la deuda completa de un toque
-        cliente && saldoCliente > 0 && !deudaEnCarrito && React.createElement("button", {
-          onClick: () => onSumarDeuda(),
+        // Si el cliente debe plata, se puede cobrar todo o una parte
+        cliente && saldoCliente > 0 && !deudaEnCarrito && !mostrarSaldo && React.createElement("button", {
+          onClick: () => setMostrarSaldo(true),
           style: {
             display: "flex", alignItems: "center", gap: 9, width: "100%", marginTop: 9,
             padding: "11px 12px", borderRadius: 9, cursor: "pointer",
@@ -13228,9 +13239,50 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
           React.createElement("span", { style: { flex: 1 } }, "Debe ", money(saldoCliente)),
           React.createElement("span", { style: { color: "var(--denim)", fontWeight: 600 } }, "Cobrar saldo")
         ),
+        // Panel para elegir cuánto cobrar del saldo
+        cliente && saldoCliente > 0 && !deudaEnCarrito && mostrarSaldo && React.createElement("div", {
+          style: {
+            marginTop: 9, padding: "13px 14px", borderRadius: 10,
+            border: "1px solid color-mix(in srgb, var(--rose) 30%, transparent)",
+            background: "color-mix(in srgb, var(--rose) 8%, transparent)"
+          }
+        },
+          React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginBottom: 9 } },
+            "Debe ", React.createElement("b", { style: { color: "var(--ink)" } }, money(saldoCliente)),
+            ". Cobrá todo o escribí cuánto entrega ahora."),
+          React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+            React.createElement("input", {
+              type: "number",
+              inputMode: "decimal",
+              placeholder: "Todo (" + money(saldoCliente) + ")",
+              value: montoSaldo,
+              onChange: (e) => setMontoSaldo(e.target.value),
+              style: { ...inputStyle, flex: 1 }
+            }),
+            React.createElement(Button, {
+              onClick: () => {
+                const m = Number(montoSaldo);
+                onSumarDeuda(m > 0 && m < saldoCliente ? m : undefined);
+                setMostrarSaldo(false);
+                setMontoSaldo("");
+              },
+              style: { padding: "11px 16px", whiteSpace: "nowrap" }
+            }, "Agregar")
+          ),
+          React.createElement("div", { style: { display: "flex", gap: 12, marginTop: 9 } },
+            React.createElement("button", {
+              onClick: () => setMontoSaldo(String(saldoCliente)),
+              style: { background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--denim)", fontSize: 12.5, fontFamily: "'Inter', sans-serif" }
+            }, "Cobrar todo"),
+            React.createElement("button", {
+              onClick: () => { setMostrarSaldo(false); setMontoSaldo(""); },
+              style: { background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--muted)", fontSize: 12.5, fontFamily: "'Inter', sans-serif" }
+            }, "Cancelar")
+          )
+        ),
         deudaEnCarrito && React.createElement("div", {
           style: { marginTop: 9, fontSize: 12.5, color: "var(--sage)", display: "flex", alignItems: "center", gap: 7 }
-        }, React.createElement(Check, { size: 14 }), "Saldo pendiente agregado al total")
+        }, React.createElement(Check, { size: 14 }), "Pago de saldo agregado al total")
       ),
 
       // --- Métodos de pago ---
@@ -15785,16 +15837,15 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
     if (!movForm.monto || isNaN(monto) || monto <= 0) return setMovError("Ingresá un monto válido.");
     setMovError("");
     const mov = {
-      id: uid(), clienteId: cliente.id, fecha: todayISO(), tipo: movForm.tipo, monto,
+      id: uid(), clienteId: cliente.id, fecha: todayISO(), tipo: "pago", monto,
       metodo: movForm.metodo,
-      concepto: movForm.concepto || (movForm.tipo === "cargo" ? "Fiado" : "Pago recibido")
+      concepto: "Pago recibido"
     };
     const anterior = data;
     persist({ ...data, movimientosCC: [mov, ...(data.movimientosCC || [])] });
     setMovForm({ tipo: "pago", monto: "", concepto: "", metodo: "Efectivo" });
     setRegistrando(false);
-    avisar(movForm.tipo === "cargo" ? "Fiado registrado" : "Pago registrado",
-      { deshacer: () => persist(anterior) });
+    avisar("Pago registrado", { deshacer: () => persist(anterior) });
   };
 
   const borrarMovimiento = (id) => {
@@ -15802,17 +15853,6 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
     persist({ ...data, movimientosCC: (data.movimientosCC || []).filter((m) => m.id !== id) });
     avisar("Movimiento eliminado", { deshacer: () => persist(anterior) });
   };
-
-  const botonTipo = (id, label) => React.createElement("button", {
-    key: id,
-    onClick: () => setMovForm({ ...movForm, tipo: id }),
-    style: {
-      flex: 1, padding: "10px 8px", borderRadius: 9, cursor: "pointer", fontSize: 13, fontWeight: 600, fontFamily: "'Inter', sans-serif",
-      border: "1px solid " + (movForm.tipo === id ? "var(--denim)" : "var(--line)"),
-      background: movForm.tipo === id ? "var(--denim)" : "var(--surface-2)",
-      color: movForm.tipo === id ? "var(--on-accent)" : "var(--ink)"
-    }
-  }, label);
 
   return React.createElement(
     ModalOverlay,
@@ -15871,8 +15911,6 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
     registrando && React.createElement(
       "div",
       { style: { border: "none", borderRadius: 12, padding: "16px 18px", marginBottom: 18 } },
-      React.createElement("div", { style: { display: "flex", gap: 9, marginBottom: 13 } },
-        botonTipo("pago", "Pago recibido"), botonTipo("cargo", "Nuevo fiado")),
       React.createElement(
         "div",
         { style: { display: "grid", gridTemplateColumns: "150px minmax(0, 1fr) auto", gap: 10, alignItems: "end" } },
@@ -15884,19 +15922,13 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
             placeholder: "0"
           })),
         React.createElement("div", { style: { minWidth: 0 } },
-          React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginBottom: 6 } },
-            movForm.tipo === "pago" ? "Método" : "Concepto"),
-          movForm.tipo === "pago"
-            ? React.createElement("select", {
-                style: { ...inputStyle, width: "100%" }, value: movForm.metodo,
-                onChange: (e) => setMovForm({ ...movForm, metodo: e.target.value })
-              }, ["Efectivo", "Transferencia", "Débito", "Crédito"].map((m) =>
-                React.createElement("option", { key: m, value: m }, m)))
-            : React.createElement("input", {
-                style: { ...inputStyle, width: "100%" }, value: movForm.concepto,
-                onChange: (e) => setMovForm({ ...movForm, concepto: e.target.value }),
-                placeholder: "Mercadería que se lleva"
-              })),
+          React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginBottom: 6 } }, "Método"),
+          React.createElement("select", {
+            style: { ...inputStyle, width: "100%" }, value: movForm.metodo,
+            onChange: (e) => setMovForm({ ...movForm, metodo: e.target.value })
+          }, ["Efectivo", "Transferencia", "Débito", "Crédito"].map((m) =>
+            React.createElement("option", { key: m, value: m }, m))),
+        ),
         React.createElement(Button, { onClick: registrar, style: { padding: "12px 20px" } }, "Guardar")
       ),
       movError && React.createElement("p", { style: { color: "var(--rose)", fontSize: 12.5, marginTop: 10 } }, movError)
