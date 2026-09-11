@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.889";
+const VERSION_APP = "9.890";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -24116,19 +24116,21 @@ function BajarFotosModal({ data, onClose }) {
   const [fallados, setFallados] = useState(0);
   const cortar = React.useRef(false);
 
-  // Todas las direcciones a bajar: la miniatura (la que se ve en las listas)
-  // y la foto grande de cada producto. Sin repetidos.
-  const urls = React.useMemo(() => {
-    const set = new Set();
+  // Las fotos grandes son el total real. Las miniaturas se bajan aparte y en
+  // silencio: muchos productos no tienen (la miniatura es opcional), así que
+  // un "no existe" en una miniatura NO es un error y no debe alarmar.
+  const { fotos, minis } = React.useMemo(() => {
+    const grandes = new Set();
+    const chicas = new Set();
     for (const p of (data.productos || [])) {
       for (const f of imagenesDe(p)) {
         if (!esFotoGuardada(f)) continue;
-        set.add(f);
+        grandes.add(f);
         const m = miniDe(f);
-        if (m) set.add(m);
+        if (m) chicas.add(m);
       }
     }
-    return Array.from(set);
+    return { fotos: Array.from(grandes), minis: Array.from(chicas) };
   }, [data.productos]);
 
   const bajar = async () => {
@@ -24136,26 +24138,34 @@ function BajarFotosModal({ data, onClose }) {
     cortar.current = false;
     let ok = 0, mal = 0;
 
-    // De a 6 al mismo tiempo: rápido sin ahogar la conexión del teléfono
-    const TANDA = 6;
-    for (let i = 0; i < urls.length; i += TANDA) {
-      if (cortar.current) break;
-      const tanda = urls.slice(i, i + TANDA);
-      await Promise.all(tanda.map(async (u) => {
-        try {
-          // Pedirla alcanza: el trabajador la intercepta y la guarda
-          const r = await fetch(u, { cache: "force-cache" });
-          if (r && r.ok) { ok++; } else { mal++; }
-        } catch (e) { mal++; }
-      }));
-      setHechos(ok);
-      setFallados(mal);
-    }
+    // Baja una lista de a tandas. cuentaErrores: true sólo para las fotos
+    // grandes; en las miniaturas un fallo es esperado y no se cuenta.
+    const bajarLista = async (lista, cuentaErrores) => {
+      const TANDA = 6;
+      for (let i = 0; i < lista.length; i += TANDA) {
+        if (cortar.current) break;
+        const tanda = lista.slice(i, i + TANDA);
+        await Promise.all(tanda.map(async (u) => {
+          try {
+            // Pedirla alcanza: el trabajador la intercepta y la guarda
+            const r = await fetch(u);
+            if (r && r.ok) { if (cuentaErrores) ok++; }
+            else if (cuentaErrores) mal++;
+          } catch (e) { if (cuentaErrores) mal++; }
+        }));
+        if (cuentaErrores) { setHechos(ok); setFallados(mal); }
+      }
+    };
+
+    // Primero las fotos grandes (son las que se ven en grande y las que más
+    // pesan). Después las miniaturas, en silencio.
+    await bajarLista(fotos, true);
+    if (!cortar.current) await bajarLista(minis, false);
     setEstado("terminado");
   };
 
   const hayTrabajador = typeof navigator !== "undefined" && "serviceWorker" in navigator;
-  const pct = urls.length ? Math.round((hechos / urls.length) * 100) : 0;
+  const pct = fotos.length ? Math.round((hechos / fotos.length) * 100) : 0;
 
   return React.createElement(
     ModalOverlay,
@@ -24172,16 +24182,16 @@ function BajarFotosModal({ data, onClose }) {
       "div",
       { style: { background: "var(--surface-2)", borderRadius: 10, padding: "14px 16px", margin: "16px 0" } },
       React.createElement("div", { style: { fontFamily: "'Inter Tight', sans-serif", fontSize: 26, fontWeight: 700 } },
-        urls.length),
+        fotos.length),
       React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: 2 } },
-        urls.length === 1 ? "foto para descargar" : "fotos para descargar")
+        fotos.length === 1 ? "foto para descargar" : "fotos para descargar")
     ),
 
     estado === "trabajando" && React.createElement(
       "div",
       { style: { marginBottom: 14 } },
       React.createElement("div", { style: { fontSize: 13 } },
-        "Descargando\u2026 ", React.createElement("strong", null, hechos), " de ", urls.length),
+        "Descargando\u2026 ", React.createElement("strong", null, hechos), " de ", fotos.length),
       React.createElement("div", {
         style: { height: 6, background: "var(--surface-2)", borderRadius: 99, marginTop: 8, overflow: "hidden" }
       }, React.createElement("div", {
@@ -24193,9 +24203,12 @@ function BajarFotosModal({ data, onClose }) {
 
     estado === "terminado" && React.createElement(
       "div",
-      { style: { fontSize: 13, marginBottom: 14, color: "var(--sage)", fontWeight: 600 } },
-      "Listo: ", hechos, " fotos guardadas en el tel\u00E9fono",
-      fallados > 0 ? " \u00B7 " + fallados + " con problemas" : ""
+      { style: { fontSize: 13, marginBottom: 14, color: fallados > 0 ? "var(--ink)" : "var(--sage)", fontWeight: 600 } },
+      React.createElement("div", { style: { color: "var(--sage)" } },
+        "Listo: ", hechos, " de ", fotos.length, " fotos guardadas en el tel\u00E9fono"),
+      fallados > 0 && React.createElement("div", {
+        style: { color: "var(--muted)", fontWeight: 400, fontSize: 12, marginTop: 4, lineHeight: 1.5 }
+      }, fallados, " no se pudieron bajar. Suele ser porque el producto no tiene foto cargada o la conexi\u00F3n se cort\u00F3 un momento; prob\u00E1 \"Descargar de nuevo\".")
     ),
 
     React.createElement(
@@ -24204,7 +24217,7 @@ function BajarFotosModal({ data, onClose }) {
       estado === "trabajando"
         ? React.createElement(Button, { tone: "ghost", onClick: () => { cortar.current = true; }, style: { padding: "12px 20px" } }, "Detener")
         : React.createElement(Button, { tone: "ghost", onClick: onClose, style: { padding: "12px 20px" } }, "Cerrar"),
-      estado !== "trabajando" && urls.length > 0 && React.createElement(
+      estado !== "trabajando" && fotos.length > 0 && React.createElement(
         Button, { onClick: bajar, style: { padding: "12px 22px" } },
         estado === "terminado" ? "Descargar de nuevo" : "Descargar")
     )
