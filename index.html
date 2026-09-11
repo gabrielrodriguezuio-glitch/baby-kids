@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.890";
+const VERSION_APP = "9.891";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -143,6 +143,30 @@ import { Tag, Package, ShoppingBag, Users, Wallet, Plus, Trash2, X, AlertTriangl
 } from "lucide-react";
 const STORAGE_KEY = "control-tienda-ropa-v1";
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+// Clave para ordenar productos por orden de carga (el más viejo primero).
+// No hay un solo dato confiable para esto, así que se usa el mejor disponible:
+//  · creadoEn: lo pone la nube, es el más preciso (trae fecha y hora)
+//  · fechaAlta: lo pone la app al crear, pero sólo guarda el día
+//  · el id de desempate: uid() arranca con la hora en base36, así que dos
+//    productos del mismo día quedan igual en el orden en que se cargaron.
+// Las partes van con largo fijo para que la comparación sea siempre la misma
+// y no dependa de cómo el idioma ordena los símbolos.
+// Lo que no tiene ninguna fecha (importaciones viejas) queda al principio,
+// que es lo correcto: son los más antiguos. Y lo recién cargado en el
+// teléfono, que todavía no tiene hora de la nube, queda al final de su día.
+const claveDeCarga = (p) => {
+  const f = (p && (p.creadoEn || p.fechaAlta)) || "";
+  const dia = f ? f.slice(0, 10) : "0000-00-00";
+  const hora = (f && f.length > 10) ? f.slice(11, 19) : "99:99:99";
+  return dia + " " + hora + " " + ((p && p.id) || "");
+};
+// El día en que se cargó, para mostrar en la lista. Vacío si no se sabe.
+const diaDeCarga = (p) => {
+  const f = (p && (p.creadoEn || p.fechaAlta)) || "";
+  if (!f) return "";
+  const [a, m, d] = f.slice(0, 10).split("-");
+  return (a && m && d) ? d + "/" + m + "/" + a.slice(2) : "";
+};
 // Id definitivo con formato de la base (UUID). Se usa para las ventas: así el
 // id que se les pone en la app es el MISMO que queda en la nube, y nada que
 // lo anote (como la lista de reposición) queda apuntando a un id viejo.
@@ -8957,7 +8981,10 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
   }, [showForm, onEditando]);
   const [mostrarFiltros, setMostrarFiltros] = useState(false);
   const [filtros, setFiltros] = useState(FILTROS_VACIOS);
-  const [orden, setOrden] = useState({ campo: "nombre", asc: true });
+  // Arranca por orden de carga: lo recién cargado queda en la última página,
+  // que es donde uno lo va a buscar apenas termina de darlo de alta.
+  // Tocando "Producto" se vuelve al orden alfabético de siempre.
+  const [orden, setOrden] = useState({ campo: "carga", asc: true });
   const [pagina, setPagina] = useState(1);
   const [porPagina, setPorPagina] = useState(10);
   // Al buscar o filtrar se vuelve a la primera página: si no, se puede quedar
@@ -9080,6 +9107,12 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
   });
   return filtrados.sort((a, b) => {
     const dir = orden.asc ? 1 : -1;
+    // Orden de carga: los más viejos arriba, los recién cargados al final.
+    // Comparación directa: la clave ya viene armada para eso.
+    if (orden.campo === "carga") {
+      const ka = claveDeCarga(a), kb = claveDeCarga(b);
+      return (ka < kb ? -1 : ka > kb ? 1 : 0) * dir;
+    }
     if (orden.campo === "stock") return (a.stock - b.stock) * dir;
     if (orden.campo === "precio") return (a.precioVenta - b.precioVenta) * dir;
     return (a.nombre || "").localeCompare(b.nombre || "", "es") * dir;
@@ -9486,6 +9519,8 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
                   React.createElement("th", { style: { width: 34 } },
                     React.createElement("input", { type: "checkbox", className: "ct-check", checked: todosSel, onChange: toggleTodos, style: { cursor: "pointer", width: 15, height: 15, accentColor: "var(--denim)" } })),
                   React.createElement(Th, { campo: "nombre" }, "Producto"),
+                  // Deja volver al orden de carga después de ordenar por otra cosa
+                  React.createElement(Th, { campo: "carga", style: { width: 96 } }, "Cargado"),
                   React.createElement(Th, { campo: "stock", style: { width: 120 } }, "Stock"),
                   React.createElement(Th, { campo: "precio", style: { width: 120, textAlign: "right" } },
                     listasDe(data).some((l) => /mayor/i.test(l.nombre)) ? "Minorista / Mayorista" : "Precio"),
@@ -9525,6 +9560,9 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
                         )
                       )
                     ),
+                    React.createElement("td", {
+                      style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "var(--muted)", whiteSpace: "nowrap" }
+                    }, diaDeCarga(p) || "—"),
                     React.createElement("td", null, celdaStock(p)),
                     React.createElement("td", { style: { textAlign: "right" } },
                       React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, fontWeight: 650, letterSpacing: -0.02 } }, money(p.precioVenta)),
