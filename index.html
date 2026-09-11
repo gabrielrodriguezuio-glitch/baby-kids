@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.887";
+const VERSION_APP = "9.889";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -16938,9 +16938,39 @@ function GestionarCajaModal({ data, caja, onIngresar, onRetirar, onCerrar, onCor
 // herramientas del navegador, que en el celular es incómodo.
 function DiagnosticoCaja({ data, onClose }) {
   const [enNube, setEnNube] = useState(null);
+  // Estado de la copia local: es lo que hace que la app abra al instante.
+  // Si no se pudo guardar, la apertura vuelve a depender de internet.
+  const [copiaInfo, setCopiaInfo] = useState(null);
+  const [fotosCache, setFotosCache] = useState(null);
   const mio = usuarioActualId(data);
   const negId = negocioActivo(data).id;
   const clave = claveCaja(negId, mio);
+
+  useEffect(() => {
+    try {
+      const cruda = localStorage.getItem("ct-copia");
+      if (!cruda) { setCopiaInfo({ activa: false }); }
+      else {
+        const copia = JSON.parse(cruda);
+        setCopiaInfo({
+          activa: true,
+          mb: cruda.length / 1048576,
+          productos: ((copia.datos && copia.datos.productos) || []).length,
+          minima: !((copia.datos && copia.datos.ventas) || []).length
+        });
+      }
+    } catch (e) { setCopiaInfo({ activa: false, error: true }); }
+
+    // Fotos guardadas por el trabajador (sw.js) en este teléfono
+    (async () => {
+      try {
+        if (!("caches" in window)) { setFotosCache(-1); return; }
+        const cache = await caches.open("fotos-v1");
+        const claves = await cache.keys();
+        setFotosCache(claves.length);
+      } catch (e) { setFotosCache(-1); }
+    })();
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -16990,6 +17020,23 @@ function DiagnosticoCaja({ data, onClose }) {
             fila("Filas en la tabla", enNube.filas.length),
             enNube.filas.map((f, k) => fila("· " + (f.usuario_nombre || "?"), (f.abierta ? "abierta" : "cerrada") + " " + money(Number(f.monto_inicial) || 0)))
           ),
+
+    // Cómo abre la app en este teléfono: desde la copia guardada (rápido)
+    // o esperando a internet (lento). El límite del navegador es ~5 MB.
+    React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, margin: "16px 0 6px" } }, "Apertura de la app"),
+    copiaInfo === null
+      ? React.createElement("p", { style: { fontSize: 12, color: "var(--muted)" } }, "Revisando\u2026")
+      : React.createElement(
+          React.Fragment,
+          null,
+          fila("Copia local", copiaInfo.activa
+            ? (copiaInfo.minima ? "\u26A0\uFE0F activa (versi\u00F3n m\u00EDnima)" : "\u2705 activa")
+            : (copiaInfo.error ? "\u274C da\u00F1ada" : "\u274C no guardada")),
+          copiaInfo.activa && fila("Espacio usado", copiaInfo.mb.toFixed(1).replace(".", ",") + " MB de ~5 MB"),
+          copiaInfo.activa && fila("Productos en la copia", copiaInfo.productos)
+        ),
+    fila("Fotos en el tel\u00E9fono", fotosCache === null ? "revisando\u2026" : (fotosCache < 0 ? "sin soporte" : fotosCache)),
+
     React.createElement(Button, { onClick: onClose, style: { width: "100%", justifyContent: "center", marginTop: 18 } }, "Cerrar")
   );
 }
@@ -24059,6 +24106,111 @@ function MigrarFotosModal({ data, persist, onClose }) {
   );
 }
 
+// Baja todas las fotos del catálogo al teléfono de una sola vez.
+// El trabajador (sw.js) las va guardando a medida que pasan; después de esto
+// el catálogo se ve al instante y sin gastar internet, aunque no haya señal.
+// Se puede cortar en cualquier momento: lo ya bajado queda guardado.
+function BajarFotosModal({ data, onClose }) {
+  const [estado, setEstado] = useState("listo");
+  const [hechos, setHechos] = useState(0);
+  const [fallados, setFallados] = useState(0);
+  const cortar = React.useRef(false);
+
+  // Todas las direcciones a bajar: la miniatura (la que se ve en las listas)
+  // y la foto grande de cada producto. Sin repetidos.
+  const urls = React.useMemo(() => {
+    const set = new Set();
+    for (const p of (data.productos || [])) {
+      for (const f of imagenesDe(p)) {
+        if (!esFotoGuardada(f)) continue;
+        set.add(f);
+        const m = miniDe(f);
+        if (m) set.add(m);
+      }
+    }
+    return Array.from(set);
+  }, [data.productos]);
+
+  const bajar = async () => {
+    setEstado("trabajando");
+    cortar.current = false;
+    let ok = 0, mal = 0;
+
+    // De a 6 al mismo tiempo: rápido sin ahogar la conexión del teléfono
+    const TANDA = 6;
+    for (let i = 0; i < urls.length; i += TANDA) {
+      if (cortar.current) break;
+      const tanda = urls.slice(i, i + TANDA);
+      await Promise.all(tanda.map(async (u) => {
+        try {
+          // Pedirla alcanza: el trabajador la intercepta y la guarda
+          const r = await fetch(u, { cache: "force-cache" });
+          if (r && r.ok) { ok++; } else { mal++; }
+        } catch (e) { mal++; }
+      }));
+      setHechos(ok);
+      setFallados(mal);
+    }
+    setEstado("terminado");
+  };
+
+  const hayTrabajador = typeof navigator !== "undefined" && "serviceWorker" in navigator;
+  const pct = urls.length ? Math.round((hechos / urls.length) * 100) : 0;
+
+  return React.createElement(
+    ModalOverlay,
+    { width: 460 },
+    React.createElement(ModalHeader, { icon: ArrowDownCircle, title: "Descargar las fotos", onClose }),
+    React.createElement("p", { style: { fontSize: 13.5, color: "var(--muted)", lineHeight: 1.6, marginTop: -6 } },
+      "Baja todo el cat\u00E1logo al tel\u00E9fono de una vez. Despu\u00E9s las fotos se ven al instante, sin esperar y sin gastar internet. Conviene hacerlo con wifi."),
+
+    !hayTrabajador && React.createElement("div", {
+      style: { fontSize: 12.5, color: "var(--rose)", marginTop: 10, lineHeight: 1.5 }
+    }, "Este navegador no guarda fotos. Prob\u00E1 desde la app instalada en el tel\u00E9fono."),
+
+    React.createElement(
+      "div",
+      { style: { background: "var(--surface-2)", borderRadius: 10, padding: "14px 16px", margin: "16px 0" } },
+      React.createElement("div", { style: { fontFamily: "'Inter Tight', sans-serif", fontSize: 26, fontWeight: 700 } },
+        urls.length),
+      React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: 2 } },
+        urls.length === 1 ? "foto para descargar" : "fotos para descargar")
+    ),
+
+    estado === "trabajando" && React.createElement(
+      "div",
+      { style: { marginBottom: 14 } },
+      React.createElement("div", { style: { fontSize: 13 } },
+        "Descargando\u2026 ", React.createElement("strong", null, hechos), " de ", urls.length),
+      React.createElement("div", {
+        style: { height: 6, background: "var(--surface-2)", borderRadius: 99, marginTop: 8, overflow: "hidden" }
+      }, React.createElement("div", {
+        style: { height: "100%", width: pct + "%", background: "var(--sage)", transition: "width .2s" }
+      })),
+      fallados > 0 && React.createElement("div", { style: { color: "var(--rose)", fontSize: 12.5, marginTop: 6 } },
+        fallados, " no se pudieron bajar")
+    ),
+
+    estado === "terminado" && React.createElement(
+      "div",
+      { style: { fontSize: 13, marginBottom: 14, color: "var(--sage)", fontWeight: 600 } },
+      "Listo: ", hechos, " fotos guardadas en el tel\u00E9fono",
+      fallados > 0 ? " \u00B7 " + fallados + " con problemas" : ""
+    ),
+
+    React.createElement(
+      "div",
+      { style: { display: "flex", justifyContent: "flex-end", gap: 10 } },
+      estado === "trabajando"
+        ? React.createElement(Button, { tone: "ghost", onClick: () => { cortar.current = true; }, style: { padding: "12px 20px" } }, "Detener")
+        : React.createElement(Button, { tone: "ghost", onClick: onClose, style: { padding: "12px 20px" } }, "Cerrar"),
+      estado !== "trabajando" && urls.length > 0 && React.createElement(
+        Button, { onClick: bajar, style: { padding: "12px 22px" } },
+        estado === "terminado" ? "Descargar de nuevo" : "Descargar")
+    )
+  );
+}
+
 function RestablecerModal({ data, persist, onClose }) {
   const [texto, setTexto] = useState("");
   const [respaldado, setRespaldado] = useState(false);
@@ -24145,6 +24297,7 @@ function RestablecerModal({ data, persist, onClose }) {
 function ConfiguracionView({ data, persist, tema, setTema }) {
   const [restablecer, setRestablecer] = useState(false);
   const [migrarFotos, setMigrarFotos] = useState(false);
+  const [bajarFotos, setBajarFotos] = useState(false);
   const [importarVentas, setImportarVentas] = useState(false);
   const [migrar, setMigrar] = useState(false);
   const [sonido, setSonido] = useState(() => {
@@ -24282,6 +24435,24 @@ function ConfiguracionView({ data, persist, tema, setTema }) {
     ),
     migrarFotos && React.createElement(MigrarFotosModal, {
       data, persist, onClose: () => setMigrarFotos(false)
+    }),
+
+    // Descargar las fotos: las deja en el teléfono, así el catálogo vuela.
+    // Lo puede usar cualquiera, no sólo el dueño: cada teléfono baja las suyas.
+    React.createElement(
+      BloqueCatalogo,
+      {
+        icono: ArrowDownCircle,
+        titulo: "Descargar las fotos al tel\u00E9fono",
+        ayuda: "Baja todo el cat\u00E1logo de una vez y lo deja guardado en este tel\u00E9fono. Despu\u00E9s las fotos se ven al instante y sin gastar internet. Conviene hacerlo con wifi.",
+        extra: React.createElement(Button, {
+          onClick: () => setBajarFotos(true),
+          style: { padding: "11px 20px" }
+        }, React.createElement(ArrowDownCircle, { size: 15 }), " Descargar")
+      }
+    ),
+    bajarFotos && React.createElement(BajarFotosModal, {
+      data, onClose: () => setBajarFotos(false)
     }),
 
     // Zona de riesgo: va al final y separada, para no tocarla sin querer
