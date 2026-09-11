@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.896";
+const VERSION_APP = "9.899";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -4889,6 +4889,21 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
     }
   }
 
+  // Ventas que el Propietario eliminó: se borran también de la nube. Sin esto
+  // desaparecían del teléfono pero volvían al recargar. Sólo las que ya tenían
+  // id de la base (las recién creadas sin subir todavía no están allá).
+  const ventasDespues = new Set((despues.ventas || []).map((v) => v.id));
+  const ventasBorradas = (antes.ventas || []).filter((v) => !ventasDespues.has(v.id) && esIdDeLaBase(v.id));
+  for (const v of ventasBorradas) {
+    try {
+      await nube.from("venta_items").delete().eq("venta_id", v.id);
+      const { error } = await nube.from("ventas").delete().eq("id", v.id);
+      if (error) throw new Error(error.message);
+    } catch (e) {
+      if (avisarProblema) avisarProblema("No se pudo borrar una venta de la nube: " + String((e && e.message) || e));
+    }
+  }
+
   // ── Equipo ────────────────────────────────────────────────
   // El nombre, el rol y a qué locales entra cada uno. La cuenta de acceso se
   // crea aparte en el panel de la base: acá sólo se guarda quién es.
@@ -4973,6 +4988,18 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
       fecha: m.fecha, usuario: m.usuario || null
     })));
     if (error) throw new Error("Al guardar el movimiento de cuenta: " + error.message);
+  }
+
+  // Pagos/movimientos que el Propietario eliminó: se borran también de la nube
+  const movsDespues = new Set((despues.movimientosCC || []).map((m) => m.id));
+  const movsBorrados = (antes.movimientosCC || []).filter((m) => !movsDespues.has(m.id) && esIdDeLaBase(m.id));
+  for (const m of movsBorrados) {
+    try {
+      const { error } = await nube.from("movimientos_cc").delete().eq("id", m.id);
+      if (error) throw new Error(error.message);
+    } catch (e) {
+      if (avisarProblema) avisarProblema("No se pudo borrar un pago de la nube: " + String((e && e.message) || e));
+    }
   }
 
   // ── Negocios ──────────────────────────────────────────────
@@ -7386,7 +7413,8 @@ const informeCompleto = (data, desde, hasta, negocioId, negocioNombre) => {
       tabla(["Fecha", "Cliente", "Concepto", { t: "Monto", num: true }], filasP), "Sin pagos de saldo en el período.") +
     seccion("Saldos pendientes al día de hoy",
       tabla(["Cliente", "Teléfono", { t: "Debe", num: true }], filasS) +
-      (filasS.length ? "<p class='vacio'>Total adeudado: " + money(totalDeuda) + "</p>" : ""),
+      // El total adeudado es sólo para el Propietario; el detalle por cliente sí
+      (filasS.length && esPropietario(data) ? "<p class='vacio'>Total adeudado: " + money(totalDeuda) + "</p>" : ""),
       "Ningún cliente tiene saldo pendiente.") +
     seccion("Stock a reponer",
       tabla(["Producto", "Variante", { t: "Quedan", num: true }], filasR), "No falta stock.") +
@@ -15991,7 +16019,8 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       fecha: v.fecha,
       titulo: "Venta",
       detalle: (v.items || []).map((it) => it.cantidad + "x " + it.nombre).join(", "),
-      monto: v.total
+      monto: v.total,
+      venta: v
     })),
     ...ventasPagadas.map((v) => ({
       id: v.id,
@@ -15999,7 +16028,8 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       fecha: v.fecha,
       titulo: "Compra pagada",
       detalle: (v.items || []).map((it) => it.cantidad + "x " + it.nombre).join(", "),
-      monto: v.total
+      monto: v.total,
+      venta: v
     })),
     ...movimientos.map((m) => ({
       id: m.id,
@@ -16045,6 +16075,30 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
     const anterior = data;
     persist({ ...data, movimientosCC: (data.movimientosCC || []).filter((m) => m.id !== id) });
     avisar("Movimiento eliminado", { deshacer: () => persist(anterior) });
+  };
+
+  // Eliminar una venta entera. Sólo el Propietario. Devuelve el stock al local
+  // donde se hizo (por talle y color, no sólo el talle) y borra la venta. Es
+  // una acción delicada, así que pide confirmación y deja deshacer.
+  const borrarVenta = (venta) => {
+    if (!window.confirm(
+      "¿Eliminar esta venta de " + money(venta.total) + "?\n\n" +
+      "Se va a devolver el stock al local y la venta desaparece del historial y de la cuenta del cliente. Se puede deshacer."
+    )) return;
+    const anterior = data;
+    const negocioVenta = venta.negocioId || listaNegocios(data)[0].id;
+    // Repone lo vendido en cada variante exacta (talle|color)
+    const productos = data.productos.map((p) => {
+      let out = p;
+      (venta.items || []).forEach((it) => {
+        if (it.productoId !== p.id) return;
+        const clave = it.talla ? it.talla + (it.color ? "|" + it.color : "") : "";
+        out = ajustarEnNegocio(out, negocioVenta, clave, Math.abs(it.cantidad));
+      });
+      return out;
+    });
+    persist({ ...data, productos, ventas: data.ventas.filter((v) => v.id !== venta.id) });
+    avisar("Venta eliminada · stock devuelto", { deshacer: () => persist(anterior) });
   };
 
   const botonTipo = (id, label) => React.createElement("button", {
@@ -16198,12 +16252,21 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
                     style: { textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: saldos[f.id] > 0 ? "var(--ink)" : "var(--muted)" }
                   }, saldos[f.id] > 0 ? money(saldos[f.id]) : "—"),
                   React.createElement("td", { style: { textAlign: "right" } },
-                    f.esMovimiento
-                      ? React.createElement("button", {
-                          onClick: () => borrarMovimiento(f.id), title: "Eliminar el movimiento",
-                          style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", display: "inline-flex", padding: 5 }
-                        }, React.createElement(Trash2, { size: 15 }))
-                      : null)
+                    // Eliminar pagos y ventas es sólo del Propietario. Los
+                    // empleados ven el historial pero no lo pueden borrar.
+                    !esPropietario(data)
+                      ? null
+                      : f.esMovimiento
+                        ? React.createElement("button", {
+                            onClick: () => borrarMovimiento(f.id), title: "Eliminar el movimiento",
+                            style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", display: "inline-flex", padding: 5 }
+                          }, React.createElement(Trash2, { size: 15 }))
+                        : f.venta
+                          ? React.createElement("button", {
+                              onClick: () => borrarVenta(f.venta), title: "Eliminar la venta y devolver el stock",
+                              style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", display: "inline-flex", padding: 5 }
+                            }, React.createElement(Trash2, { size: 15 }))
+                          : null)
                 );
               })
             )
@@ -19160,7 +19223,8 @@ const textoResumen = (data, desde, hasta, negocioId, negocioNombre) => {
     "Operaciones: " + ventas.length + "\n" +
     "Prendas vendidas: " + unidades + "\n" +
     "Ticket promedio: " + money(ventas.length ? Math.round(total / ventas.length) : 0) +
-    (deuda > 0 ? "\n\nPor cobrar: " + money(deuda) : "");
+    // El total por cobrar es sólo para el Propietario, igual que en pantalla
+    (esPropietario(data) && deuda > 0 ? "\n\nPor cobrar: " + money(deuda) : "");
 };
 
 function FiltrosNegocios({ data, negocios, filtroNegocio, setFiltroNegocio, rango, exportar, filtros, setFiltros }) {
@@ -22891,9 +22955,42 @@ function NuevoPedidoModal({ data, persist, negocioId, onClose }) {
 // La nota de crédito, para imprimir o mandar. Lleva todo lo que hace falta
 // para que el cliente vuelva: qué dejó, cuánto vale, cuándo compró y quién se
 // la hizo.
+// ===== Nota de crédito para WhatsApp =====
+// Igual que el ticket para chat: sin códigos ESC/POS, con el formato de
+// WhatsApp (*negrita* y viñetas). Es lo que se le manda al cliente para que
+// tenga el vale a mano en su teléfono.
+function notaParaChat(data, nota, negocioNombre) {
+  const L = [];
+  L.push("*" + (negocioNombre || (data.negocio && data.negocio.nombre) || "Nota de crédito").toUpperCase() + "*");
+  L.push("*NOTA DE CRÉDITO " + nota.numero + "*");
+  L.push(fechaNumerica(nota.fecha) + (nota.hora ? " · " + nota.hora : ""));
+  if (nota.clienteNombre) L.push(nota.clienteNombre);
+  L.push("");
+  L.push("*VALE POR " + money(nota.monto) + "*");
+  L.push("");
+  if ((nota.items || []).length) {
+    L.push("Lo que dejaste:");
+    (nota.items || []).forEach((it) => {
+      const det = [it.talla && "Talle " + it.talla, it.color].filter(Boolean).join(" · ");
+      L.push("• " + it.cantidad + "× " + it.nombre + (det ? "  (" + det + ")" : ""));
+    });
+    L.push("");
+  }
+  if (nota.motivo) { L.push("Motivo: " + nota.motivo); L.push(""); }
+  L.push("Presentala en cualquiera de nuestros locales. No se cambia por dinero; si la compra supera el valor, se abona la diferencia. Esta nota no vence.");
+  return L.join("\n");
+}
+
 function NotaCreditoModal({ data, nota, onClose }) {
   const [estadoPDF, setEstadoPDF] = useState("");
+  const [enviarWA, setEnviarWA] = useState(false);
   const neg = listaNegocios(data).find((n) => n.id === nota.negocioId) || {};
+  // Teléfono del cliente de la nota, para no tener que buscarlo
+  const telefonoDelCliente = (() => {
+    const c = (data.clientes || []).find((x) =>
+      x.id === nota.clienteId || (nota.clienteNombre && x.nombre === nota.clienteNombre));
+    return c && c.telefono ? c.telefono : "";
+  })();
 
   const armarDocumento = () => {
     const esc = escaparHTML;
@@ -23089,18 +23186,26 @@ function NotaCreditoModal({ data, nota, onClose }) {
     React.createElement(
       "div",
       { className: "ct-pie-fijo", style: { display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" } },
-      // El ticket es lo que se entrega en el mostrador; la hoja A4 queda para
+      // Bluetooth es lo que se entrega en el mostrador; la hoja A4 queda para
       // archivar o mandar por WhatsApp.
       React.createElement(Button, { onClick: imprimirBluetooth, disabled: /Conectando|Reconectando|Dibujando/.test(estadoBT), style: { padding: "12px 18px" } },
         React.createElement(Receipt, { size: 15 }), " ", /Conectando|Reconectando|Dibujando/.test(estadoBT) ? estadoBT : "Imprimir por Bluetooth"),
-      React.createElement(Button, { tone: "ghost", onClick: () => imprimir(true), style: { padding: "12px 18px" } },
-        React.createElement(Receipt, { size: 15 }), " Ticket (navegador)"),
       React.createElement(Button, { tone: "ghost", onClick: () => imprimir(false), style: { padding: "12px 16px" } }, "Hoja A4"),
       React.createElement(Button, { tone: "ghost", onClick: compartirPDF, disabled: !!estadoPDF, style: { padding: "12px 16px" } },
         React.createElement(ArrowDownCircle, { size: 15 }), " ", estadoPDF || "PDF"),
+      React.createElement(Button, { tone: "ghost", onClick: () => setEnviarWA(true), style: { padding: "12px 16px" } },
+        React.createElement(MessageCircle, { size: 15 }), " WhatsApp"),
       estadoBT && !/Conectando|Reconectando|Dibujando/.test(estadoBT) && React.createElement("p", { style: { width: "100%", margin: "4px 0 0", fontSize: 12, color: /No se pudo/.test(estadoBT) ? "var(--rose)" : "var(--muted)" } }, estadoBT),
       React.createElement(Button, { tone: "ghost", onClick: onClose, style: { padding: "12px 16px" } }, "Listo")
-    )
+    ),
+
+    enviarWA && React.createElement(EnviarWhatsAppModal, {
+      data,
+      titulo: "Enviar la nota de crédito",
+      texto: notaParaChat(data, nota, neg.nombre || ""),
+      sugerido: telefonoDelCliente,
+      onClose: () => setEnviarWA(false)
+    })
   );
 }
 
@@ -28190,7 +28295,10 @@ function ResumenReportes({ data, rango, setSub }) {
       mini(TrendingUp, "var(--sage)", "rgba(122,155,122,0.14)", "Ticket promedio",
         ticketProm ? money(ticketProm) : "Sin datos",
         totalOperaciones ? "sobre " + totalOperaciones + " venta" + (totalOperaciones === 1 ? "" : "s") : "sin operaciones"),
-      mini(Wallet, deudaTotal ? "var(--rose)" : "var(--muted)",
+      // El total adeudado (la suma de todas las deudas) es sólo para el
+      // Propietario. Los empleados ven la deuda de cada cliente en su ficha,
+      // pero no el acumulado del negocio.
+      esPropietario(data) && mini(Wallet, deudaTotal ? "var(--rose)" : "var(--muted)",
         deudaTotal ? "rgba(198,93,93,0.12)" : "var(--surface-2)", "Te deben",
         deudaTotal ? money(deudaTotal) : "Nada",
         deudaTotal
