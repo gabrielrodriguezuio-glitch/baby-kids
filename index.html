@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.892";
+const VERSION_APP = "9.893";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -5097,12 +5097,18 @@ async function guardarVariantesEnTanda(items) {
   const aBorrar = [];
   // Cuánto había antes de cada variante, para poder calcular la diferencia
   const stockPrevio = {};
+  // Y qué código tenía: si llegó mercadería a un local donde esa variante no
+  // tenía código, hay que subir el que se le acaba de poner. Sin esto la
+  // etiqueta funciona en la app pero no queda guardada en la nube.
+  const codigoPrevio = {};
   items.forEach(({ id, previo }) => {
     Object.entries((previo && previo.porNegocio) || {}).forEach(([negId, d]) => {
       const vs = (d && d.variantes) || [];
       if (vs.length) {
         vs.forEach((v) => {
-          stockPrevio[id + "|" + negId + "|" + (v.talle || "") + "|" + (v.color || "")] = Number(v.stock) || 0;
+          const k = id + "|" + negId + "|" + (v.talle || "") + "|" + (v.color || "");
+          stockPrevio[k] = Number(v.stock) || 0;
+          codigoPrevio[k] = String(v.codigo || "").trim();
         });
       } else if (d && d.stock != null) {
         stockPrevio[id + "|" + negId + "||"] = Number(d.stock) || 0;
@@ -5153,16 +5159,34 @@ async function guardarVariantesEnTanda(items) {
   //      pisaría lo que hizo el otro vendedor en el medio; restar "1" no.
   const nuevas = [];
   const ajustes = [];
+  // Variantes que ya estaban pero a las que se les completó el código
+  const codigosNuevos = [];
   filas.forEach((f) => {
-    const previo = stockPrevio[f.producto_id + "|" + f.negocio_id + "|" + f.talle + "|" + f.color];
-    if (previo == null) nuevas.push(f);
-    else if (previo !== f.stock) ajustes.push({ ...f, delta: f.stock - previo });
+    const k = f.producto_id + "|" + f.negocio_id + "|" + f.talle + "|" + f.color;
+    const previo = stockPrevio[k];
+    if (previo == null) { nuevas.push(f); return; }
+    if (previo !== f.stock) ajustes.push({ ...f, delta: f.stock - previo });
+    // El código se mira aparte del stock: puede haber cambiado sin que se
+    // mueva una sola unidad, y al revés.
+    const codAntes = codigoPrevio[k] || "";
+    const codAhora = String(f.codigo || "").trim();
+    if (codAhora && codAhora !== codAntes) codigosNuevos.push(f);
   });
 
   for (let i = 0; i < nuevas.length; i += 500) {
     const { error } = await nube.from("variantes")
       .upsert(nuevas.slice(i, i + 500), { onConflict: "producto_id,negocio_id,talle,color" });
     if (error) throw new Error("Al guardar el stock: " + error.message);
+  }
+
+  // El código va con update y no con upsert: así no se toca el stock, que es
+  // lo único que no se puede pisar con dos personas vendiendo a la vez.
+  for (const f of codigosNuevos) {
+    const { error } = await nube.from("variantes")
+      .update({ codigo: f.codigo })
+      .eq("producto_id", f.producto_id).eq("negocio_id", f.negocio_id)
+      .eq("talle", f.talle).eq("color", f.color);
+    if (error) console.error("No se pudo guardar el código de la variante:", error.message);
   }
 
   for (const a of ajustes) {
@@ -20756,6 +20780,25 @@ async function compartirComoPDF(titulo, estilos, cuerpo, avisar2) {
   }
 }
 
+// El código de barras de una variante es el de la etiqueta que lleva pegada la
+// prenda, así que es el MISMO en todos los locales: la prenda viaja con su
+// etiqueta. Cuando la mercadería llega a un local donde ese talle/color todavía
+// no existía, hay que traerle el código de donde ya esté cargado; si no, el
+// lector no la encuentra y no se puede vender.
+const codigoDeVarianteEnCualquierNegocio = (producto, pedido, exceptoNegocioId) => {
+  const negs = (producto && producto.porNegocio) || {};
+  for (const negId of Object.keys(negs)) {
+    if (exceptoNegocioId && negId === exceptoNegocioId) continue;
+    const vs = (negs[negId] && negs[negId].variantes) || [];
+    const v = vs.find((x) => esLaVariante(x, pedido) && String(x.codigo || "").trim());
+    if (v) return String(v.codigo).trim();
+  }
+  // Puede estar en las variantes sueltas del producto (formato viejo)
+  const sueltas = (producto && producto.variantes) || [];
+  const s = sueltas.find((x) => esLaVariante(x, pedido) && String(x.codigo || "").trim());
+  return s ? String(s.codigo).trim() : "";
+};
+
 const moverEntreNegocios = (producto, origenId, destinoId, cantidad, talle) => {
   let out = producto;
   if (origenId) out = ajustarEnNegocio(out, origenId, talle, -cantidad);
@@ -20771,14 +20814,29 @@ const moverEntreNegocios = (producto, origenId, destinoId, cantidad, talle) => {
     // Si el talle todavía no existe en el destino, se crea con stock cero
     if (talle) {
       const vs = variantesNegocio(out, destinoId);
-      if (!vs.some((v) => esLaVariante(v, talle))) {
+      const existente = vs.find((v) => esLaVariante(v, talle));
+      // El código sale de donde ya esté cargado: es el de la etiqueta física
+      const codigo = codigoDeVarianteEnCualquierNegocio(out, talle, destinoId);
+      if (!existente) {
         // La clave puede traer color ("M|Rojo"): se crea la variante completa
         const partes = String(talle).split("|");
         const nueva = { talle: partes[0], stock: 0 };
         if (partes.length > 1 && partes[1]) nueva.color = partes[1];
+        // Sin esto la mercadería llegaba sin código y no se podía vender
+        if (codigo) nueva.codigo = codigo;
         const porNegocio = { ...(out.porNegocio || {}) };
         const d = { activo: true, stock: 0, variantes: [], ...(porNegocio[destinoId] || {}) };
         porNegocio[destinoId] = { ...d, variantes: [...(d.variantes || []), nueva] };
+        out = { ...out, porNegocio };
+      } else if (codigo && !String(existente.codigo || "").trim()) {
+        // Ya estaba en el destino pero sin código: es lo que quedó de las
+        // transferencias hechas antes de este arreglo. Se le pone el que falta.
+        const porNegocio = { ...(out.porNegocio || {}) };
+        const d = porNegocio[destinoId] || {};
+        porNegocio[destinoId] = {
+          ...d,
+          variantes: (d.variantes || []).map((v) => v === existente ? { ...v, codigo } : v)
+        };
         out = { ...out, porNegocio };
       }
     }
@@ -21521,19 +21579,25 @@ function RemitoTransferencia({ data, transferencia, negocios, onClose }) {
 
   const detalleProducto = (it) => {
     const prod = data.productos.find((p) => p.id === it.productoId);
-    // El talle puede venir como clave "38|Negro": se parte para mostrarlo
+    // El talle puede venir como clave "38|Negro" (formato viejo) o ya partido
+    // en talle y color por separado, que es como se guarda ahora.
     const partes = String(it.talle || "").split("|");
     const talle = partes[0] || "";
-    const color = partes[1] || "";
+    const color = it.color || partes[1] || "";
     // Si la variante tiene su propio código, ese es el que va: al recibir se
     // controla contra la etiqueta de la prenda, no contra la del modelo.
-    const variante = prod
-      ? (prod.porNegocio && prod.porNegocio[t.origen] && (prod.porNegocio[t.origen].variantes || []))
-          .find((v) => (v.talle || "") === talle && (v.color || "") === (color || (v.color || "")))
-      : null;
+    // Se busca por talle Y color: con varios colores del mismo talle, mirar
+    // sólo el talle traía el código de otro color.
+    const clave = talle ? talle + (color ? "|" + color : "") : "";
+    const vsOrigen = (prod && prod.porNegocio && prod.porNegocio[t.origen] && prod.porNegocio[t.origen].variantes) || [];
+    const variante = clave ? vsOrigen.find((v) => esLaVariante(v, clave)) : null;
+    // Si en el origen no tiene código, se busca en los demás locales: es la
+    // misma prenda con la misma etiqueta.
+    const codigoVar = (variante && String(variante.codigo || "").trim())
+      || (prod && clave ? codigoDeVarianteEnCualquierNegocio(prod, clave, null) : "");
     return {
       nombre: it.nombre,
-      codigo: (variante && variante.codigo) || (prod ? (prod.codigoBarras || "") : ""),
+      codigo: codigoVar || (prod ? (prod.codigoBarras || "") : ""),
       imagen: prod ? (prod.imagen || "") : "",
       talle: talle,
       color: color || (prod ? (prod.color || "") : ""),
