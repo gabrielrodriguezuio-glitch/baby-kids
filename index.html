@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.893";
+const VERSION_APP = "9.894";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -21947,6 +21947,21 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
   const porCodigo = (code) => {
     const limpio = String(code || "").trim();
     if (!limpio) return;
+    // Primero la etiqueta de la prenda: si el código es de un talle y color
+    // puntual, entra derecho con los dos, sin preguntar nada.
+    const hallada = buscarVariantePorCodigo(data.productos, origen, limpio);
+    if (hallada) {
+      const hay = Number(hallada.variante.stock) || 0;
+      if (!sinControl && hay <= 0) {
+        pitido(false);
+        setError('"' + hallada.producto.nombre + '" ' + etiquetaVariante(hallada.variante) + ' no tiene stock en el origen.');
+        return;
+      }
+      pitido(true);
+      setQuery("");
+      sumar(hallada.producto, claveVariante(hallada.variante), 1, true, hay);
+      return;
+    }
     const prod = data.productos.find((p) =>
       (p.codigoBarras || "").trim() === limpio || mismoCodigo(p.codigoBarras, limpio));
     if (!prod) {
@@ -21957,7 +21972,9 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
     const vs = variantesNegocio(prod, origen).filter((v) => sinControl || (Number(v.stock) || 0) > 0);
     const sinTalles = !variantesNegocio(prod, origen).length && !tallesDelProducto(prod).length;
     if (sinTalles || vs.length === 1) {
-      const talle = sinTalles ? "" : vs[0].talle;
+      // La clave completa (talle y color): con vs[0].talle solo, el color
+      // se perdía y la prenda llegaba al otro local sin él.
+      const talle = sinTalles ? "" : claveVariante(vs[0]);
       const hay = sinTalles ? stockNegocio(prod, origen) : Number(vs[0].stock) || 0;
       pitido(true);
       setQuery("");
@@ -21998,9 +22015,14 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
     : [];
 
   const items = Object.keys(sel).map((k) => {
-    const [id, talle] = k.split("|");
+    // La clave es id + "|" + talle, y el talle puede ser a su vez "M|Rojo".
+    // Con [id, talle] = split("|") el color quedaba afuera y la mercadería
+    // llegaba al otro local sin color. Se corta sólo en la primera barra.
+    const corte = k.indexOf("|");
+    const id = corte >= 0 ? k.slice(0, corte) : k;
+    const talle = corte >= 0 ? k.slice(corte + 1) : "";
     const prod = data.productos.find((p) => p.id === id);
-    // La clave puede ser "M|Rojo": se guarda talle y color por separado
+    // Y de "M|Rojo" se guarda talle y color por separado
     const partes = String(talle || "").split("|");
     return { productoId: id, nombre: prod ? prod.nombre : "", talle: partes[0] || "", color: partes[1] || "", cantidad: sel[k] };
   }).filter((x) => x.cantidad > 0);
