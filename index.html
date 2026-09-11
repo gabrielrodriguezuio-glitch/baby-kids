@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.902";
+const VERSION_APP = "9.904";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -996,11 +996,38 @@ const registrarDevolucion = (data, venta, seleccion, motivo, reintegro) => {
     motivo: motivo || ""
   };
 
-  // Reponer stock en el negocio donde se hizo la venta
+  // Reponer stock en el negocio donde se hizo la venta.
+  // La venta descuenta de la variante EXACTA (talle + color). La reposición
+  // tiene que apuntar a la misma: si se repone solo por talle y el producto
+  // tiene varios colores del mismo talle, la unidad vuelve a la variante
+  // equivocada. Se reconstruye la clave "talle|color" cuando hay color.
+  const claveVarianteItem = (it) => {
+    const t = it.talla || "";
+    if (it.color) return t + "|" + it.color;
+    return t;
+  };
   const negocioVenta = venta.negocioId || listaNegocios(data)[0].id;
   const productos = data.productos.map((p) => {
     const it = items.find((i) => i.productoId === p.id);
-    return it ? ajustarEnNegocio(p, negocioVenta, it.talla || "", Math.abs(it.cantidad)) : p;
+    if (!it) return p;
+    const clave = claveVarianteItem(it);
+    let salida = p;
+    // Si la variante fue borrada entre la venta y la devolución, se recrea con
+    // stock cero para que ajustarEnNegocio tenga dónde reponer. Sin esto, la
+    // unidad devuelta se perdería en silencio.
+    if (clave) {
+      const vs = variantesNegocio(p, negocioVenta);
+      if (vs.length && !vs.some((v) => esLaVariante(v, clave))) {
+        const partes = String(clave).split("|");
+        const nueva = { talle: partes[0], stock: 0 };
+        if (partes[1]) nueva.color = partes[1];
+        const porNegocio = { ...(p.porNegocio || {}) };
+        const d = { activo: true, stock: 0, variantes: [], ...(porNegocio[negocioVenta] || {}) };
+        porNegocio[negocioVenta] = { ...d, variantes: [...(d.variantes || []), nueva] };
+        salida = { ...p, porNegocio };
+      }
+    }
+    return ajustarEnNegocio(salida, negocioVenta, clave, Math.abs(it.cantidad));
   });
 
   // Cuenta corriente: si se paga con CC o se acredita en la cuenta
@@ -15790,6 +15817,19 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
   // Las demás compras se listan igual, para tener el historial completo
   const ventasPagadas = data.ventas.filter((v) =>
     v.clienteId === cliente.id && !esDevolucion(v) && v.metodoPago !== "cuenta_corriente");
+  // Notas de crédito sobre ventas fiadas: reducen el saldo aunque el reintegro
+  // haya sido en efectivo. Sin esto la venta original sigue figurando como deuda
+  // y el saldo de la ficha no coincide con el real.
+  const idsVentasFiadas = new Set(ventasFiadas.map((v) => v.id));
+  const devolucionesFiadas = data.ventas.filter((v) =>
+    v.clienteId === cliente.id && esDevolucion(v) && idsVentasFiadas.has(v.ventaOriginalId));
+  // Para evitar doble conteo: si la devolución ya generó un movimiento CC
+  // (reintegro = cuenta_corriente), no la sumamos de nuevo.
+  const idsMovCC = new Set(movimientos.map((m) => m.concepto || ""));
+  const devolSinMovCC = devolucionesFiadas.filter((v) => {
+    const etiqueta = "Devolución de venta #" + v.ventaOriginalId.slice(-6);
+    return !movimientos.some((m) => m.concepto === etiqueta);
+  });
 
   // Una sola línea de tiempo con las ventas y los pagos, del más nuevo al más viejo
   const filas = [
@@ -15808,6 +15848,16 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       titulo: "Compra pagada",
       detalle: (v.items || []).map((it) => it.cantidad + "x " + it.nombre).join(", "),
       monto: v.total
+    })),
+    // Notas de crédito sobre ventas fiadas (reintegro en efectivo o sin CC)
+    ...devolSinMovCC.map((v) => ({
+      id: v.id,
+      clase: "pago",
+      fecha: v.fecha,
+      titulo: "Nota de crédito",
+      detalle: (v.items || []).map((it) => Math.abs(it.cantidad) + "x " + it.nombre).join(", "),
+      monto: Math.abs(v.total),
+      esDevolucion: true
     })),
     ...movimientos.map((m) => ({
       id: m.id,
@@ -15957,6 +16007,7 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
               filas.map((f) => {
                 const esVenta = f.clase === "venta";
                 const esPagada = f.clase === "pagada";
+                const esNota = f.esDevolucion;
                 return React.createElement(
                   "tr",
                   { key: f.id },
@@ -15964,8 +16015,8 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
                     React.createElement(
                       "span",
                       { style: { display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13.5, fontWeight: 650 } },
-                      React.createElement("span", { style: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: esVenta ? "var(--rose)" : esPagada ? "var(--muted)" : "var(--sage)" } }),
-                      esVenta ? "Fiado" : esPagada ? "Contado" : "Pago"
+                      React.createElement("span", { style: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: esVenta ? "var(--rose)" : esPagada ? "var(--muted)" : esNota ? "var(--mustard)" : "var(--sage)" } }),
+                      esVenta ? "Fiado" : esPagada ? "Contado" : esNota ? "Nota cr\u00E9dito" : "Pago"
                     )),
                   React.createElement("td", { style: { color: "var(--muted)", whiteSpace: "nowrap", fontSize: 13 } }, fechaHoraLabel(f.fecha)),
                   React.createElement(
