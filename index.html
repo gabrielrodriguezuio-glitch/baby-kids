@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.900";
+const VERSION_APP = "9.901";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -565,6 +565,56 @@ const buscarVariantePorCodigo = (productos, negocioId, codigo) => {
     if (v) return { producto: p, variante: v };
   }
   return null;
+};
+
+// Resolver universal para el escáner: busca en variantes del negocio actual,
+// después en el código del producto padre, y como último recurso en variantes
+// de cualquier negocio. Devuelve { producto, variante } o null.
+// Sirve para que Stock, Inventario, Cambios y Reportes encuentren un talle
+// escaneado igual que lo hace el Punto de Venta.
+const resolverPorCodigo = (productos, negocioId, codigo) => {
+  const cod = String(codigo || "").trim();
+  if (!cod) return null;
+  // 1) Variante del negocio activo
+  if (negocioId) {
+    const v = buscarVariantePorCodigo(productos, negocioId, cod);
+    if (v) return v;
+  }
+  // 2) Código del producto padre (con tolerancia de ceros y dígito de control)
+  const prod = (productos || []).find((p) =>
+    (p.codigoBarras || "").trim() === cod ||
+    (typeof mismoCodigo === "function" && mismoCodigo(p.codigoBarras, cod)));
+  if (prod) return { producto: prod, variante: null };
+  // 3) Variante en cualquier negocio (fallback)
+  for (const p of productos || []) {
+    const porNeg = p.porNegocio || {};
+    for (const nid of Object.keys(porNeg)) {
+      const d = porNeg[nid] || {};
+      const v = (d.variantes || []).find((x) => String(x.codigo || "").trim() === cod);
+      if (v) return { producto: p, variante: v };
+    }
+  }
+  return null;
+};
+
+// Coincide un producto con lo escrito en el buscador. Además de nombre y
+// código del producto, revisa los códigos de las variantes en cualquier
+// negocio: así se puede pegar un código de talle en el buscador y encontrar
+// el producto correspondiente.
+const coincideConTextoOCodigo = (producto, textoLower) => {
+  if (!textoLower) return true;
+  const t = textoLower;
+  if ((producto.nombre || "").toLowerCase().includes(t)) return true;
+  if ((producto.codigoBarras || "").toLowerCase().includes(t)) return true;
+  const porNeg = producto.porNegocio || {};
+  for (const nid of Object.keys(porNeg)) {
+    const d = porNeg[nid] || {};
+    const vs = d.variantes || [];
+    for (const v of vs) {
+      if ((v.codigo || "").toLowerCase().includes(t)) return true;
+    }
+  }
+  return false;
 };
 
 const variantesNegocio = (producto, negocioId) => {
@@ -2455,9 +2505,22 @@ function Wrapper({ children, mobile, tema = "oscuro" }) {
           -webkit-text-fill-color: var(--ink) !important;
           color: var(--ink) !important;
           caret-color: var(--ink) !important;
+          background-color: inherit !important;
           opacity: 1 !important;
         }
         .ct-buscador input::placeholder { -webkit-text-fill-color: var(--muted) !important; color: var(--muted) !important; opacity: 1 !important; }
+        /* Chrome pinta los inputs autocompletados con fondo amarillo/blanco
+           y letra oscura: eso rompía el contraste en modo oscuro. Se anula
+           forzando el mismo color del campo y la letra clara. */
+        .ct-buscador input:-webkit-autofill,
+        .ct-buscador input:-webkit-autofill:hover,
+        .ct-buscador input:-webkit-autofill:focus,
+        .ct-buscador input:-webkit-autofill:active {
+          -webkit-text-fill-color: var(--ink) !important;
+          -webkit-box-shadow: 0 0 0 1000px var(--field) inset !important;
+          caret-color: var(--ink) !important;
+          transition: background-color 5000s ease-in-out 0s !important;
+        }
         /* Al apretar un botón se hunde y se ilumina: confirma el toque */
         .ct-pos-btn { transition: transform .08s ease, box-shadow .12s ease, filter .12s ease; }
         .ct-pos-btn:active { transform: scale(.96); filter: brightness(1.12); }
@@ -6533,7 +6596,7 @@ function InventarioStock({ data, persist }) {
   // se nota, así que sólo se rehace cuando cambia algo que importa.
   const productos = useMemo(() => data.productos.filter((p) => {
     if (!publicadoEn(p, negId, listaNegocios(data)[0].id)) return false;
-    if (q && !((p.nombre || "").toLowerCase().includes(q) || (p.codigoBarras || "").toLowerCase().includes(q))) return false;
+    if (q && !coincideConTextoOCodigo(p, q)) return false;
     if (filtroCategoria && p.categoria !== filtroCategoria) return false;
     if (filtroSituacion === "sin" && enEste(p) > 0) return false;
     if (filtroSituacion === "bajo" && !(enEste(p) > 0 && enEste(p) <= STOCK_MINIMO)) return false;
@@ -6635,9 +6698,10 @@ function InventarioStock({ data, persist }) {
         sinManual: true,
         onLeer: (code) => {
           setEscaneandoStock(false);
-          const prod = data.productos.find((p) =>
-            (p.codigoBarras || "").trim() === String(code).trim() || mismoCodigo(p.codigoBarras, code));
-          setQuery(prod ? prod.nombre : String(code));
+          // Encuentra el producto aunque el código sea de una variante
+          // (talle/color) y no del producto padre.
+          const res = resolverPorCodigo(data.productos, negId, code);
+          setQuery(res ? res.producto.nombre : String(code));
         },
         onClose: () => setEscaneandoStock(false)
       }),
@@ -9143,7 +9207,7 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
   const filtrados = data.productos.filter((p) => {
     // Sólo los de este local
     if (!publicadoEn(p, negocioActivo(data).id, listaNegocios(data)[0].id)) return false;
-    if (q && !((p.nombre || "").toLowerCase().includes(q) || (p.codigoBarras || "").toLowerCase().includes(q))) return false;
+    if (q && !coincideConTextoOCodigo(p, q)) return false;
     if (filtros.categoria && p.categoria !== filtros.categoria) return false;
     const hay = stockNegocio(p, negocioActivo(data).id);
     if (filtros.stockBajo && !(hay <= STOCK_MINIMO)) return false;
@@ -9339,9 +9403,9 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
         sinManual: true,
         onLeer: (code) => {
           setEscaneandoProd(false);
-          const prod = data.productos.find((p) =>
-            (p.codigoBarras || "").trim() === String(code).trim() || mismoCodigo(p.codigoBarras, code));
-          setQuery(prod ? prod.nombre : String(code));
+          // Encuentra el producto aunque el código sea de una variante.
+          const res = resolverPorCodigo(data.productos, negocioActivo(data).id, code);
+          setQuery(res ? res.producto.nombre : String(code));
         },
         onClose: () => setEscaneandoProd(false)
       }),
@@ -12667,8 +12731,7 @@ function ConsultarPrecioModal({ data, listaActual, onClose }) {
   const [escaneando, setEscaneando] = useState(false);
   const texto = q.trim().toLowerCase();
   const resultados = texto
-    ? data.productos.filter((p) =>
-        (p.nombre || "").toLowerCase().includes(texto) || (p.codigoBarras || "").includes(q.trim()))
+    ? data.productos.filter((p) => coincideConTextoOCodigo(p, texto))
     : [];
 
   // Con un solo resultado se muestra la ficha completa; con varios, la lista
@@ -12855,13 +12918,9 @@ function ConsultarPrecioModal({ data, listaActual, onClose }) {
       titulo: "Escanear para consultar precio",
       onLeer: (codigo) => {
         setEscaneando(false);
-        const hallado = data.productos.find((p) => {
-          if (String(p.codigoBarras || "") === codigo) return true;
-          return Object.values(p.porNegocio || {}).some((d) =>
-            String((d || {}).codigo || "") === codigo ||
-            ((d && d.variantes) || []).some((v) => String(v.codigo || "") === codigo));
-        });
-        setQ(hallado ? hallado.nombre : codigo);
+        // Reconoce códigos del producto y de sus variantes.
+        const res = resolverPorCodigo(data.productos, negocioActivo(data).id, codigo);
+        setQ(res ? res.producto.nombre : codigo);
       },
       onClose: () => setEscaneando(false)
     }),
@@ -23528,9 +23587,12 @@ function ResolverCambioModal({ data, persist, venta, itemsDevueltos, valorDevuel
       sinManual: true,
       onLeer: (code) => {
         setEscaneando(false);
-        const prod = data.productos.find((p) =>
-          (p.codigoBarras || "").trim() === String(code).trim() || mismoCodigo(p.codigoBarras, code));
-        if (!prod) return setError("Ningún producto tiene ese código.");
+        // Si el código corresponde a una variante específica (talle/color),
+        // se agrega esa variante al cambio en un solo paso.
+        const res = resolverPorCodigo(data.productos, negocioId, code);
+        if (!res) return setError("Ningún producto tiene ese código.");
+        const prod = res.producto;
+        if (res.variante) return sumar(prod, res.variante);
         const vs = variantesNegocio(prod, negocioId).filter((v) => (Number(v.stock) || 0) > 0);
         if (!variantesNegocio(prod, negocioId).length) return sumar(prod, null);
         if (vs.length === 1) return sumar(prod, vs[0]);
@@ -23961,9 +24023,9 @@ function CambiosView({ data, persist, onCerrar, onCobrar }) {
       sinManual: true,
       onLeer: (code) => {
         setEscaneando(false);
-        const prod = (data.productos || []).find((p) =>
-          (p.codigoBarras || "").trim() === String(code).trim() || mismoCodigo(p.codigoBarras, code));
-        setQuery(prod ? prod.nombre : String(code));
+        // También funciona si la etiqueta trae el código de una variante.
+        const res = resolverPorCodigo(data.productos, negId, code);
+        setQuery(res ? res.producto.nombre : String(code));
       },
       onClose: () => setEscaneando(false)
     }),
@@ -28775,10 +28837,10 @@ function VentasReportes({ data, rango, persist }) {
               sinManual: true,
               onLeer: (code) => {
                 setEscaneandoVenta(false);
-                // Se busca el producto de esa etiqueta y se filtra por su nombre
-                const prod = (data.productos || []).find((p) =>
-                  (p.codigoBarras || "").trim() === String(code).trim() || mismoCodigo(p.codigoBarras, code));
-                setBusqueda(prod ? prod.nombre : String(code));
+                // Se busca el producto de esa etiqueta y se filtra por su nombre.
+                // También reconoce códigos de variante (talles/colores).
+                const res = resolverPorCodigo(data.productos, null, code);
+                setBusqueda(res ? res.producto.nombre : String(code));
               },
               onClose: () => setEscaneandoVenta(false)
             }),
@@ -30682,4 +30744,4 @@ try {
 }
 </script>
 </body>
-</html>
+</html>-
