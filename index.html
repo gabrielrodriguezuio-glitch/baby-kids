@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.891";
+const VERSION_APP = "9.892";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -9902,6 +9902,18 @@ function EditorVariantes({ variantes, onCambiar, productosExistentes }) {
       )
     ),
 
+    // Cargar de a muchas: se escriben los talles separados por coma. Va acá,
+    // junto al resto de los talles, para que los colores queden todos abajo.
+    React.createElement(
+      "div",
+      { style: { display: "flex", gap: 10, alignItems: "flex-end", marginTop: 12, flexWrap: "wrap" } },
+      React.createElement("div", { style: { flex: 1, minWidth: 150 } },
+        React.createElement(Field, { label: "Talles" },
+          React.createElement("input", { style: inputStyle, value: talles, onChange: (e) => setTalles(e.target.value), placeholder: "36, 38, 40, 42" }))),
+      React.createElement(Button, { onClick: combinar, disabled: !talles.trim(), style: { padding: "10px 15px", fontSize: 12.5 } },
+        "Armar combinaciones")
+    ),
+
     // El bloque de colores va siempre: antes sólo aparecía si ya había
     // colores usados, así que el primer producto no tenía dónde cargarlos.
     React.createElement(
@@ -9972,17 +9984,6 @@ function EditorVariantes({ variantes, onCambiar, productosExistentes }) {
           })
         )
       )
-    ),
-
-    // Cargar de a muchas: se escriben los talles y los colores separados por coma
-    React.createElement(
-      "div",
-      { style: { display: "flex", gap: 10, alignItems: "flex-end", marginTop: 12, flexWrap: "wrap" } },
-      React.createElement("div", { style: { flex: 1, minWidth: 150 } },
-        React.createElement(Field, { label: "Talles" },
-          React.createElement("input", { style: inputStyle, value: talles, onChange: (e) => setTalles(e.target.value), placeholder: "36, 38, 40, 42" }))),
-      React.createElement(Button, { onClick: combinar, disabled: !talles.trim(), style: { padding: "10px 15px", fontSize: 12.5 } },
-        "Armar combinaciones")
     ),
 
     usarVariantes && React.createElement(
