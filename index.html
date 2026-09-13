@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.903";
+const VERSION_APP = "9.910";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -1540,6 +1540,11 @@ function ControlTienda() {
   // Cuántos guardados hay en curso. Mientras haya alguno, no se traen datos
   // de la nube: pisaría lo que se está escribiendo en este mismo momento.
   const guardando = React.useRef(0);
+  // Ref sincronizado con data: sirve para leer el estado actual dentro de
+  // funciones async (delta sync) sin tener que meterlo en las dependencias
+  // del effect y recrear el canal de suscripción cada vez.
+  const dataRef = React.useRef(data);
+  React.useEffect(() => { dataRef.current = data; }, [data]);
   const [loading, setLoading] = useState(true);
   const [tabPedida, setTab] = useState("pos");
   // Si el rol no llega a esa pantalla, se cae a la primera que sí puede usar.
@@ -1821,8 +1826,9 @@ function ControlTienda() {
         const marca = consumo.total;
         try {
           // Sólo las tablas que cambiaron: una venta trae ventas, renglones y
-          // el stock, no el catálogo entero.
-          const parcial = await traerParcial(cuales, sesion && sesion.auth_id);
+          // el stock, no el catálogo entero. El estado actual se pasa para que
+          // el delta sync sepa qué ya tenía cargado y fusione en vez de reemplazar.
+          const parcial = await traerParcial(cuales, sesion && sesion.auth_id, dataRef.current);
           if (parcial) setData((actual) => migrarCajas(migrarDatos({ ...actual, ...parcial })));
           else {
             if (DIAG) console.warn("%c↓↓ RECARGA TOTAL", "background:#dc2626;color:#fff;padding:1px 5px",
@@ -5433,6 +5439,70 @@ async function guardarVariantesEnTanda(items) {
 }
 
 
+// === Delta sync (v9.910) ============================================
+// Timestamps de última sincronización por tabla. Sirven para que la
+// próxima consulta traiga sólo lo que cambió desde entonces, en vez de
+// bajar la tabla entera de nuevo. La base marca actualizado_en en cada
+// insert/update con un trigger, así el filtro es exacto.
+const SYNC_TS_KEY = "ct-sync-ts-v1";
+function tsMapa() {
+  try { return JSON.parse(localStorage.getItem(SYNC_TS_KEY) || "{}"); } catch(e) { return {}; }
+}
+function tsDe(tabla) {
+  const m = tsMapa();
+  return (m && m[tabla]) || null;
+}
+function tsSet(tabla, ts) {
+  if (!ts) return;
+  try {
+    const m = tsMapa();
+    if (!m[tabla] || String(ts) > String(m[tabla])) {
+      m[tabla] = ts;
+      localStorage.setItem(SYNC_TS_KEY, JSON.stringify(m));
+    }
+  } catch(e) {}
+}
+function tsReset() {
+  try { localStorage.removeItem(SYNC_TS_KEY); } catch(e) {}
+}
+// Máximo actualizado_en de un conjunto de filas: sirve para actualizar
+// el timestamp local sin perder ninguna fila por diferencias de reloj.
+function tsMaximo(filas) {
+  if (!filas || !filas.length) return null;
+  let m = null;
+  for (const f of filas) {
+    const v = f && f.actualizado_en;
+    if (v && (!m || String(v) > String(m))) m = v;
+  }
+  return m;
+}
+// Fusiona por id: los del delta reemplazan a los actuales, el resto queda
+// tal cual. Sin delta, retorna el actual sin tocar (0 alocaciones).
+function fusionarPorId(actual, delta) {
+  if (!delta || !delta.length) return actual || [];
+  if (!actual || !actual.length) return delta.slice();
+  const map = new Map();
+  for (const x of actual) if (x && x.id != null) map.set(x.id, x);
+  for (const x of delta) if (x && x.id != null) map.set(x.id, x);
+  return Array.from(map.values());
+}
+// Trae de una tabla sólo las filas con actualizado_en > ts. Si no hay
+// ts (primer arranque), retorna null y el llamador hace el full load
+// como siempre.
+async function traerDelta(tabla, campo, orden, seleccion) {
+  const ts = tsDe(campo || tabla);
+  if (!ts) return null;
+  let q = nube.from(tabla).select(seleccion || "*").gt("actualizado_en", ts);
+  if (orden) q = q.order(orden);
+  const { data, error } = await q;
+  if (error) {
+    // Si la columna no existe (base vieja), forzar full load
+    console.warn("delta " + tabla + " falló, se hará full:", error.message);
+    return null;
+  }
+  return data || [];
+}
+
 // La base devuelve como máximo 1000 filas por consulta. Con 6339 variantes
 // eso significaba perder el 84% del stock sin ningún aviso, así que se pide
 // de a páginas hasta que no venga nada más.
@@ -5509,7 +5579,7 @@ async function traerVentasConRenglones(desde) {
   }
 }
 
-async function traerParcial(tablas, quienEntro) {
+async function traerParcial(tablas, quienEntro, actual) {
   if (!tablas || !tablas.size) return null;
 
   // La comprobación va PRIMERO: antes estaba al final y ya se había armado
@@ -5524,32 +5594,152 @@ async function traerParcial(tablas, quienEntro) {
   for (const t of tablas) if (conocidas.indexOf(t) < 0) return null;
 
   const salida = {};
+  actual = actual || {};
 
   // El stock: una venta lo toca siempre, y hay que rearmar los productos
   if (tablas.has("variantes") || tablas.has("productos")) {
-    const [prods, vars, listas] = await Promise.all([
-      traerTodo("productos", "nombre"),
-      traerTodo("variantes"),
-      nube.from("listas_precio").select("*")
-    ]);
-    const porProd = {};
-    (vars || []).forEach((v) => {
-      (porProd[v.producto_id] = porProd[v.producto_id] || []).push(v);
-    });
-    const lp = (listas.data || []).map((l) => ({ id: l.id, nombre: l.nombre, ajustePct: Number(l.ajuste_pct) || 0 }));
-    const mayor = lp.find((l) => /mayor/i.test(l.nombre));
-    salida.productos = (prods || []).map((p) => deLaNube.producto(p, porProd[p.id], mayor && mayor.id));
+    const tsP = tsDe("productos");
+    const tsV = tsDe("variantes");
+    const tsMin = tsP && tsV ? (String(tsP) < String(tsV) ? tsP : tsV) : (tsP || tsV);
+    const haceCargado = actual.productos && actual.productos.length;
+
+    if (tsMin && haceCargado) {
+      // Delta: pedir sólo lo que cambió, y rearmar solo los productos
+      // afectados. Antes bajaba 515 productos + 3.000 variantes por cada
+      // venta ajena.
+      const [pDelta, vDelta] = await Promise.all([
+        nube.from("productos").select("*").gt("actualizado_en", tsP || tsMin),
+        nube.from("variantes").select("*").gt("actualizado_en", tsV || tsMin)
+      ]);
+      const pFilas = pDelta.data || [];
+      const vFilas = vDelta.data || [];
+      const idsAfectados = new Set();
+      pFilas.forEach((p) => idsAfectados.add(p.id));
+      vFilas.forEach((v) => idsAfectados.add(v.producto_id));
+
+      if (idsAfectados.size > 0) {
+        // Traer TODAS las variantes de los productos afectados (para
+        // rearmar bien: si sólo bajó una variante, la otra sigue en su
+        // sitio) y los productos completos por si algo faltaba.
+        const idsArr = Array.from(idsAfectados);
+        const [prodsCompletos, varsCompletas, listas] = await Promise.all([
+          nube.from("productos").select("*").in("id", idsArr),
+          nube.from("variantes").select("*").in("producto_id", idsArr),
+          nube.from("listas_precio").select("*")
+        ]);
+        const porProd = {};
+        (varsCompletas.data || []).forEach((v) => {
+          (porProd[v.producto_id] = porProd[v.producto_id] || []).push(v);
+        });
+        const lp = (listas.data || []).map((l) => ({ id: l.id, nombre: l.nombre, ajustePct: Number(l.ajuste_pct) || 0 }));
+        const mayor = lp.find((l) => /mayor/i.test(l.nombre));
+        const prodsRearmados = (prodsCompletos.data || []).map(
+          (p) => deLaNube.producto(p, porProd[p.id], mayor && mayor.id)
+        );
+        salida.productos = fusionarPorId(actual.productos, prodsRearmados)
+          .sort((a, b) => String(a.nombre || "").localeCompare(String(b.nombre || "")));
+        // Guardar ts máximos
+        const maxP = tsMaximo(pFilas);
+        const maxV = tsMaximo(vFilas);
+        if (maxP) tsSet("productos", maxP);
+        if (maxV) tsSet("variantes", maxV);
+      }
+      // Si idsAfectados.size === 0, no tocar salida.productos: React
+      // conserva los existentes
+    } else {
+      // Full load (primera vez o sin ts guardado)
+      const [prods, vars, listas] = await Promise.all([
+        traerTodo("productos", "nombre"),
+        traerTodo("variantes"),
+        nube.from("listas_precio").select("*")
+      ]);
+      const porProd = {};
+      (vars || []).forEach((v) => {
+        (porProd[v.producto_id] = porProd[v.producto_id] || []).push(v);
+      });
+      const lp = (listas.data || []).map((l) => ({ id: l.id, nombre: l.nombre, ajustePct: Number(l.ajuste_pct) || 0 }));
+      const mayor = lp.find((l) => /mayor/i.test(l.nombre));
+      salida.productos = (prods || []).map((p) => deLaNube.producto(p, porProd[p.id], mayor && mayor.id));
+      const maxP = tsMaximo(prods);
+      const maxV = tsMaximo(vars);
+      if (maxP) tsSet("productos", maxP);
+      if (maxV) tsSet("variantes", maxV);
+    }
   }
 
   if (tablas.has("ventas") || tablas.has("venta_items")) {
-    const [ventas, items] = await traerVentasConRenglones(haceMeses(6));
-    const porVenta = {};
-    (items || []).forEach((it) => {
-      (porVenta[it.venta_id] = porVenta[it.venta_id] || []).push(it);
-    });
-    salida.ventas = (ventas || [])
-      .map((v) => deLaNube.venta(v, porVenta[v.id]))
-      .sort((a, b) => (b.fecha + " " + (b.horaTexto || "")).localeCompare(a.fecha + " " + (a.horaTexto || "")));
+    // Delta: si ya hay ventas cargadas y timestamp guardado, sólo bajar
+    // lo que cambió desde la última sincronización. Antes bajaba 6 meses
+    // completos por cada venta ajena.
+    const tsV = tsDe("ventas");
+    const haceCargado = actual.ventas && actual.ventas.length;
+    if (tsV && haceCargado) {
+      const [ventasDelta, itemsDelta] = await Promise.all([
+        nube.from("ventas").select("*").gt("actualizado_en", tsV),
+        nube.from("venta_items").select("*").gt("actualizado_en", tsV)
+      ]);
+      const vFilas = ventasDelta.data || [];
+      const iFilas = itemsDelta.data || [];
+      // Items de las ventas nuevas: si vino una venta pero ningún item
+      // (poco probable pero posible), traer los items de esa venta.
+      const idsVentasSinItems = vFilas
+        .map((v) => v.id)
+        .filter((id) => !iFilas.some((it) => it.venta_id === id));
+      let iExtra = [];
+      if (idsVentasSinItems.length) {
+        const r = await nube.from("venta_items").select("*").in("venta_id", idsVentasSinItems);
+        iExtra = r.data || [];
+      }
+      // Al revés: items nuevos de ventas que no vinieron (edición de items
+      // sin tocar la venta). Traer esas ventas.
+      const idsVentasFaltantes = Array.from(new Set(
+        iFilas.concat(iExtra).map((it) => it.venta_id)
+      )).filter((id) => !vFilas.some((v) => v.id === id) && !(actual.ventas || []).some((v) => v.id === id));
+      let vExtra = [];
+      if (idsVentasFaltantes.length) {
+        const r = await nube.from("ventas").select("*").in("id", idsVentasFaltantes);
+        vExtra = r.data || [];
+      }
+      const ventasTotal = vFilas.concat(vExtra);
+      const itemsTotal = iFilas.concat(iExtra);
+      if (ventasTotal.length) {
+        // Reconstruir SOLO las ventas afectadas y fusionar por id
+        const porVenta = {};
+        // Items existentes de las ventas afectadas + los nuevos
+        const idsAfectadas = new Set(ventasTotal.map((v) => v.id));
+        (actual.ventas || []).forEach((vAct) => {
+          if (idsAfectadas.has(vAct.id) && vAct.items) {
+            // Se descartan: van a ser reemplazados por los frescos
+          }
+        });
+        itemsTotal.forEach((it) => {
+          (porVenta[it.venta_id] = porVenta[it.venta_id] || []).push(it);
+        });
+        const ventasNuevas = ventasTotal.map((v) => deLaNube.venta(v, porVenta[v.id]));
+        salida.ventas = fusionarPorId(actual.ventas, ventasNuevas)
+          .sort((a, b) => (b.fecha + " " + (b.horaTexto || "")).localeCompare(a.fecha + " " + (a.horaTexto || "")));
+        // Guardar el ts máximo entre ventas e items
+        const maxV = tsMaximo(ventasTotal);
+        const maxI = tsMaximo(itemsTotal);
+        const maxTs = [maxV, maxI].filter(Boolean).sort().pop();
+        if (maxTs) tsSet("ventas", maxTs);
+      }
+      // Si no vino nada, no tocar salida.ventas: React mantiene el actual
+    } else {
+      const [ventas, items] = await traerVentasConRenglones(haceMeses(6));
+      const porVenta = {};
+      (items || []).forEach((it) => {
+        (porVenta[it.venta_id] = porVenta[it.venta_id] || []).push(it);
+      });
+      salida.ventas = (ventas || [])
+        .map((v) => deLaNube.venta(v, porVenta[v.id]))
+        .sort((a, b) => (b.fecha + " " + (b.horaTexto || "")).localeCompare(a.fecha + " " + (a.horaTexto || "")));
+      // Guardar ts para próximas sincronizaciones
+      const maxV = tsMaximo(ventas);
+      const maxI = tsMaximo(items);
+      const maxTs = [maxV, maxI].filter(Boolean).sort().pop();
+      if (maxTs) tsSet("ventas", maxTs);
+    }
   }
 
   if (tablas.has("reposicion_pendiente")) {
@@ -5564,62 +5754,119 @@ async function traerParcial(tablas, quienEntro) {
   }
 
   if (tablas.has("clientes")) {
-    salida.clientes = (await traerTodo("clientes", "nombre")).map(deLaNube.cliente);
+    const delta = await traerDelta("clientes", "clientes", "nombre");
+    if (delta && actual.clientes && actual.clientes.length) {
+      const nuevos = delta.map(deLaNube.cliente);
+      salida.clientes = fusionarPorId(actual.clientes, nuevos)
+        .sort((a, b) => String(a.nombre || "").localeCompare(String(b.nombre || "")));
+      const ts = tsMaximo(delta);
+      if (ts) tsSet("clientes", ts);
+    } else {
+      const filas = await traerTodo("clientes", "nombre");
+      salida.clientes = filas.map(deLaNube.cliente);
+      const ts = tsMaximo(filas);
+      if (ts) tsSet("clientes", ts);
+    }
   }
 
   if (tablas.has("movimientos_cc")) {
-    salida.movimientosCC = (await traerTodo("movimientos_cc")).map((m) => ({
+    const mapa = (m) => ({
       id: m.id, clienteId: m.cliente_id, tipo: m.tipo, monto: Number(m.monto) || 0,
-      concepto: m.concepto || "", metodo: m.metodo || "", fecha: m.fecha, usuario: m.usuario || ""
-    }));
+      concepto: m.concepto || "", metodo: m.metodo || "", fecha: m.fecha, usuario: m.usuario || "",
+      actualizado_en: m.actualizado_en
+    });
+    const delta = await traerDelta("movimientos_cc", "movimientos_cc");
+    if (delta && actual.movimientosCC && actual.movimientosCC.length) {
+      salida.movimientosCC = fusionarPorId(actual.movimientosCC, delta.map(mapa));
+      const ts = tsMaximo(delta);
+      if (ts) tsSet("movimientos_cc", ts);
+    } else {
+      const filas = await traerTodo("movimientos_cc");
+      salida.movimientosCC = filas.map(mapa);
+      const ts = tsMaximo(filas);
+      if (ts) tsSet("movimientos_cc", ts);
+    }
   }
 
   if (tablas.has("caja_cierres")) {
-    const { data: cs } = await nube.from("caja_cierres")
-      .select("*").order("cerrada_en", { ascending: false }).limit(500);
-    salida.cajasCerradas = (cs || []).map((c) => ({
+    const mapa = (c) => ({
       id: c.id, usuarioNombre: c.usuario || "", negocioId: c.negocio_id || "",
       montoInicial: Number(c.monto_inicial) || 0,
       efectivoEsperado: Number(c.efectivo_esperado) || 0,
       efectivoContado: Number(c.monto_contado) || 0,
       diferencia: Number(c.diferencia) || 0,
       movimientos: c.movimientos || [],
-      abiertaEn: c.abierta_en || null, cerradaEn: c.cerrada_en || null
-    }));
+      abiertaEn: c.abierta_en || null, cerradaEn: c.cerrada_en || null,
+      actualizado_en: c.actualizado_en
+    });
+    const delta = await traerDelta("caja_cierres", "caja_cierres");
+    if (delta && actual.cajasCerradas && actual.cajasCerradas.length) {
+      salida.cajasCerradas = fusionarPorId(actual.cajasCerradas, delta.map(mapa))
+        .sort((a, b) => String(b.cerradaEn || "").localeCompare(String(a.cerradaEn || "")));
+      const ts = tsMaximo(delta);
+      if (ts) tsSet("caja_cierres", ts);
+    } else {
+      const { data: cs } = await nube.from("caja_cierres")
+        .select("*").order("cerrada_en", { ascending: false }).limit(500);
+      salida.cajasCerradas = (cs || []).map(mapa);
+      const ts = tsMaximo(cs);
+      if (ts) tsSet("caja_cierres", ts);
+    }
   }
 
   if (tablas.has("transferencias")) {
-    const { data: ts } = await nube.from("transferencias")
-      .select("*").order("creado_en", { ascending: false }).limit(500);
-    salida.transferencias = (ts || []).map((t) => ({
+    const mapa = (t) => ({
       id: t.id, remito: t.remito || "", origen: t.origen || "", destino: t.destino || "",
       estado: t.estado || "completada", motivo: t.motivo || "", nota: t.nota || "",
       items: t.items || [], usuarioNombre: t.usuario || "", recibidaPor: t.recibida_por || "",
       recibidaEn: t.recibida_en || "", recibidaHora: t.recibida_hora || "",
-      fecha: t.fecha, hora: t.hora || ""
-    }));
+      fecha: t.fecha, hora: t.hora || "",
+      actualizado_en: t.actualizado_en
+    });
+    const delta = await traerDelta("transferencias", "transferencias");
+    if (delta && actual.transferencias && actual.transferencias.length) {
+      salida.transferencias = fusionarPorId(actual.transferencias, delta.map(mapa))
+        .sort((a, b) => String(b.fecha + " " + (b.hora || "")).localeCompare(String(a.fecha + " " + (a.hora || ""))));
+      const t = tsMaximo(delta);
+      if (t) tsSet("transferencias", t);
+    } else {
+      const { data: ts2 } = await nube.from("transferencias")
+        .select("*").order("creado_en", { ascending: false }).limit(500);
+      salida.transferencias = (ts2 || []).map(mapa);
+      const t = tsMaximo(ts2);
+      if (t) tsSet("transferencias", t);
+    }
   }
 
   if (tablas.has("pedidos")) {
-    const { data: ps } = await nube.from("pedidos").select("*")
-      .or("estado.eq.pendiente,creado_en.gte." + haceMeses(6))
-      .order("creado_en", { ascending: false }).limit(1000);
-    salida.pedidos = (ps || []).map((p) => ({
+    const mapa = (p) => ({
       id: p.id, numero: p.numero || "", clienteId: p.cliente_id || "",
       clienteNombre: p.cliente_nombre || "", negocioId: p.negocio_id || "",
       transferenciaId: p.transferencia_id || "", estado: p.estado || "pendiente",
       items: p.items || [], nota: p.nota || "", usuario: p.usuario || "",
       fecha: p.fecha, hora: p.hora || "",
       entregadoEn: p.entregado_en || "", entregadoHora: p.entregado_hora || "",
-      entregadoPor: p.entregado_por || "", recibidoPor: p.recibido_por || ""
-    }));
+      entregadoPor: p.entregado_por || "", recibidoPor: p.recibido_por || "",
+      actualizado_en: p.actualizado_en
+    });
+    const delta = await traerDelta("pedidos", "pedidos");
+    if (delta && actual.pedidos && actual.pedidos.length) {
+      salida.pedidos = fusionarPorId(actual.pedidos, delta.map(mapa))
+        .sort((a, b) => String(b.fecha + " " + (b.hora || "")).localeCompare(String(a.fecha + " " + (a.hora || ""))));
+      const t = tsMaximo(delta);
+      if (t) tsSet("pedidos", t);
+    } else {
+      const { data: ps } = await nube.from("pedidos").select("*")
+        .or("estado.eq.pendiente,creado_en.gte." + haceMeses(6))
+        .order("creado_en", { ascending: false }).limit(1000);
+      salida.pedidos = (ps || []).map(mapa);
+      const t = tsMaximo(ps);
+      if (t) tsSet("pedidos", t);
+    }
   }
 
   if (tablas.has("notas_credito")) {
-    const { data: ns } = await nube.from("notas_credito").select("*")
-      .or("estado.eq.activa,creado_en.gte." + haceMeses(12))
-      .order("creado_en", { ascending: false }).limit(1500);
-    salida.notasCredito = (ns || []).map((n) => ({
+    const mapa = (n) => ({
       id: n.id, numero: n.numero || "", ventaId: n.venta_id || "",
       ventaFecha: n.venta_fecha || "", clienteId: n.cliente_id || "",
       clienteNombre: n.cliente_nombre || "", negocioId: n.negocio_id || "",
@@ -5627,67 +5874,143 @@ async function traerParcial(tablas, quienEntro) {
       estado: n.estado || "activa", motivo: n.motivo || "",
       usuario: n.usuario || "", fecha: n.fecha, hora: n.hora || "",
       usadaEn: n.usada_en || "", usadaHora: n.usada_hora || "",
-      usadaPor: n.usada_por || "", usadaVentaId: n.usada_venta_id || ""
-    }));
+      usadaPor: n.usada_por || "", usadaVentaId: n.usada_venta_id || "",
+      actualizado_en: n.actualizado_en
+    });
+    const delta = await traerDelta("notas_credito", "notas_credito");
+    if (delta && actual.notasCredito && actual.notasCredito.length) {
+      salida.notasCredito = fusionarPorId(actual.notasCredito, delta.map(mapa))
+        .sort((a, b) => String(b.fecha + " " + (b.hora || "")).localeCompare(String(a.fecha + " " + (a.hora || ""))));
+      const t = tsMaximo(delta);
+      if (t) tsSet("notas_credito", t);
+    } else {
+      const { data: ns } = await nube.from("notas_credito").select("*")
+        .or("estado.eq.activa,creado_en.gte." + haceMeses(12))
+        .order("creado_en", { ascending: false }).limit(1500);
+      salida.notasCredito = (ns || []).map(mapa);
+      const t = tsMaximo(ns);
+      if (t) tsSet("notas_credito", t);
+    }
   }
 
   if (tablas.has("cambios")) {
-    const { data: cs } = await nube.from("cambios")
-      .select("*").order("creado_en", { ascending: false }).limit(500);
-    salida.cambios = (cs || []).map((c) => ({
+    const mapa = (c) => ({
       id: c.id, numero: c.numero || "", ventaId: c.venta_id || "",
       clienteNombre: c.cliente_nombre || "", negocioId: c.negocio_id || "",
       devuelto: c.devuelto || [], entregado: c.entregado || [],
       diferencia: Number(c.diferencia) || 0,
       notaCreditoId: c.nota_credito_id || "", motivo: c.motivo || "",
-      usuario: c.usuario || "", fecha: c.fecha, hora: c.hora || ""
-    }));
+      usuario: c.usuario || "", fecha: c.fecha, hora: c.hora || "",
+      actualizado_en: c.actualizado_en
+    });
+    const delta = await traerDelta("cambios", "cambios");
+    if (delta && actual.cambios && actual.cambios.length) {
+      salida.cambios = fusionarPorId(actual.cambios, delta.map(mapa))
+        .sort((a, b) => String(b.fecha + " " + (b.hora || "")).localeCompare(String(a.fecha + " " + (a.hora || ""))));
+      const t = tsMaximo(delta);
+      if (t) tsSet("cambios", t);
+    } else {
+      const { data: cs } = await nube.from("cambios")
+        .select("*").order("creado_en", { ascending: false }).limit(500);
+      salida.cambios = (cs || []).map(mapa);
+      const t = tsMaximo(cs);
+      if (t) tsSet("cambios", t);
+    }
   }
 
   if (tablas.has("devoluciones_reparto")) {
-    const { data: ds } = await nube.from("devoluciones_reparto")
-      .select("*").order("creado_en", { ascending: false }).limit(500);
-    salida.devolucionesReparto = (ds || []).map((d) => ({
+    const mapa = (d) => ({
       id: d.id, pedidoId: d.pedido_id || "", clienteId: d.cliente_id || "",
       clienteNombre: d.cliente_nombre || "", negocioId: d.negocio_id || "",
       items: d.items || [], unidades: d.unidades || 0, motivo: d.motivo || "",
       devueltaPor: d.devuelta_por || "", recibidaPor: d.recibida_por || "",
-      fecha: d.fecha, hora: d.hora || ""
-    }));
+      fecha: d.fecha, hora: d.hora || "",
+      actualizado_en: d.actualizado_en
+    });
+    const delta = await traerDelta("devoluciones_reparto", "devoluciones_reparto");
+    if (delta && actual.devolucionesReparto && actual.devolucionesReparto.length) {
+      salida.devolucionesReparto = fusionarPorId(actual.devolucionesReparto, delta.map(mapa))
+        .sort((a, b) => String(b.fecha + " " + (b.hora || "")).localeCompare(String(a.fecha + " " + (a.hora || ""))));
+      const t = tsMaximo(delta);
+      if (t) tsSet("devoluciones_reparto", t);
+    } else {
+      const { data: ds } = await nube.from("devoluciones_reparto")
+        .select("*").order("creado_en", { ascending: false }).limit(500);
+      salida.devolucionesReparto = (ds || []).map(mapa);
+      const t = tsMaximo(ds);
+      if (t) tsSet("devoluciones_reparto", t);
+    }
   }
 
   if (tablas.has("movimientos_stock")) {
-    const { data: ms } = await nube.from("movimientos_stock")
-      .select("*").order("creado_en", { ascending: false }).limit(400);
-    salida.movimientosStock = (ms || []).map((m) => ({
+    const mapa = (m) => ({
       id: m.id, productoId: m.producto_id || "", negocioId: m.negocio_id || "",
       nombre: m.nombre || "", talle: m.talle || "",
       cantidad: Number(m.cantidad) || 0, origen: m.origen || "",
       motivo: m.motivo || "", usuario: m.usuario || "",
-      stockResultante: m.stock_resultante, fecha: m.fecha, hora: m.hora || ""
-    }));
+      stockResultante: m.stock_resultante, fecha: m.fecha, hora: m.hora || "",
+      actualizado_en: m.actualizado_en
+    });
+    const delta = await traerDelta("movimientos_stock", "movimientos_stock");
+    if (delta && actual.movimientosStock && actual.movimientosStock.length) {
+      salida.movimientosStock = fusionarPorId(actual.movimientosStock, delta.map(mapa))
+        .sort((a, b) => String(b.fecha + " " + (b.hora || "")).localeCompare(String(a.fecha + " " + (a.hora || ""))))
+        .slice(0, 400); // mantener límite razonable
+      const t = tsMaximo(delta);
+      if (t) tsSet("movimientos_stock", t);
+    } else {
+      const { data: ms } = await nube.from("movimientos_stock")
+        .select("*").order("creado_en", { ascending: false }).limit(400);
+      salida.movimientosStock = (ms || []).map(mapa);
+      const t = tsMaximo(ms);
+      if (t) tsSet("movimientos_stock", t);
+    }
   }
 
   if (tablas.has("gastos")) {
-    const { data: gs } = await nube.from("gastos")
-      .select("*").order("fecha", { ascending: false }).limit(1000);
-    salida.gastos = (gs || []).map((g) => ({
+    const mapa = (g) => ({
       id: g.id, negocioId: g.negocio_id || "", concepto: g.concepto || "",
       categoria: g.categoria || "", monto: Number(g.monto) || 0,
       metodo: g.metodo || "", nota: g.nota || "", usuario: g.usuario || "",
-      fecha: g.fecha
-    }));
+      fecha: g.fecha,
+      actualizado_en: g.actualizado_en
+    });
+    const delta = await traerDelta("gastos", "gastos");
+    if (delta && actual.gastos && actual.gastos.length) {
+      salida.gastos = fusionarPorId(actual.gastos, delta.map(mapa))
+        .sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+      const t = tsMaximo(delta);
+      if (t) tsSet("gastos", t);
+    } else {
+      const { data: gs } = await nube.from("gastos")
+        .select("*").order("fecha", { ascending: false }).limit(1000);
+      salida.gastos = (gs || []).map(mapa);
+      const t = tsMaximo(gs);
+      if (t) tsSet("gastos", t);
+    }
   }
 
   if (tablas.has("compras")) {
-    const { data: cps } = await nube.from("compras")
-      .select("*").order("fecha", { ascending: false }).limit(1000);
-    salida.compras = (cps || []).map((c) => ({
+    const mapa = (c) => ({
       id: c.id, negocioId: c.negocio_id || "", proveedor: c.proveedor || "",
       comprobante: c.comprobante || "", total: Number(c.total) || 0,
       items: c.items || [], nota: c.nota || "", usuario: c.usuario || "",
-      fecha: c.fecha
-    }));
+      fecha: c.fecha,
+      actualizado_en: c.actualizado_en
+    });
+    const delta = await traerDelta("compras", "compras");
+    if (delta && actual.compras && actual.compras.length) {
+      salida.compras = fusionarPorId(actual.compras, delta.map(mapa))
+        .sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+      const t = tsMaximo(delta);
+      if (t) tsSet("compras", t);
+    } else {
+      const { data: cps } = await nube.from("compras")
+        .select("*").order("fecha", { ascending: false }).limit(1000);
+      salida.compras = (cps || []).map(mapa);
+      const t = tsMaximo(cps);
+      if (t) tsSet("compras", t);
+    }
   }
 
   if (tablas.has("cajas_abiertas")) {
@@ -5729,6 +6052,15 @@ async function traerEsencial(quienEntro) {
   const primerError = [negs, cats, provs, listas, ajustes, usuarios, cajasNube]
     .find((r) => r && r.error);
   if (primerError) throw new Error(primerError.error.message);
+
+  // Guardar timestamps de arranque para habilitar delta sync
+  // en las próximas sincronizaciones
+  const tsProds = tsMaximo(prods);
+  const tsVars = tsMaximo(vars);
+  const tsClis = tsMaximo(clis);
+  if (tsProds) tsSet("productos", tsProds);
+  if (tsVars) tsSet("variantes", tsVars);
+  if (tsClis) tsSet("clientes", tsClis);
 
   const listasPrecio = (listas.data || []).map((l) => ({
     id: l.id, nombre: l.nombre, ajustePct: Number(l.ajuste_pct) || 0
@@ -5824,6 +6156,27 @@ async function traerDeLaNube(quienEntro) {
       nube.from("reposiciones_hechas").select("*").order("fecha", { ascending: false }).limit(500)
     ]);
   const [ventas, items] = ventasEItems;
+
+  // Guardar timestamps de todas las tablas cargadas para que las próximas
+  // sincronizaciones sean delta (sólo lo que cambió desde ahora)
+  const guardarTs = (tabla, filas) => {
+    const t = tsMaximo(filas);
+    if (t) tsSet(tabla, t);
+  };
+  guardarTs("productos", prods);
+  guardarTs("variantes", vars);
+  guardarTs("clientes", clis);
+  guardarTs("ventas", ventas);
+  guardarTs("movimientos_cc", movsCC);
+  guardarTs("caja_cierres", cierresNube.data);
+  guardarTs("transferencias", transfNube.data);
+  guardarTs("movimientos_stock", movStockNube.data);
+  guardarTs("pedidos", pedidosNube.data);
+  guardarTs("notas_credito", notasNube.data);
+  guardarTs("cambios", cambiosNube.data);
+  guardarTs("devoluciones_reparto", devolNube.data);
+  guardarTs("gastos", gastosNube.data);
+  guardarTs("compras", comprasNube.data);
 
   // Las variantes y los renglones se agrupan por su dueño
   const varsPorProd = {};
