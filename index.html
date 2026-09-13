@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.911";
+const VERSION_APP = "9.912";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -416,8 +416,8 @@ const MONITOR = (() => {
       salida.push({
         nivel: "alto",
         que: c.recargasTotales + " recarga(s) completa(s) del catálogo",
-        porque: "Alguna tabla cambió y no está en la lista de carga parcial, o se cayó el canal.",
-        hacer: "Revisar en la pestaña Errores cuál fue la tabla y agregarla a la lista conocidas de traerParcial."
+        porque: "Se pidió una tabla que no está en la lista de carga parcial (conocidas).",
+        hacer: "Abrir la pestaña Sincronizaciones y ver qué tabla figura en la fila [total]; esa hay que agregarla a conocidas en traerParcial."
       });
     }
     const pesadas = Object.entries(M.tablas)
@@ -2559,7 +2559,18 @@ function ControlTienda() {
         try { MONITOR.reconexion(estado); } catch (e) {}
         if (estado === "SUBSCRIBED") {
           canal._vivo = true;
-          if (canal._estuvoCaido) { canal._estuvoCaido = false; refrescar(); }
+          // Al volver el canal NO se recarga todo: mientras estuvo caído,
+          // sólo pudieron perderse avisos de las tablas que van por aviso
+          // (las demás van por pulso, que no depende del canal). Con el
+          // delta sync, refrescarlas cuesta unos KB. Antes esto disparaba
+          // una recarga COMPLETA del catálogo por cada reconexión: con la
+          // conexión inestable de un local, eso era el egress entero.
+          if (canal._estuvoCaido) {
+            canal._estuvoCaido = false;
+            refrescar("ventas");
+            refrescar("variantes");
+            refrescar("productos");
+          }
         } else if (estado === "CHANNEL_ERROR" || estado === "TIMED_OUT" || estado === "CLOSED") {
           canal._vivo = false;
           canal._estuvoCaido = true;
