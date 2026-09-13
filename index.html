@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.910";
+const VERSION_APP = "9.911";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -214,6 +214,684 @@ if (DIAG && typeof window !== "undefined" && window.fetch) {
   console.log("%c[Control Tienda] medidor activo — escribí ctDiag() para el detalle",
     "background:#16a34a;color:#fff;padding:2px 6px;border-radius:3px");
 }
+
+// ===== MONITOR (v9.911) ==============================================
+// Caja negra de la app: registra TODO lo que pasa con la nube — cada
+// sincronización, cada error, cada guardado, cuánto tardó y cuánto pesó.
+// Siempre encendido (cuesta microsegundos) para que cuando algo falle a
+// las tres de la tarde en el local, quede el rastro de qué pasó.
+// Es DOM puro a propósito: si React se cae, el monitor sigue vivo y se
+// puede leer el error que lo tumbó.
+const MONITOR = (() => {
+  const TOPE_EVENTOS = 400;
+  const TOPE_ERRORES = 120;
+  const TOPE_SYNCS = 150;
+  const LENTO_MS = 2500;      // un sync por encima de esto es sospechoso
+  const PESADO_BYTES = 153600; // 150 KB en una bajada: algo se trajo de más
+
+  const M = {
+    arranque: Date.now(),
+    version: VERSION_APP,
+    eventos: [],
+    errores: [],
+    syncs: [],
+    tablas: {},   // por tabla: { veces, filas, bytes, ultimoMs, ultimo }
+    contadores: {
+      syncParcial: 0, syncTotal: 0, syncDelta: 0, syncVacio: 0,
+      errores: 0, guardados: 0, guardadosFallidos: 0,
+      pulsos: 0, pulsosConNovedad: 0,
+      reconexiones: 0, recargasTotales: 0
+    },
+    alertas: [],
+    dispositivo: "",
+    _oyentes: []
+  };
+
+  const ahora = () => Date.now();
+  const hora = (t) => {
+    const d = new Date(t || Date.now());
+    return String(d.getHours()).padStart(2, "0") + ":" +
+           String(d.getMinutes()).padStart(2, "0") + ":" +
+           String(d.getSeconds()).padStart(2, "0");
+  };
+  const haceCuanto = (t) => {
+    const s = Math.round((Date.now() - t) / 1000);
+    if (s < 60) return "hace " + s + "s";
+    if (s < 3600) return "hace " + Math.floor(s / 60) + "m";
+    return "hace " + Math.floor(s / 3600) + "h";
+  };
+  const recortar = (arr, tope) => { while (arr.length > tope) arr.shift(); };
+  const avisar = () => {
+    try { M._oyentes.forEach((f) => f()); } catch (e) {}
+  };
+
+  // Identificar el dispositivo: cuando hay diez teléfonos, saber cuál
+  // fue el que tuvo el problema ahorra media hora de adivinanzas.
+  try {
+    let d = localStorage.getItem("ct-dispositivo-id");
+    if (!d) {
+      d = Math.random().toString(36).slice(2, 7).toUpperCase();
+      localStorage.setItem("ct-dispositivo-id", d);
+    }
+    M.dispositivo = d;
+  } catch (e) { M.dispositivo = "?????"; }
+
+  // --- Registro de eventos ------------------------------------------
+  M.evento = (tipo, texto, extra) => {
+    M.eventos.push({ t: ahora(), tipo, texto: String(texto || ""), extra: extra || null });
+    recortar(M.eventos, TOPE_EVENTOS);
+    avisar();
+  };
+
+  M.error = (origen, err, extra) => {
+    const msg = err && err.message ? err.message : String(err || "error sin detalle");
+    const pila = err && err.stack ? String(err.stack).split("\n").slice(0, 6).join("\n") : "";
+    M.errores.push({ t: ahora(), origen: String(origen || "?"), mensaje: msg, pila, extra: extra || null });
+    M.contadores.errores++;
+    recortar(M.errores, TOPE_ERRORES);
+    M.evento("error", origen + ": " + msg);
+    // Un mismo error tres veces seguidas no es mala suerte, es un bug
+    const ult = M.errores.slice(-3);
+    if (ult.length === 3 && ult.every((e) => e.mensaje === msg)) {
+      M.alerta("repetido", "El error \"" + msg.slice(0, 60) + "\" se repitió 3 veces", "alto");
+    }
+    avisar();
+    return msg;
+  };
+
+  M.alerta = (clave, texto, nivel) => {
+    const previa = M.alertas.find((a) => a.clave === clave);
+    if (previa) { previa.veces++; previa.t = ahora(); previa.texto = texto; }
+    else M.alertas.push({ clave, texto, nivel: nivel || "medio", t: ahora(), veces: 1 });
+    recortar(M.alertas, 40);
+    avisar();
+  };
+
+  // --- Cronómetro ----------------------------------------------------
+  // Devuelve una función que al llamarse cierra la medición.
+  M.cronometro = (nombre) => {
+    const t0 = ahora();
+    return (detalle) => {
+      const ms = ahora() - t0;
+      M.evento("tiempo", nombre + " · " + ms + " ms", detalle || null);
+      if (ms > LENTO_MS) {
+        M.alerta("lento-" + nombre, nombre + " tardó " + (ms / 1000).toFixed(1) + " s", "medio");
+      }
+      return ms;
+    };
+  };
+
+  // --- Sincronizaciones ----------------------------------------------
+  M.sync = (info) => {
+    const fila = {
+      t: ahora(),
+      modo: info.modo || "?",          // delta | parcial | total
+      tablas: info.tablas || [],
+      filas: info.filas || 0,
+      bytes: info.bytes || 0,
+      ms: info.ms || 0,
+      detalle: info.detalle || null,
+      error: info.error || null
+    };
+    M.syncs.push(fila);
+    recortar(M.syncs, TOPE_SYNCS);
+    if (fila.modo === "total") {
+      M.contadores.syncTotal++;
+      M.contadores.recargasTotales++;
+      M.alerta("recarga-total", "Hubo una recarga COMPLETA del catálogo (" +
+        (fila.tablas.join(", ") || "reconexión") + ")", "alto");
+    } else if (fila.modo === "delta") {
+      M.contadores.syncDelta++;
+      if (!fila.filas) M.contadores.syncVacio++;
+    } else {
+      M.contadores.syncParcial++;
+    }
+    if (fila.bytes > PESADO_BYTES) {
+      M.alerta("bajada-pesada", "Una sincronización bajó " + kb(fila.bytes) +
+        " (" + fila.tablas.join(", ") + ")", "alto");
+    }
+    // Tormenta de sincronizaciones: más de 12 en un minuto es un bucle
+    const haceUnMin = ahora() - 60000;
+    const recientes = M.syncs.filter((s) => s.t > haceUnMin).length;
+    if (recientes > 12) {
+      M.alerta("tormenta", "Hubo " + recientes + " sincronizaciones en el último minuto", "alto");
+    }
+    avisar();
+  };
+
+  // Registro por tabla: filas que llegaron y cuánto se tardó
+  M.tabla = (nombre, filas, ms) => {
+    const r = M.tablas[nombre] = M.tablas[nombre] || { veces: 0, filas: 0, bytes: 0, ultimoMs: 0, ultimo: 0 };
+    r.veces++;
+    r.filas += (filas || 0);
+    r.ultimoMs = ms || 0;
+    r.ultimo = ahora();
+    r.ultimasFilas = filas || 0;
+    avisar();
+  };
+
+  // Bytes por tabla: lo alimenta el envoltorio de fetch
+  M.bytes = (tabla, bytes) => {
+    if (!bytes) return;
+    const r = M.tablas[tabla] = M.tablas[tabla] || { veces: 0, filas: 0, bytes: 0, ultimoMs: 0, ultimo: 0 };
+    r.bytes += bytes;
+    M.totalBytes = (M.totalBytes || 0) + bytes;
+    M.totalPedidos = (M.totalPedidos || 0) + 1;
+  };
+
+  M.guardado = (que, ok, err) => {
+    if (ok) { M.contadores.guardados++; M.evento("guardado", que + " ✓"); }
+    else {
+      M.contadores.guardadosFallidos++;
+      M.error("guardar:" + que, err);
+      M.alerta("guardado-falla", "Falló guardar " + que + " en la nube", "alto");
+    }
+  };
+
+  M.pulso = (conNovedad, tablas) => {
+    M.contadores.pulsos++;
+    if (conNovedad) {
+      M.contadores.pulsosConNovedad++;
+      M.evento("pulso", "novedades: " + (tablas || []).join(", "));
+    }
+  };
+
+  M.reconexion = (estado) => {
+    M.contadores.reconexiones++;
+    M.evento("canal", "estado: " + estado);
+    if (estado !== "SUBSCRIBED") {
+      M.alerta("canal-caido", "El canal de avisos se cortó (" + estado + ")", "medio");
+    }
+  };
+
+  // --- Diagnóstico automático ----------------------------------------
+  // Mira los números y dice, en castellano, qué está mal y qué conviene
+  // tocar. Es la diferencia entre ver una tabla de datos y saber qué hacer.
+  M.diagnostico = () => {
+    const c = M.contadores;
+    const mins = Math.max(1, (Date.now() - M.arranque) / 60000);
+    const salida = [];
+
+    if (c.recargasTotales > 0) {
+      salida.push({
+        nivel: "alto",
+        que: c.recargasTotales + " recarga(s) completa(s) del catálogo",
+        porque: "Alguna tabla cambió y no está en la lista de carga parcial, o se cayó el canal.",
+        hacer: "Revisar en la pestaña Errores cuál fue la tabla y agregarla a la lista conocidas de traerParcial."
+      });
+    }
+    const pesadas = Object.entries(M.tablas)
+      .filter(([, r]) => r.bytes > 512000)
+      .sort((a, b) => b[1].bytes - a[1].bytes);
+    if (pesadas.length) {
+      salida.push({
+        nivel: "alto",
+        que: "Tablas que más bajaron: " + pesadas.slice(0, 3).map(([t, r]) => t + " (" + kb(r.bytes) + ")").join(", "),
+        porque: "Esas tablas se están trayendo enteras en vez de sólo lo que cambió.",
+        hacer: "Verificar que tengan columna actualizado_en y que el delta esté activo para ellas."
+      });
+    }
+    if (c.syncDelta > 0) {
+      const vacios = Math.round(c.syncVacio / Math.max(1, c.syncDelta) * 100);
+      salida.push({
+        nivel: "ok",
+        que: c.syncDelta + " sincronizaciones por diferencia (" + vacios + "% sin novedades)",
+        porque: "El delta está funcionando: la mayoría de las consultas no traen nada porque no cambió nada.",
+        hacer: vacios > 85 ? "Se podría espaciar el pulso de 20 a 40 segundos y ahorrar la mitad de las consultas." : "Está bien así."
+      });
+    }
+    if (c.guardadosFallidos > 0) {
+      salida.push({
+        nivel: "alto",
+        que: c.guardadosFallidos + " guardado(s) fallido(s)",
+        porque: "Hubo escrituras que no llegaron a la nube: pueden ser ventas o remitos perdidos.",
+        hacer: "Mirar la pestaña Errores para ver qué tabla y qué mensaje devolvió la base."
+      });
+    }
+    if (c.reconexiones > 4) {
+      salida.push({
+        nivel: "medio",
+        que: c.reconexiones + " reconexiones del canal en " + mins.toFixed(0) + " min",
+        porque: "La conexión con la nube se corta seguido: puede ser el wifi del local o la base sobrecargada.",
+        hacer: "Si pasa en todos los dispositivos a la vez, es la base. Si es en uno solo, es la red de ese equipo."
+      });
+    }
+    const lentos = M.syncs.filter((s) => s.ms > LENTO_MS);
+    if (lentos.length > 2) {
+      salida.push({
+        nivel: "medio",
+        que: lentos.length + " sincronizaciones lentas (más de " + (LENTO_MS / 1000) + " s)",
+        porque: "La base está tardando en responder: CPU alta o falta de índices.",
+        hacer: "Revisar el uso de CPU en Supabase y qué tablas aparecen en las consultas lentas."
+      });
+    }
+    const ritmo = (M.totalBytes || 0) / mins * 60 * 10;
+    salida.push({
+      nivel: ritmo > 52428800 ? "alto" : ritmo > 10485760 ? "medio" : "ok",
+      que: "Ritmo de consumo: " + kb(ritmo) + " por jornada de 10 h y dispositivo",
+      porque: "Con 10 dispositivos eso son " + kb(ritmo * 10) + " por día.",
+      hacer: ritmo > 10485760 ? "Está alto: conviene revisar qué tabla pesa más en la pestaña Tablas." : "Dentro de lo esperado."
+    });
+    if (!salida.some((s) => s.nivel === "alto") && !M.errores.length) {
+      salida.unshift({
+        nivel: "ok",
+        que: "No se detectaron problemas",
+        porque: "No hubo errores, recargas completas ni bajadas pesadas desde que abrió la app.",
+        hacer: "Nada por ahora."
+      });
+    }
+    return salida;
+  };
+
+  // --- Exportar ------------------------------------------------------
+  // Para mandar por WhatsApp cuando el problema pasó en el local y no
+  // hay forma de estar ahí mirando.
+  M.exportar = () => {
+    const c = M.contadores;
+    const mins = ((Date.now() - M.arranque) / 60000).toFixed(1);
+    const L = [];
+    L.push("=== CONTROL TIENDA · MONITOR ===");
+    L.push("Version: " + M.version + "   Dispositivo: " + M.dispositivo);
+    L.push("Abierta hace: " + mins + " min");
+    L.push("Bajado: " + kb(M.totalBytes || 0) + " en " + (M.totalPedidos || 0) + " pedidos");
+    L.push("");
+    L.push("--- Contadores ---");
+    Object.keys(c).forEach((k) => L.push("  " + k + ": " + c[k]));
+    L.push("");
+    L.push("--- Diagnostico ---");
+    M.diagnostico().forEach((d) => {
+      L.push("  [" + d.nivel.toUpperCase() + "] " + d.que);
+      L.push("      causa: " + d.porque);
+      L.push("      hacer: " + d.hacer);
+    });
+    L.push("");
+    L.push("--- Tablas ---");
+    Object.entries(M.tablas).sort((a, b) => b[1].bytes - a[1].bytes).forEach(([t, r]) => {
+      L.push("  " + t + ": " + kb(r.bytes) + " · " + r.veces + " veces · " +
+        r.filas + " filas · ultimo " + (r.ultimo ? hora(r.ultimo) : "-"));
+    });
+    L.push("");
+    L.push("--- Ultimas sincronizaciones ---");
+    M.syncs.slice(-25).forEach((s) => {
+      L.push("  " + hora(s.t) + " [" + s.modo + "] " + (s.tablas.join(",") || "-") +
+        " · " + s.filas + " filas · " + kb(s.bytes) + " · " + s.ms + " ms" +
+        (s.error ? " · ERROR: " + s.error : ""));
+    });
+    L.push("");
+    L.push("--- Errores (" + M.errores.length + ") ---");
+    M.errores.slice(-30).forEach((e) => {
+      L.push("  " + hora(e.t) + " [" + e.origen + "] " + e.mensaje);
+      if (e.pila) L.push("      " + e.pila.split("\n")[1] || "");
+    });
+    return L.join("\n");
+  };
+
+  M.limpiar = () => {
+    M.eventos = []; M.errores = []; M.syncs = []; M.tablas = {}; M.alertas = [];
+    Object.keys(M.contadores).forEach((k) => { M.contadores[k] = 0; });
+    M.totalBytes = 0; M.totalPedidos = 0; M.arranque = Date.now();
+    avisar();
+  };
+
+  M.suscribir = (f) => {
+    M._oyentes.push(f);
+    return () => { M._oyentes = M._oyentes.filter((x) => x !== f); };
+  };
+
+  M.fmtHora = hora;
+  M.fmtHace = haceCuanto;
+  M.totalBytes = 0;
+  M.totalPedidos = 0;
+
+  return M;
+})();
+
+// Envoltorio de fetch SIEMPRE activo (el de arriba sólo corre con ?diag=1).
+// Mide con content-length, que no cuesta nada: no clona ni vuelve a leer la
+// respuesta, así que en un teléfono viejo no se nota.
+if (typeof window !== "undefined" && window.fetch) {
+  const original = window.fetch.bind(window);
+  window.fetch = async (entrada, opciones) => {
+    const url = typeof entrada === "string" ? entrada : (entrada && entrada.url) || "";
+    const esNube = url.indexOf(NUBE_URL) === 0;
+    const t0 = esNube ? Date.now() : 0;
+    let res;
+    try {
+      res = await original(entrada, opciones);
+    } catch (e) {
+      if (esNube) {
+        const m = url.match(/\/(?:rest|auth|storage)\/v1\/(?:object\/)?([^?/]+)/);
+        MONITOR.error("red:" + (m ? m[1] : "nube"), e, { url: url.slice(0, 160) });
+        MONITOR.alerta("sin-red", "No se pudo llegar a la nube (revisar internet)", "alto");
+      }
+      throw e;
+    }
+    if (esNube) {
+      const ms = Date.now() - t0;
+      const m = url.match(/\/(?:rest|auth|storage)\/v1\/(?:object\/)?([^?/]+)/);
+      const tabla = m ? m[1] : "otros";
+      const bytes = Number(res.headers.get("content-length")) || 0;
+      MONITOR.bytes(tabla, bytes);
+      if (!res.ok) {
+        MONITOR.error("http:" + tabla, new Error(res.status + " " + res.statusText),
+          { url: url.slice(0, 160) });
+        if (res.status === 401 || res.status === 403) {
+          MONITOR.alerta("permisos", "La base rechazó el acceso a " + tabla + " (" + res.status + ")", "alto");
+        }
+        if (res.status >= 500) {
+          MONITOR.alerta("base-caida", "La base devolvió error " + res.status + " en " + tabla, "alto");
+        }
+      }
+      if (ms > 4000) {
+        MONITOR.alerta("consulta-lenta", "La consulta a " + tabla + " tardó " + (ms / 1000).toFixed(1) + " s", "medio");
+      }
+    }
+    return res;
+  };
+}
+
+// Errores que nadie atrapó: si React se cae, acá queda escrito por qué.
+if (typeof window !== "undefined") {
+  window.addEventListener("error", (ev) => {
+    try {
+      MONITOR.error("javascript", ev.error || new Error(ev.message),
+        { archivo: (ev.filename || "").split("/").pop(), linea: ev.lineno });
+    } catch (e) {}
+  });
+  window.addEventListener("unhandledrejection", (ev) => {
+    try { MONITOR.error("promesa", ev.reason); } catch (e) {}
+  });
+}
+
+// ===== Panel del monitor (DOM puro, sobrevive a un crash de React) ====
+(() => {
+  if (typeof window === "undefined") return;
+  let caja = null, pestana = "resumen", refresco = null;
+
+  const COLOR = { alto: "#ef4444", medio: "#f59e0b", ok: "#22c55e" };
+  const esc = (s) => String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  const estilos = `
+    #ct-monitor{position:fixed;inset:0;z-index:2147483600;background:#0b0f17;
+      color:#e5e7eb;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+      display:flex;flex-direction:column;overscroll-behavior:contain}
+    #ct-monitor *{box-sizing:border-box}
+    #ct-monitor header{display:flex;align-items:center;gap:8px;padding:10px 12px;
+      background:#111827;border-bottom:1px solid #1f2937;flex:0 0 auto;flex-wrap:wrap}
+    #ct-monitor header b{font-size:14px;color:#fff;letter-spacing:.3px}
+    #ct-monitor .chip{background:#1f2937;border-radius:20px;padding:2px 9px;font-size:11px;color:#9ca3af}
+    #ct-monitor .cerrar{margin-left:auto;background:#dc2626;color:#fff;border:none;
+      border-radius:7px;padding:7px 14px;font:inherit;font-weight:700;cursor:pointer}
+    #ct-monitor nav{display:flex;gap:4px;padding:8px 10px;background:#0f1521;
+      border-bottom:1px solid #1f2937;flex:0 0 auto;overflow-x:auto}
+    #ct-monitor nav button{background:#1f2937;color:#9ca3af;border:none;border-radius:7px;
+      padding:7px 13px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+    #ct-monitor nav button.on{background:#2563eb;color:#fff;font-weight:700}
+    #ct-monitor main{flex:1 1 auto;overflow:auto;padding:12px;-webkit-overflow-scrolling:touch}
+    #ct-monitor .tarjeta{background:#111827;border:1px solid #1f2937;border-radius:10px;
+      padding:11px 12px;margin-bottom:9px}
+    #ct-monitor .tarjeta h4{margin:0 0 7px;font-size:12px;color:#93c5fd;
+      text-transform:uppercase;letter-spacing:.6px;font-weight:700}
+    #ct-monitor .grilla{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:8px}
+    #ct-monitor .dato{background:#0f1521;border-radius:8px;padding:9px}
+    #ct-monitor .dato .n{font-size:19px;font-weight:700;color:#fff;line-height:1.15}
+    #ct-monitor .dato .e{font-size:10.5px;color:#6b7280;text-transform:uppercase;letter-spacing:.4px}
+    #ct-monitor table{width:100%;border-collapse:collapse;font-size:11.5px}
+    #ct-monitor th{text-align:left;color:#6b7280;font-weight:600;padding:5px 6px;
+      border-bottom:1px solid #1f2937;font-size:10.5px;text-transform:uppercase}
+    #ct-monitor td{padding:5px 6px;border-bottom:1px solid #151d2b;vertical-align:top}
+    #ct-monitor .linea{padding:7px 9px;border-radius:7px;margin-bottom:5px;background:#0f1521;
+      border-left:3px solid #374151;font-size:11.5px;word-break:break-word}
+    #ct-monitor .linea.alto{border-left-color:#ef4444;background:#1a1113}
+    #ct-monitor .linea.medio{border-left-color:#f59e0b;background:#1a1610}
+    #ct-monitor .linea.ok{border-left-color:#22c55e;background:#0e1a12}
+    #ct-monitor .t{color:#6b7280;font-size:10.5px}
+    #ct-monitor pre{margin:5px 0 0;color:#9ca3af;font-size:10.5px;white-space:pre-wrap;
+      word-break:break-word;max-height:130px;overflow:auto}
+    #ct-monitor .acciones{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
+    #ct-monitor .acciones button{background:#1f2937;color:#e5e7eb;border:none;border-radius:7px;
+      padding:8px 13px;font:inherit;font-size:11.5px;cursor:pointer}
+    #ct-monitor .vacio{color:#4b5563;text-align:center;padding:26px 10px;font-size:12px}
+    #ct-monitor .barra{height:5px;background:#1f2937;border-radius:3px;overflow:hidden;margin-top:4px}
+    #ct-monitor .barra i{display:block;height:100%;background:#3b82f6}
+  `;
+
+  const dato = (n, e) => '<div class="dato"><div class="n">' + esc(n) + '</div><div class="e">' + esc(e) + '</div></div>';
+
+  function pintarResumen() {
+    const M = MONITOR, c = M.contadores;
+    const mins = Math.max(1, (Date.now() - M.arranque) / 60000);
+    const ritmo = (M.totalBytes || 0) / mins * 60 * 10;
+    const diag = M.diagnostico();
+    let h = "";
+
+    h += '<div class="tarjeta"><h4>Estado general</h4><div class="grilla">';
+    h += dato(kb(M.totalBytes || 0), "bajado");
+    h += dato(M.totalPedidos || 0, "consultas");
+    h += dato(kb(ritmo), "por jornada");
+    h += dato(mins.toFixed(0) + " min", "app abierta");
+    h += dato(c.errores, "errores");
+    h += dato(c.recargasTotales, "recargas totales");
+    h += "</div></div>";
+
+    h += '<div class="tarjeta"><h4>Sincronización</h4><div class="grilla">';
+    h += dato(c.syncDelta, "por diferencia");
+    h += dato(c.syncParcial, "parciales");
+    h += dato(c.syncTotal, "completas");
+    h += dato(c.syncVacio, "sin novedad");
+    h += dato(c.pulsos, "pulsos");
+    h += dato(c.reconexiones, "reconexiones");
+    h += "</div></div>";
+
+    h += '<div class="tarjeta"><h4>Diagnóstico automático</h4>';
+    diag.forEach((d) => {
+      h += '<div class="linea ' + d.nivel + '"><b>' + esc(d.que) + "</b><br>" +
+        '<span class="t">' + esc(d.porque) + "</span><br>" +
+        "<span>→ " + esc(d.hacer) + "</span></div>";
+    });
+    h += "</div>";
+    return h;
+  }
+
+  function pintarAlertas() {
+    const A = MONITOR.alertas.slice().sort((a, b) => b.t - a.t);
+    if (!A.length) return '<div class="vacio">Sin alertas. Todo en orden.</div>';
+    let h = '<div class="tarjeta"><h4>Alertas activas</h4>';
+    A.forEach((a) => {
+      h += '<div class="linea ' + a.nivel + '"><b>' + esc(a.texto) + "</b>" +
+        (a.veces > 1 ? ' <span class="chip">×' + a.veces + "</span>" : "") +
+        '<br><span class="t">' + MONITOR.fmtHora(a.t) + " · " + MONITOR.fmtHace(a.t) + "</span></div>";
+    });
+    return h + "</div>";
+  }
+
+  function pintarSyncs() {
+    const S = MONITOR.syncs.slice().reverse();
+    if (!S.length) return '<div class="vacio">Todavía no hubo sincronizaciones.</div>';
+    let h = '<div class="tarjeta"><h4>Sincronizaciones (de la más nueva)</h4>' +
+      "<table><tr><th>Hora</th><th>Modo</th><th>Tablas</th><th>Filas</th><th>Peso</th><th>Tiempo</th></tr>";
+    S.forEach((s) => {
+      const col = s.modo === "total" ? COLOR.alto : s.modo === "delta" ? COLOR.ok : COLOR.medio;
+      h += "<tr><td>" + MONITOR.fmtHora(s.t) + '</td><td style="color:' + col + ';font-weight:700">' +
+        esc(s.modo) + "</td><td>" + esc((s.tablas || []).join(", ") || "-") + "</td><td>" +
+        (s.filas || 0) + "</td><td>" + kb(s.bytes || 0) + "</td><td>" + (s.ms || 0) + " ms</td></tr>";
+      if (s.error) h += '<tr><td colspan="6" style="color:#ef4444">↳ ' + esc(s.error) + "</td></tr>";
+    });
+    return h + "</table></div>";
+  }
+
+  function pintarTablas() {
+    const T = Object.entries(MONITOR.tablas).sort((a, b) => (b[1].bytes || 0) - (a[1].bytes || 0));
+    if (!T.length) return '<div class="vacio">Todavía no se consultó ninguna tabla.</div>';
+    const max = Math.max(1, ...T.map(([, r]) => r.bytes || 0));
+    let h = '<div class="tarjeta"><h4>Consumo por tabla</h4>' +
+      "<table><tr><th>Tabla</th><th>Bajado</th><th>Veces</th><th>Filas</th><th>Último</th></tr>";
+    T.forEach(([t, r]) => {
+      h += "<tr><td><b>" + esc(t) + '</b><div class="barra"><i style="width:' +
+        Math.round((r.bytes || 0) / max * 100) + '%"></i></div></td><td>' + kb(r.bytes || 0) +
+        "</td><td>" + (r.veces || 0) + "</td><td>" + (r.filas || 0) +
+        "</td><td>" + (r.ultimo ? MONITOR.fmtHace(r.ultimo) : "-") + "</td></tr>";
+    });
+    return h + "</table></div>";
+  }
+
+  function pintarErrores() {
+    const E = MONITOR.errores.slice().reverse();
+    if (!E.length) return '<div class="vacio">Ningún error registrado. 👌</div>';
+    let h = '<div class="tarjeta"><h4>Errores (' + E.length + ")</h4>";
+    E.forEach((e) => {
+      h += '<div class="linea alto"><b>' + esc(e.origen) + "</b> · " +
+        '<span class="t">' + MONITOR.fmtHora(e.t) + "</span><br>" + esc(e.mensaje);
+      if (e.extra) h += '<br><span class="t">' + esc(JSON.stringify(e.extra)) + "</span>";
+      if (e.pila) h += "<pre>" + esc(e.pila) + "</pre>";
+      h += "</div>";
+    });
+    return h + "</div>";
+  }
+
+  function pintarEventos() {
+    const E = MONITOR.eventos.slice().reverse();
+    if (!E.length) return '<div class="vacio">Sin actividad registrada.</div>';
+    let h = '<div class="tarjeta"><h4>Bitácora en vivo</h4>';
+    E.forEach((e) => {
+      const col = e.tipo === "error" ? "alto" : e.tipo === "guardado" ? "ok" : "";
+      h += '<div class="linea ' + col + '"><span class="t">' + MONITOR.fmtHora(e.t) +
+        "</span> <b>" + esc(e.tipo) + "</b> " + esc(e.texto) + "</div>";
+    });
+    return h + "</div>";
+  }
+
+  const PESTANAS = [
+    ["resumen", "Resumen", pintarResumen],
+    ["alertas", "Alertas", pintarAlertas],
+    ["syncs", "Sincronizaciones", pintarSyncs],
+    ["tablas", "Tablas", pintarTablas],
+    ["errores", "Errores", pintarErrores],
+    ["eventos", "Bitácora", pintarEventos]
+  ];
+
+  function pintar() {
+    if (!caja) return;
+    const M = MONITOR;
+    const graves = M.alertas.filter((a) => a.nivel === "alto").length;
+    const cab = caja.querySelector("header");
+    cab.innerHTML = "<b>MONITOR</b>" +
+      '<span class="chip">v' + esc(M.version) + "</span>" +
+      '<span class="chip">equipo ' + esc(M.dispositivo) + "</span>" +
+      (graves ? '<span class="chip" style="background:#7f1d1d;color:#fecaca">' + graves + " alerta(s)</span>" : "") +
+      '<button class="cerrar">Cerrar</button>';
+    cab.querySelector(".cerrar").onclick = cerrar;
+
+    const nav = caja.querySelector("nav");
+    nav.innerHTML = PESTANAS.map(([id, tit]) => {
+      const n = id === "errores" ? M.errores.length : id === "alertas" ? M.alertas.length : 0;
+      return '<button data-p="' + id + '" class="' + (pestana === id ? "on" : "") + '">' +
+        esc(tit) + (n ? " (" + n + ")" : "") + "</button>";
+    }).join("");
+    nav.querySelectorAll("button").forEach((b) => {
+      b.onclick = () => { pestana = b.dataset.p; pintar(); };
+    });
+
+    const f = (PESTANAS.find((p) => p[0] === pestana) || PESTANAS[0])[2];
+    const main = caja.querySelector("main");
+    const scroll = main.scrollTop;
+    main.innerHTML = f() +
+      '<div class="acciones">' +
+      '<button data-a="copiar">Copiar informe</button>' +
+      '<button data-a="descargar">Descargar .txt</button>' +
+      '<button data-a="limpiar">Limpiar todo</button>' +
+      '<button data-a="ts">Ver marcas de sync</button>' +
+      '<button data-a="reset-ts">Forzar carga completa</button>' +
+      "</div>";
+    main.scrollTop = scroll;
+    main.querySelectorAll(".acciones button").forEach((b) => {
+      b.onclick = () => acciones(b.dataset.a);
+    });
+  }
+
+  function acciones(a) {
+    if (a === "copiar") {
+      const txt = MONITOR.exportar();
+      if (navigator.clipboard) navigator.clipboard.writeText(txt)
+        .then(() => alert("Informe copiado. Pegalo donde lo necesites."))
+        .catch(() => window.prompt("Copiá esto:", txt));
+      else window.prompt("Copiá esto:", txt);
+    }
+    if (a === "descargar") {
+      const b = new Blob([MONITOR.exportar()], { type: "text/plain" });
+      const u = URL.createObjectURL(b);
+      const el = document.createElement("a");
+      el.href = u;
+      el.download = "monitor-" + MONITOR.dispositivo + "-" +
+        new Date().toISOString().slice(0, 16).replace(/[:T]/g, "") + ".txt";
+      el.click();
+      setTimeout(() => URL.revokeObjectURL(u), 4000);
+    }
+    if (a === "limpiar") {
+      if (confirm("¿Borrar todo lo registrado hasta ahora?")) { MONITOR.limpiar(); pintar(); }
+    }
+    if (a === "ts") {
+      let m = {};
+      try { m = JSON.parse(localStorage.getItem("ct-sync-ts-v1") || "{}"); } catch (e) {}
+      const t = Object.entries(m).map(([k, v]) => k + ": " + v).join("\n") || "(vacío)";
+      alert("Marcas de sincronización:\n\n" + t);
+    }
+    if (a === "reset-ts") {
+      if (confirm("Se borran las marcas y la próxima vez baja TODO de nuevo.\n¿Seguir?")) {
+        try { localStorage.removeItem("ct-sync-ts-v1"); } catch (e) {}
+        alert("Listo. Recargá la app para que baje todo de nuevo.");
+      }
+    }
+  }
+
+  function abrir(cual) {
+    if (caja) { if (cual) { pestana = cual; pintar(); } return; }
+    if (!document.getElementById("ct-monitor-css")) {
+      const s = document.createElement("style");
+      s.id = "ct-monitor-css";
+      s.textContent = estilos;
+      document.head.appendChild(s);
+    }
+    caja = document.createElement("div");
+    caja.id = "ct-monitor";
+    caja.innerHTML = "<header></header><nav></nav><main></main>";
+    document.body.appendChild(caja);
+    if (cual) pestana = cual;
+    pintar();
+    refresco = setInterval(pintar, 1500);
+    document.addEventListener("keydown", teclas);
+  }
+
+  function cerrar() {
+    if (refresco) clearInterval(refresco);
+    refresco = null;
+    document.removeEventListener("keydown", teclas);
+    if (caja && caja.parentNode) caja.parentNode.removeChild(caja);
+    caja = null;
+  }
+
+  function teclas(e) { if (e.key === "Escape") cerrar(); }
+
+  window.ctMonitor = abrir;
+  window.ctMonitor.cerrar = cerrar;
+  window.ctMonitor.datos = () => MONITOR;
+  window.ctMonitor.informe = () => MONITOR.exportar();
+
+  // Atajo de emergencia: si la app quedó en blanco por un error, cinco
+  // toques seguidos en cualquier parte de la pantalla abren el monitor.
+  let toques = 0, ultimoToque = 0;
+  document.addEventListener("click", (e) => {
+    if (caja) return;
+    const t = Date.now();
+    toques = (t - ultimoToque < 600) ? toques + 1 : 1;
+    ultimoToque = t;
+    if (toques >= 7) { toques = 0; abrir(); }
+  }, true);
+
+  console.log("%c[Monitor] escribí ctMonitor() para abrir el panel",
+    "background:#2563eb;color:#fff;padding:2px 6px;border-radius:3px");
+})();
 
 const nube = createClient(NUBE_URL, NUBE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true }
@@ -1824,6 +2502,11 @@ function ControlTienda() {
         const cuales = new Set(tocadas);
         tocadas = new Set();
         const marca = consumo.total;
+        const marcaMon = MONITOR.totalBytes || 0;
+        const t0 = Date.now();
+        DELTA_INFO.filas = 0;
+        DELTA_INFO.detalle = {};
+        DELTA_INFO.huboDelta = false;
         try {
           // Sólo las tablas que cambiaron: una venta trae ventas, renglones y
           // el stock, no el catálogo entero. El estado actual se pasa para que
@@ -1837,7 +2520,23 @@ function ControlTienda() {
           }
           if (DIAG) console.log("%c↓ recarga " + (parcial ? "parcial" : "total"), "color:#ea580c",
             [...cuales].join(", ") || "(todo)", "→", kb(consumo.total - marca));
-        } catch (e) {}
+          MONITOR.sync({
+            modo: parcial ? (DELTA_INFO.huboDelta ? "delta" : "parcial") : "total",
+            tablas: [...cuales],
+            filas: DELTA_INFO.filas,
+            bytes: (MONITOR.totalBytes || 0) - marcaMon,
+            ms: Date.now() - t0,
+            detalle: { ...DELTA_INFO.detalle }
+          });
+        } catch (e) {
+          MONITOR.sync({
+            modo: "error", tablas: [...cuales], filas: 0,
+            bytes: (MONITOR.totalBytes || 0) - marcaMon,
+            ms: Date.now() - t0,
+            error: (e && e.message) || String(e)
+          });
+          MONITOR.error("sincronizar", e, { tablas: [...cuales] });
+        }
         // El tiempo de espera lleva un desfase al azar: si los diez equipos
         // consultan en el mismo instante, diez consultas pesadas caen juntas
         // sobre la base y la timbran. Repartidas en un segundo, no.
@@ -1857,6 +2556,7 @@ function ControlTienda() {
         // Si la conexión se cae, el navegador no avisa: la app se queda
         // esperando avisos que no llegan. Al recuperarla se traen los datos
         // por las dudas.
+        try { MONITOR.reconexion(estado); } catch (e) {}
         if (estado === "SUBSCRIBED") {
           canal._vivo = true;
           if (canal._estuvoCaido) { canal._estuvoCaido = false; refrescar(); }
@@ -1886,7 +2586,8 @@ function ControlTienda() {
       if (esc) return;
       try {
         const { data: filas, error } = await nube.from("pulso").select("*").limit(1);
-        if (error || !filas || !filas[0]) return;
+        if (error) { MONITOR.error("pulso", error); return; }
+        if (!filas || !filas[0]) return;
         const ahora = filas[0];
         // Ventas, stock y productos siguen llegando por aviso: acá sólo se
         // miran si el canal está caído. Las otras catorce tablas ya no tienen
@@ -1896,16 +2597,21 @@ function ControlTienda() {
           const caido = !canal._vivo;
           if (DIAG && caido) console.warn("%c· pulso: canal caído, revisando todo", "color:#b45309");
           let tocado = 0;
+          const cuales = [];
           Object.keys(ahora).forEach((tabla) => {
             if (String(ahora[tabla]) === String(ultimoPulso[tabla])) return;
             if (PORAVISO.has(tabla) && !caido) return;
             tocado++;
+            cuales.push(tabla);
             refrescar(tabla);
           });
           if (DIAG && !tocado) console.log("%c· pulso", "color:#6b7280", "sin novedades (300 bytes)");
+          try { MONITOR.pulso(tocado > 0, cuales); } catch (e) {}
+        } else {
+          try { MONITOR.pulso(false, []); } catch (e) {}
         }
         ultimoPulso = ahora;
-      } catch (e) {}
+      } catch (e) { MONITOR.error("pulso", e); }
     };
     revisar();
     // 20 segundos en vez de 60: ahora el pulso es el único aviso de catorce
@@ -1978,6 +2684,7 @@ function ControlTienda() {
   const persist = async (next) => {
     const anterior = data;
     guardando.current++;
+    const cronoGuardar = MONITOR.cronometro("guardar");
     // Se muestra el cambio enseguida y se guarda por detrás: esperar a la
     // nube para pintar la pantalla haría la app lenta en el mostrador.
     setData(next);
@@ -1985,6 +2692,7 @@ function ControlTienda() {
     guardarCajasLocal(next.cajas);
     try {
       const cambios = await guardarEnLaNube(anterior, next, setErrorGuardado);
+      try { MONITOR.guardado("cambios", true); cronoGuardar(); } catch (e) {}
       // La base asigna sus propios ids: si creó algo, se reemplaza el id
       // temporal para que las próximas ediciones apunten al lugar correcto.
       if (cambios.length) {
@@ -2039,6 +2747,7 @@ function ControlTienda() {
       return true;
     } catch (e) {
       console.error("No se pudo guardar", e);
+      try { MONITOR.guardado("cambios", false, e); cronoGuardar(); } catch (x) {}
       // Se vuelve atrás: la pantalla no puede mostrar algo que no se guardó
       setData(anterior);
       const m = String((e && e.message) || e);
@@ -3600,6 +4309,14 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
         onClick: () => setVerDiag(true),
         style: { display: "block", width: "100%", background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 11, marginTop: 8, fontFamily: "'Inter', sans-serif" }
       }, "Ver diagnóstico · v" + VERSION_APP),
+
+      // Monitor técnico: consumo, errores y sincronizaciones en vivo.
+      // Se abre también con ctMonitor() desde la consola o con siete
+      // toques seguidos, por si la pantalla quedó trabada.
+      React.createElement("button", {
+        onClick: () => { try { window.ctMonitor(); } catch (e) {} },
+        style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 7, width: "100%", background: "var(--surface-2)", border: "none", borderRadius: 9, cursor: "pointer", color: "var(--muted)", fontSize: 12.5, fontWeight: 600, padding: "9px 0", marginTop: 8, fontFamily: "'Inter', sans-serif" }
+      }, React.createElement(BarChart3, { size: 14 }), "Monitor técnico"),
       verDiag && React.createElement(DiagnosticoCaja, { data, onClose: () => setVerDiag(false) })
     )
   );
@@ -5445,6 +6162,16 @@ async function guardarVariantesEnTanda(items) {
 // bajar la tabla entera de nuevo. La base marca actualizado_en en cada
 // insert/update con un trigger, así el filtro es exacto.
 const SYNC_TS_KEY = "ct-sync-ts-v1";
+// Cuántas filas trajo la última sincronización, tabla por tabla. Lo llena
+// traerParcial y lo lee el monitor: es la diferencia entre "bajó algo" y
+// saber exactamente qué bajó.
+const DELTA_INFO = { filas: 0, detalle: {}, huboDelta: false };
+function deltaAnotar(tabla, filas, modo) {
+  DELTA_INFO.filas += (filas || 0);
+  DELTA_INFO.detalle[tabla] = { filas: filas || 0, modo: modo || "delta" };
+  if (modo === "delta") DELTA_INFO.huboDelta = true;
+  try { MONITOR.tabla(tabla, filas || 0, 0); } catch (e) {}
+}
 function tsMapa() {
   try { return JSON.parse(localStorage.getItem(SYNC_TS_KEY) || "{}"); } catch(e) { return {}; }
 }
@@ -5611,6 +6338,8 @@ async function traerParcial(tablas, quienEntro, actual) {
         nube.from("productos").select("*").gt("actualizado_en", tsP || tsMin),
         nube.from("variantes").select("*").gt("actualizado_en", tsV || tsMin)
       ]);
+      if (pDelta.error) MONITOR.error("delta:productos", pDelta.error);
+      if (vDelta.error) MONITOR.error("delta:variantes", vDelta.error);
       const pFilas = pDelta.data || [];
       const vFilas = vDelta.data || [];
       const idsAfectados = new Set();
@@ -5643,6 +6372,10 @@ async function traerParcial(tablas, quienEntro, actual) {
         const maxV = tsMaximo(vFilas);
         if (maxP) tsSet("productos", maxP);
         if (maxV) tsSet("variantes", maxV);
+        deltaAnotar("productos", pFilas.length, "delta");
+        deltaAnotar("variantes", vFilas.length, "delta");
+      } else {
+        deltaAnotar("productos", 0, "delta");
       }
       // Si idsAfectados.size === 0, no tocar salida.productos: React
       // conserva los existentes
@@ -5723,6 +6456,10 @@ async function traerParcial(tablas, quienEntro, actual) {
         const maxI = tsMaximo(itemsTotal);
         const maxTs = [maxV, maxI].filter(Boolean).sort().pop();
         if (maxTs) tsSet("ventas", maxTs);
+        deltaAnotar("ventas", ventasTotal.length, "delta");
+        deltaAnotar("venta_items", itemsTotal.length, "delta");
+      } else {
+        deltaAnotar("ventas", 0, "delta");
       }
       // Si no vino nada, no tocar salida.ventas: React mantiene el actual
     } else {
@@ -5761,11 +6498,13 @@ async function traerParcial(tablas, quienEntro, actual) {
         .sort((a, b) => String(a.nombre || "").localeCompare(String(b.nombre || "")));
       const ts = tsMaximo(delta);
       if (ts) tsSet("clientes", ts);
+      deltaAnotar("clientes", delta.length, "delta");
     } else {
       const filas = await traerTodo("clientes", "nombre");
       salida.clientes = filas.map(deLaNube.cliente);
       const ts = tsMaximo(filas);
       if (ts) tsSet("clientes", ts);
+      deltaAnotar("clientes", filas.length, "completa");
     }
   }
 
@@ -5780,11 +6519,13 @@ async function traerParcial(tablas, quienEntro, actual) {
       salida.movimientosCC = fusionarPorId(actual.movimientosCC, delta.map(mapa));
       const ts = tsMaximo(delta);
       if (ts) tsSet("movimientos_cc", ts);
+      deltaAnotar("movimientos_cc", delta.length, "delta");
     } else {
       const filas = await traerTodo("movimientos_cc");
       salida.movimientosCC = filas.map(mapa);
       const ts = tsMaximo(filas);
       if (ts) tsSet("movimientos_cc", ts);
+      deltaAnotar("movimientos_cc", filas.length, "completa");
     }
   }
 
@@ -5805,12 +6546,14 @@ async function traerParcial(tablas, quienEntro, actual) {
         .sort((a, b) => String(b.cerradaEn || "").localeCompare(String(a.cerradaEn || "")));
       const ts = tsMaximo(delta);
       if (ts) tsSet("caja_cierres", ts);
+      deltaAnotar("caja_cierres", delta.length, "delta");
     } else {
       const { data: cs } = await nube.from("caja_cierres")
         .select("*").order("cerrada_en", { ascending: false }).limit(500);
       salida.cajasCerradas = (cs || []).map(mapa);
       const ts = tsMaximo(cs);
       if (ts) tsSet("caja_cierres", ts);
+      deltaAnotar("caja_cierres", (cs || []).length, "completa");
     }
   }
 
@@ -5829,12 +6572,14 @@ async function traerParcial(tablas, quienEntro, actual) {
         .sort((a, b) => String(b.fecha + " " + (b.hora || "")).localeCompare(String(a.fecha + " " + (a.hora || ""))));
       const t = tsMaximo(delta);
       if (t) tsSet("transferencias", t);
+      deltaAnotar("transferencias", delta.length, "delta");
     } else {
       const { data: ts2 } = await nube.from("transferencias")
         .select("*").order("creado_en", { ascending: false }).limit(500);
       salida.transferencias = (ts2 || []).map(mapa);
       const t = tsMaximo(ts2);
       if (t) tsSet("transferencias", t);
+      deltaAnotar("transferencias", (ts2 || []).length, "completa");
     }
   }
 
@@ -5855,6 +6600,7 @@ async function traerParcial(tablas, quienEntro, actual) {
         .sort((a, b) => String(b.fecha + " " + (b.hora || "")).localeCompare(String(a.fecha + " " + (a.hora || ""))));
       const t = tsMaximo(delta);
       if (t) tsSet("pedidos", t);
+      deltaAnotar("pedidos", delta.length, "delta");
     } else {
       const { data: ps } = await nube.from("pedidos").select("*")
         .or("estado.eq.pendiente,creado_en.gte." + haceMeses(6))
@@ -5862,6 +6608,7 @@ async function traerParcial(tablas, quienEntro, actual) {
       salida.pedidos = (ps || []).map(mapa);
       const t = tsMaximo(ps);
       if (t) tsSet("pedidos", t);
+      deltaAnotar("pedidos", (ps || []).length, "completa");
     }
   }
 
@@ -5883,6 +6630,7 @@ async function traerParcial(tablas, quienEntro, actual) {
         .sort((a, b) => String(b.fecha + " " + (b.hora || "")).localeCompare(String(a.fecha + " " + (a.hora || ""))));
       const t = tsMaximo(delta);
       if (t) tsSet("notas_credito", t);
+      deltaAnotar("notas_credito", delta.length, "delta");
     } else {
       const { data: ns } = await nube.from("notas_credito").select("*")
         .or("estado.eq.activa,creado_en.gte." + haceMeses(12))
@@ -5890,6 +6638,7 @@ async function traerParcial(tablas, quienEntro, actual) {
       salida.notasCredito = (ns || []).map(mapa);
       const t = tsMaximo(ns);
       if (t) tsSet("notas_credito", t);
+      deltaAnotar("notas_credito", (ns || []).length, "completa");
     }
   }
 
@@ -5909,12 +6658,14 @@ async function traerParcial(tablas, quienEntro, actual) {
         .sort((a, b) => String(b.fecha + " " + (b.hora || "")).localeCompare(String(a.fecha + " " + (a.hora || ""))));
       const t = tsMaximo(delta);
       if (t) tsSet("cambios", t);
+      deltaAnotar("cambios", delta.length, "delta");
     } else {
       const { data: cs } = await nube.from("cambios")
         .select("*").order("creado_en", { ascending: false }).limit(500);
       salida.cambios = (cs || []).map(mapa);
       const t = tsMaximo(cs);
       if (t) tsSet("cambios", t);
+      deltaAnotar("cambios", (cs || []).length, "completa");
     }
   }
 
@@ -5933,12 +6684,14 @@ async function traerParcial(tablas, quienEntro, actual) {
         .sort((a, b) => String(b.fecha + " " + (b.hora || "")).localeCompare(String(a.fecha + " " + (a.hora || ""))));
       const t = tsMaximo(delta);
       if (t) tsSet("devoluciones_reparto", t);
+      deltaAnotar("devoluciones_reparto", delta.length, "delta");
     } else {
       const { data: ds } = await nube.from("devoluciones_reparto")
         .select("*").order("creado_en", { ascending: false }).limit(500);
       salida.devolucionesReparto = (ds || []).map(mapa);
       const t = tsMaximo(ds);
       if (t) tsSet("devoluciones_reparto", t);
+      deltaAnotar("devoluciones_reparto", (ds || []).length, "completa");
     }
   }
 
@@ -5958,12 +6711,14 @@ async function traerParcial(tablas, quienEntro, actual) {
         .slice(0, 400); // mantener límite razonable
       const t = tsMaximo(delta);
       if (t) tsSet("movimientos_stock", t);
+      deltaAnotar("movimientos_stock", delta.length, "delta");
     } else {
       const { data: ms } = await nube.from("movimientos_stock")
         .select("*").order("creado_en", { ascending: false }).limit(400);
       salida.movimientosStock = (ms || []).map(mapa);
       const t = tsMaximo(ms);
       if (t) tsSet("movimientos_stock", t);
+      deltaAnotar("movimientos_stock", (ms || []).length, "completa");
     }
   }
 
@@ -5981,12 +6736,14 @@ async function traerParcial(tablas, quienEntro, actual) {
         .sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
       const t = tsMaximo(delta);
       if (t) tsSet("gastos", t);
+      deltaAnotar("gastos", delta.length, "delta");
     } else {
       const { data: gs } = await nube.from("gastos")
         .select("*").order("fecha", { ascending: false }).limit(1000);
       salida.gastos = (gs || []).map(mapa);
       const t = tsMaximo(gs);
       if (t) tsSet("gastos", t);
+      deltaAnotar("gastos", (gs || []).length, "completa");
     }
   }
 
@@ -6004,12 +6761,14 @@ async function traerParcial(tablas, quienEntro, actual) {
         .sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
       const t = tsMaximo(delta);
       if (t) tsSet("compras", t);
+      deltaAnotar("compras", delta.length, "delta");
     } else {
       const { data: cps } = await nube.from("compras")
         .select("*").order("fecha", { ascending: false }).limit(1000);
       salida.compras = (cps || []).map(mapa);
       const t = tsMaximo(cps);
       if (t) tsSet("compras", t);
+      deltaAnotar("compras", (cps || []).length, "completa");
     }
   }
 
