@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.923";
+const VERSION_APP = "9.925";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -2576,11 +2576,17 @@ function ControlTienda() {
           DELTA_INFO.detalle = {};
           DELTA_INFO.huboDelta = false;
           try {
+            // usuarios y ajustes van SIEMPRE: sin ellas, un dispositivo con
+            // copia local no volvía a leer nunca los roles. Un cambio de rol
+            // no llegaba jamás, y un rol propio creado después de guardarse
+            // la copia quedaba desconocido: el empleado caía en ROL_DESCONOCIDO
+            // y sólo veía el punto de venta. Las dos juntas pesan ~3 KB.
             const todas = new Set(["productos", "variantes", "ventas", "venta_items",
               "clientes", "movimientos_cc", "cajas_abiertas", "caja_cierres",
               "reposicion_pendiente", "reposiciones_hechas", "transferencias",
               "pedidos", "notas_credito", "cambios", "devoluciones_reparto",
-              "movimientos_stock", "gastos", "compras"]);
+              "movimientos_stock", "gastos", "compras",
+              "usuarios", "ajustes"]);
             const parcial = await traerParcial(todas, sesion && sesion.auth_id, copiaEnMano);
             if (parcial) {
               const frescos = migrarCajas(migrarDatos({ ...copiaEnMano, ...parcial }));
@@ -7071,11 +7077,16 @@ async function traerVentasConRenglones(desde) {
     return [ventas, items];
   } catch (e) {
     console.warn("Renglones embebidos no disponibles, se usa el m\u00E9todo completo:", e && e.message);
-    // Si la columna calculada no existe todavía (base sin migrar), se cae
-    // al select completo para no dejar la app sin ventas.
+    // Si falló por la columna calculada (base sin migrar) se pide la misma
+    // lista SIN comprobantes_livianos. Antes acá se pedía "*", que trae la
+    // columna comprobantes entera con todos los base64: justo el caso que
+    // más necesita ser liviano era el único que bajaba las fotos.
     const esColumna = /comprobantes_livianos|column/i.test(String((e && e.message) || ""));
+    const seleccion = esColumna
+      ? VENTA_LIVIANA.replace(/,\s*comprobantes_livianos/, "")
+      : VENTA_LIVIANA;
     return Promise.all([
-      traerTodo("ventas", null, { campo: "fecha", desde }, esColumna ? "*" : VENTA_LIVIANA),
+      traerTodo("ventas", null, { campo: "fecha", desde }, seleccion),
       traerTodo("venta_items")
     ]);
   }
@@ -7092,7 +7103,10 @@ async function traerParcial(tablas, quienEntro, actual) {
                      // una compra devolvían null y la app se bajaba TODAS las
                      // tablas de nuevo, en todos los dispositivos a la vez.
                      "transferencias", "pedidos", "notas_credito", "cambios",
-                     "devoluciones_reparto", "movimientos_stock", "gastos", "compras"];
+                     "devoluciones_reparto", "movimientos_stock", "gastos", "compras",
+                     // Faltaban las dos de permisos: al no estar acá, pedirlas
+                     // devolvía null y la app se bajaba TODO el catálogo de nuevo.
+                     "usuarios", "ajustes"];
   for (const t of tablas) if (conocidas.indexOf(t) < 0) return null;
 
   const salida = {};
@@ -7263,6 +7277,48 @@ async function traerParcial(tablas, quienEntro, actual) {
   if (tablas.has("reposiciones_hechas")) {
     const res = await nube.from("reposiciones_hechas").select("*").order("fecha", { ascending: false }).limit(500);
     salida.reposiciones = reposicionesDesdeNube(res);
+  }
+
+  // ── Equipo y roles ────────────────────────────────────────
+  // Estas dos se traen ENTERAS, no por delta: son siete filas y una fila,
+  // unos 3 KB. Un delta acá ahorraría bytes que no valen la pena y traería
+  // dos riesgos: depender de actualizado_en, y tener que reconstruir esVos
+  // al fusionar. Con permisos, equivocarse sale más caro que 3 KB.
+  if (tablas.has("usuarios")) {
+    const res = await nube.from("usuarios").select("*").order("creado_en");
+    if (res.error) {
+      MONITOR.error("parcial:usuarios", res.error);
+    } else {
+      salida.usuarios = (res.data || []).map((u) => ({
+        id: u.id, authId: u.auth_id, nombre: u.nombre, rol: u.rol,
+        usuario: u.usuario || "", email: u.email || "",
+        telefono: u.telefono || "", activo: u.activo !== false,
+        negocios: u.negocios || [],
+        // Quién es el de este dispositivo. Sin esto se perdía la marca y
+        // usuarioSesion caía al primero de la lista: permisos de otro.
+        esVos: !!(quienEntro && u.auth_id === quienEntro)
+      }));
+      deltaAnotar("usuarios", (res.data || []).length, "completa");
+    }
+  }
+
+  if (tablas.has("ajustes")) {
+    const res = await nube.from("ajustes").select("datos").eq("id", 1).maybeSingle();
+    if (res.error) {
+      MONITOR.error("parcial:ajustes", res.error);
+    } else {
+      const extra = (res.data && res.data.datos) || {};
+      // Los roles propios viven acá. Si no llegan, tabsDelRol no reconoce
+      // "vendedor plus" y el empleado queda con ROL_DESCONOCIDO: sólo POS.
+      salida.rolesPersonalizados = extra.rolesPersonalizados || [];
+      salida.negocio = extra.negocio || {};
+      salida.catalogo = extra.catalogo || {};
+      salida.soporteTelefono = extra.soporteTelefono || "";
+      salida.costoSoloDueno = !!extra.costoSoloDueno;
+      salida.reparto = extra.reparto || null;
+      salida.reposicion = extra.reposicion || null;
+      deltaAnotar("ajustes", 1, "completa");
+    }
   }
 
   if (tablas.has("clientes")) {
@@ -24809,7 +24865,11 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
     const prod = data.productos.find((p) => p.id === id);
     // Y de "M|Rojo" se guarda talle y color por separado
     const partes = String(talle || "").split("|");
-    return { productoId: id, nombre: prod ? prod.nombre : "", talle: partes[0] || "", color: partes[1] || "", cantidad: sel[k] };
+    // Se guarda TAMBIÉN la clave cruda. Sin esto, el botón de quitar
+    // rearmaba la clave con clave(id, x.talle) y perdía el color: para una
+    // prenda "M|Rojo" buscaba "id|M", que no existe, y el delete no borraba
+    // nada. Con color, quitar del carrito no funcionaba.
+    return { k, productoId: id, nombre: prod ? prod.nombre : "", talle: partes[0] || "", color: partes[1] || "", cantidad: sel[k] };
   }).filter((x) => x.cantidad > 0);
   const totalUnidades = items.reduce((a, x) => a + x.cantidad, 0);
 
@@ -25010,17 +25070,50 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
     items.length > 0 && React.createElement(
       "div",
       { style: { marginTop: 16, background: "var(--surface-2)", border: "none", borderRadius: 10, padding: "14px 16px" } },
-      React.createElement("div", { style: { fontSize: 13, fontWeight: 650, marginBottom: 10 } }, "Sale del origen · ", totalUnidades, " u"),
+      React.createElement(
+        "div",
+        { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 } },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 650 } }, "Sale del origen · ", totalUnidades, " u"),
+        React.createElement("button", {
+          onClick: () => { setSel({}); setError(""); },
+          style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", fontSize: 12, fontWeight: 600, fontFamily: "'Inter', sans-serif", padding: "2px 4px" }
+        }, "Vaciar")
+      ),
       React.createElement(
         "div",
         { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
         items.map((x) => React.createElement(
           "span",
-          { key: x.productoId + x.talle, style: { display: "inline-flex", alignItems: "center", gap: 8, background: "var(--surface)", border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5 } },
-          x.nombre + (x.talle ? " · " + x.talle : "") + " ×" + x.cantidad,
+          // La clave cruda como key: con productoId + talle, "M|Rojo" y
+          // "M|Azul" daban el mismo key y React los pisaba entre sí.
+          { key: x.k, style: { display: "inline-flex", alignItems: "center", gap: 6, background: "var(--surface)", border: "none", borderRadius: 7, padding: "5px 7px 5px 11px", fontSize: 12.5 } },
+          React.createElement("span", null,
+            x.nombre +
+            (x.talle ? " · " + x.talle : "") +
+            // El color se mostraba nunca: dos filas del mismo talle en
+            // distinto color se veían idénticas y no se sabía cuál quitar.
+            (x.color ? " · " + x.color : "") +
+            " ×" + x.cantidad),
+          // Quitar de a uno: cargar 10 por error y tener que borrar todo
+          // para volver a contar era el caso más molesto.
           React.createElement("button", {
-            onClick: () => { const c = { ...sel }; delete c[clave(x.productoId, x.talle)]; setSel(c); },
-            style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", display: "flex", padding: 0 }
+            aria_label: "Quitar uno",
+            title: "Quitar uno",
+            onClick: () => {
+              const c = { ...sel };
+              const queda = (Number(c[x.k]) || 0) - 1;
+              if (queda > 0) c[x.k] = queda; else delete c[x.k];
+              setSel(c);
+              setError("");
+            },
+            style: { background: "var(--surface-2)", border: "none", borderRadius: 5, cursor: "pointer", color: "var(--ink)", display: "flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, padding: 0, fontSize: 14, fontWeight: 700, lineHeight: 1, fontFamily: "'Inter', sans-serif" }
+          }, "\u2212"),
+          // Y quitar la fila entera
+          React.createElement("button", {
+            aria_label: "Quitar todo",
+            title: "Quitar todo",
+            onClick: () => { const c = { ...sel }; delete c[x.k]; setSel(c); setError(""); },
+            style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", display: "flex", alignItems: "center", padding: 0 }
           }, React.createElement(X, { size: 13 }))
         ))
       )
