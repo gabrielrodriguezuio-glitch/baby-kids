@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.922";
+const VERSION_APP = "9.923";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -1814,13 +1814,29 @@ const PERMISOS_EXPLICADOS = [
 
 // ¿El rol de esta persona existe? Si no, la app la limita a lo mínimo y hay
 // que avisarlo: si no, parece que la app se rompió.
+// Si todavía no llegó la lista de roles propios no se acusa a nadie: durante
+// el arranque, o si la base no devolvió los ajustes, un rol propio legítimo
+// parecería inexistente.
 const rolHuerfano = (data) => {
   const u = usuarioSesion(data);
   if (!u) return "";
   if (!u.rol) return "(sin rol asignado)";
   if (TABS_POR_ROL[u.rol]) return "";
   if (rolesPropios(data).some((r) => r.nombre === u.rol)) return "";
+  // Rol que no es de fábrica y no hay ni un rol propio cargado: lo más
+  // probable es que los ajustes todavía no hayan llegado.
+  if (!rolesPropios(data).length) return "";
   return u.rol;
+};
+
+// Los permisos no llegaron: el rol no es de los de fábrica y la lista de
+// roles propios vino vacía. Puede ser el arranque o que la base no deje leer
+// los ajustes con esta cuenta. No es lo mismo que un rol borrado.
+const permisosSinCargar = (data) => {
+  const u = usuarioSesion(data);
+  if (!u || !u.rol) return false;
+  if (TABS_POR_ROL[u.rol]) return false;
+  return !rolesPropios(data).length;
 };
 
 const puede = (data, accion) => {
@@ -3077,12 +3093,15 @@ function ControlTienda() {
     // que se rompió sola.
     (() => {
       const sinIdent = sesionSinIdentificar(data);
-      const huerfano = sinIdent ? "" : rolHuerfano(data);
-      if (!sinIdent && !huerfano) return null;
+      const sinPermisos = !sinIdent && permisosSinCargar(data);
+      const huerfano = (sinIdent || sinPermisos) ? "" : rolHuerfano(data);
+      if (!sinIdent && !sinPermisos && !huerfano) return null;
+      const grave = sinIdent || huerfano;
       return /* @__PURE__ */ React.createElement("div", {
         style: {
           position: "fixed", top: 0, left: 0, right: 0, zIndex: 10001,
-          background: "var(--rose)", color: "#fff", padding: "10px 18px",
+          background: grave ? "var(--rose)" : "var(--mustard)",
+          color: grave ? "#fff" : "#111", padding: "10px 18px",
           fontSize: 13, lineHeight: 1.4, display: "flex", alignItems: "center", gap: 11,
           boxShadow: "0 2px 12px rgba(0,0,0,.25)"
         }
@@ -3091,6 +3110,8 @@ function ControlTienda() {
         /* @__PURE__ */ React.createElement("span", { style: { flex: 1, fontWeight: 600 } },
           sinIdent
             ? "No se pudo reconocer con qué cuenta entraste. Hasta resolverlo sólo se puede vender. Cerrá sesión y volvé a entrar."
+            : sinPermisos
+            ? "No se pudieron cargar los permisos de tu rol. Por ahora sólo se puede vender. Probá recargar; si sigue, avisale al dueño."
             : "El rol \u201C" + huerfano + "\u201D no existe. Hasta arreglarlo sólo se puede vender. " +
               "Avisale al dueño para que lo cree de nuevo o le asigne otro rol."))
     })(),
