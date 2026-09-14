@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.916";
+const VERSION_APP = "9.918";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -18836,11 +18836,39 @@ function Plegable({ titulo, extra, abiertoInicial, children }) {
 }
 
 // Movimientos del turno y cierres anteriores, dentro del mismo flujo de caja
-function HistorialCajaModal({ data, caja, cierres, onVolver, onClose }) {
+function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose }) {
   const [detalle, setDetalle] = useState(null);
   const [pestana, setPestana] = useState("turno");
   const [ampliada, setAmpliada] = useState(null);
   const movs = caja.movimientos || [];
+
+  // Eliminar una venta mal cargada desde acá: es donde el vendedor la ve al
+  // cerrar la caja y se da cuenta del error. Devuelve el stock y deja
+  // deshacer, igual que desde la cuenta del cliente.
+  const borrarVenta = (venta) => {
+    if (!persist) return;
+    if (!window.confirm(
+      "¿Eliminar esta venta de " + money(venta.total) + "?\n\n" +
+      "Se devuelve el stock al local y la venta desaparece del historial, " +
+      "de la caja y de la cuenta del cliente. Se puede deshacer."
+    )) return;    const anterior = data;
+    const negocioVenta = venta.negocioId || listaNegocios(data)[0].id;
+    const productos = (data.productos || []).map((p) => {
+      let out = p;
+      (venta.items || []).forEach((it) => {
+        if (it.productoId !== p.id) return;
+        const clave = it.talla ? it.talla + (it.color ? "|" + it.color : "") : "";
+        out = ajustarEnNegocio(out, negocioVenta, clave, Math.abs(it.cantidad));
+      });
+      return out;
+    });
+    persist({
+      ...data,
+      productos,
+      ventas: (data.ventas || []).filter((v) => v.id !== venta.id)
+    });
+    avisar("Venta eliminada · stock devuelto", { deshacer: () => persist(anterior) });
+  };
 
   // Las ventas del turno abierto: la caja sólo anota el efectivo, así que las
   // transferencias no aparecían por ningún lado hasta cerrar.
@@ -18970,6 +18998,33 @@ function HistorialCajaModal({ data, caja, cierres, onVolver, onClose }) {
           "div",
           null,
 
+          // Con qué y desde cuándo arrancó el turno. Es el primer dato que
+          // se busca al cerrar la caja y no estaba en ninguna parte.
+          caja.abierta && React.createElement(
+            "div",
+            {
+              style: {
+                display: "flex", alignItems: "center", gap: 11, marginBottom: 12,
+                background: "var(--surface-2)", borderRadius: 10, padding: "11px 13px",
+                borderLeft: "3px solid var(--sage)"
+              }
+            },
+            React.createElement(Unlock, { size: 15, color: "var(--sage)", style: { flexShrink: 0 } }),
+            React.createElement(
+              "div",
+              { style: { flex: 1, minWidth: 0 } },
+              React.createElement("div", { style: { fontSize: 12.5, fontWeight: 650 } }, "Caja abierta"),
+              React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 2 } },
+                horaHMS(caja.abiertaEn) + (caja.abiertaPor ? " · " + caja.abiertaPor : ""))
+            ),
+            React.createElement(
+              "div",
+              { style: { textAlign: "right", flexShrink: 0 } },
+              React.createElement("div", { style: { fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.06, color: "var(--muted)", fontWeight: 600 } }, "Apertura"),
+              React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, fontWeight: 650, marginTop: 2 } }, money(caja.montoInicial || 0))
+            )
+          ),
+
           // Las cuatro cifras que importan, arriba de todo. Antes había que
           // bajar por cuatro listas para saber cuánto se hizo en el turno.
           (delTurno.length > 0 || movs.length > 0) && React.createElement(
@@ -19013,6 +19068,49 @@ function HistorialCajaModal({ data, caja, cierres, onVolver, onClose }) {
             )
           ),
 
+          // Las ventas una por una, para poder borrar la que salió mal.
+          // Va antes que la mercadería porque cuando algo está mal, lo que
+          // se busca es la venta, no el artículo.
+          delTurno.length > 0 && persist && React.createElement(
+            Plegable,
+            { titulo: "Ventas del turno", extra: String(delTurno.length) },
+            React.createElement(
+              "div",
+              { style: { maxHeight: 280, overflowY: "auto" } },
+              delTurno.slice().sort((a, b) => String(b.horaTexto || "").localeCompare(String(a.horaTexto || "")))
+                .map((v) => React.createElement(
+                  "div",
+                  { key: v.id, style: { display: "flex", alignItems: "center", gap: 10, fontSize: 13, padding: "8px 0", borderBottom: "1px solid color-mix(in srgb, var(--line) 50%, transparent)" } },
+                  React.createElement("span", {
+                    style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "var(--muted)", flexShrink: 0, minWidth: 38 }
+                  }, v.horaTexto || ""),
+                  React.createElement(
+                    "span",
+                    { style: { flex: 1, minWidth: 0 } },
+                    React.createElement("span", {
+                      style: { display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }
+                    }, v.clienteNombre || "Consumidor final"),
+                    React.createElement("span", {
+                      style: { display: "block", fontSize: 11, color: "var(--muted)", marginTop: 1 }
+                    }, ((v.items || []).reduce((a, x) => a + (x.cantidad || 0), 0)) + " u · " +
+                       (METODO_LABELS[v.metodoPago] || v.metodoPago || "—"))
+                  ),
+                  React.createElement("span", {
+                    style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, flexShrink: 0 }
+                  }, money(v.total)),
+                  React.createElement("button", {
+                    onClick: () => borrarVenta(v),
+                    title: "Eliminar la venta y devolver el stock",
+                    style: {
+                      background: "none", border: "none", cursor: "pointer", flexShrink: 0,
+                      color: "var(--muted)", display: "flex", alignItems: "center",
+                      padding: 5, borderRadius: 7
+                    }
+                  }, React.createElement(Trash2, { size: 14 }))
+                ))
+            )
+          ),
+
           // Qué se vendió
           listaArticulos.length > 0 && React.createElement(
             Plegable,
@@ -19042,12 +19140,28 @@ function HistorialCajaModal({ data, caja, cierres, onVolver, onClose }) {
           ),
 
           // Movimientos de efectivo
-          movs.length > 0 && React.createElement(
+          (movs.length > 0 || caja.abierta) && React.createElement(
             Plegable,
-            { titulo: "Movimientos de efectivo", extra: String(movs.length) },
+            { titulo: "Movimientos de efectivo", extra: money(efectivoEnCaja(caja)) },
             React.createElement(
               "div",
-              { style: { maxHeight: 260, overflowY: "auto" } },
+              { style: { maxHeight: 280, overflowY: "auto" } },
+              // La apertura primero: es de donde sale el efectivo inicial y
+              // sin ella los números de abajo no cierran.
+              caja.abierta && React.createElement(
+                "div",
+                { style: { display: "flex", alignItems: "center", gap: 9, fontSize: 13, padding: "8px 0", borderBottom: "1px solid color-mix(in srgb, var(--line) 50%, transparent)" } },
+                React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "var(--muted)", flexShrink: 0 } }, horaHMS(caja.abiertaEn)),
+                React.createElement(
+                  "span",
+                  { style: { flex: 1, minWidth: 0 } },
+                  React.createElement("span", { style: { display: "block", fontWeight: 600 } }, "Apertura de caja"),
+                  React.createElement("span", { style: { display: "block", fontSize: 11, color: "var(--muted)", marginTop: 1 } }, "Fondo inicial")
+                ),
+                React.createElement("span", {
+                  style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, flexShrink: 0, color: "var(--sage)" }
+                }, "+ " + money(caja.montoInicial || 0))
+              ),
               movs.map((m) => {
                 const sale = m.tipo === "retiro" || m.tipo === "devolucion";
                 return React.createElement(
@@ -19064,7 +19178,14 @@ function HistorialCajaModal({ data, caja, cierres, onVolver, onClose }) {
                     style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, flexShrink: 0, color: sale ? "var(--rose)" : "var(--sage)" }
                   }, (sale ? "− " : "+ ") + money(m.monto))
                 );
-              })
+              }),
+              // El total, para poder contar la plata contra este número
+              React.createElement(
+                "div",
+                { style: { display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "10px 0 2px", fontWeight: 700 } },
+                React.createElement("span", null, "Efectivo en caja"),
+                React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(efectivoEnCaja(caja)))
+              )
             )
           ),
 
@@ -19106,7 +19227,7 @@ function HistorialCajaModal({ data, caja, cierres, onVolver, onClose }) {
 
           ampliada && React.createElement(VisorComprobante, { src: ampliada, onClose: () => setAmpliada(null) }),
 
-          delTurno.length === 0 && movs.length === 0
+          delTurno.length === 0 && movs.length === 0 && !caja.abierta
             ? React.createElement(Empty, { icono: Clock3, compacto: true, text: "Todavía no hubo movimientos en este turno." })
             : null
         )
@@ -19188,7 +19309,7 @@ function HistorialCajaModal({ data, caja, cierres, onVolver, onClose }) {
   );
 }
 
-function GestionarCajaModal({ data, caja, onIngresar, onRetirar, onCerrar, onCorregirInicial, onAnular, onClose }) {
+function GestionarCajaModal({ data, persist, caja, onIngresar, onRetirar, onCerrar, onCorregirInicial, onAnular, onClose }) {
   const [vista, setVista] = useState("menu");
   const [nuevoInicial, setNuevoInicial] = useState(String(caja.montoInicial || 0));
   const disponible = efectivoEnCaja(caja);
@@ -19208,6 +19329,7 @@ function GestionarCajaModal({ data, caja, onIngresar, onRetirar, onCerrar, onCor
   }, onClose: () => setVista("menu") });
   if (vista === "historial") return /* @__PURE__ */ React.createElement(HistorialCajaModal, {
     data,
+    persist,
     caja,
     cierres: (data.cajasCerradas || []).slice(0, 20),
     onVolver: () => setVista("menu"),
@@ -19413,6 +19535,7 @@ function MiCajaCard({ data, persist }) {
   }
   return /* @__PURE__ */ React.createElement(Card, { style: { width: "100%" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } }, /* @__PURE__ */ React.createElement(Unlock, { size: 16, color: "var(--sage)" }), /* @__PURE__ */ React.createElement(SectionTitle, null, "Mi Caja")), /* @__PURE__ */ React.createElement(SwingTag, { tone: "sage", small: true }, "Abierta")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: "var(--muted)" } }, "Mi efectivo"), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", letterSpacing: -0.03, fontSize: 28, margin: "2px 0 10px" } }, money(disponible)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginBottom: 16 } }, "Desde ", horaHMS(caja.abiertaEn)), /* @__PURE__ */ React.createElement(Button, { tone: "ghost", onClick: () => setShowGestionar(true), style: { width: "100%", justifyContent: "center" } }, /* @__PURE__ */ React.createElement(SlidersHorizontal, { size: 14 }), " Gestionar Caja"), showGestionar && /* @__PURE__ */ React.createElement(GestionarCajaModal, {
     data,
+    persist,
     caja,
     onIngresar: agregarMovimiento("ingreso"),
     onRetirar: agregarMovimiento("retiro"),
@@ -19535,6 +19658,7 @@ function CajaRapida({ data, persist, onClose }) {
   }
   return React.createElement(GestionarCajaModal, {
     data,
+    persist,
     caja,
     onIngresar: agregarMovimiento("ingreso"),
     onRetirar: agregarMovimiento("retiro"),
