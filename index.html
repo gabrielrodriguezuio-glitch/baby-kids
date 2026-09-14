@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.920";
+const VERSION_APP = "9.921";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -1712,8 +1712,16 @@ const todosLosRoles = (data) => ROLES.concat(rolesPropios(data).map((r) => r.nom
 const tabsDelRol = (data, rol) => {
   const propio = rolesPropios(data).find((r) => r.nombre === rol);
   if (propio) return propio.tabs || [];
-  return TABS_POR_ROL[rol];
+  const deFabrica = TABS_POR_ROL[rol];
+  if (deFabrica) return deFabrica;
+  // Rol que no existe ni de fábrica ni entre los propios: pasa si se borra
+  // un rol que alguien estaba usando, o si el nombre quedó mal escrito. Antes
+  // devolvía undefined y la app entendía "sin límites": el empleado terminaba
+  // viendo Reportes, Usuarios y Configuración. Lo seguro es al revés.
+  return ROL_DESCONOCIDO;
 };
+// Lo mínimo para poder trabajar mientras se arregla el rol: vender y pedir ayuda
+const ROL_DESCONOCIDO = ["pos", "soporte"];
 
 const TABS_POR_ROL = {
   "Propietario": "*",
@@ -1785,16 +1793,30 @@ const PERMISOS_EXPLICADOS = [
   ["gestionarUsuarios", "Manejar el equipo", "Crear, editar y dar de baja integrantes."]
 ];
 
+// ¿El rol de esta persona existe? Si no, la app la limita a lo mínimo y hay
+// que avisarlo: si no, parece que la app se rompió.
+const rolHuerfano = (data) => {
+  const u = usuarioSesion(data);
+  if (!u) return "";
+  if (!u.rol) return "(sin rol asignado)";
+  if (TABS_POR_ROL[u.rol]) return "";
+  if (rolesPropios(data).some((r) => r.nombre === u.rol)) return "";
+  return u.rol;
+};
+
 const puede = (data, accion) => {
   const u = usuarioSesion(data);
   // Sin usuarios cargados no hay a quién limitar: la app funciona completa
   if (!u) return true;
+  // Ficha sin rol: no se le dan los permisos del dueño. Antes el "|| Propietario"
+  // de más abajo convertía un campo vacío en permiso total.
+  if (!u.rol) return false;
   // Los roles propios traen su propia lista de permisos: sin esto quedaban
   // sin ninguno, y por ejemplo no podían cerrar su caja.
   const propio = rolesPropios(data).find((r) => r.nombre === u.rol);
   if (propio) return (propio.permisos || []).indexOf(accion) >= 0;
   const permitidos = PUEDE[accion];
-  return !permitidos || permitidos.indexOf(u.rol || "Propietario") >= 0;
+  return !permitidos || permitidos.indexOf(u.rol) >= 0;
 };
 
 const tabPermitida = (data, tab) => {
@@ -1804,7 +1826,9 @@ const tabPermitida = (data, tab) => {
   // mínimo seguro. Sin esto, un empleado veía Reportes, Usuarios y Mis
   // Negocios por unos segundos hasta que se identificaba su rol.
   if (!u) return tab === "pos" || tab === "soporte";
-  const tabs = tabsDelRol(data, u.rol || "Propietario");
+  // Ficha sin rol: no se asume que es el dueño. Un campo vacío es un dato
+  // que falta, no un permiso.
+  const tabs = u.rol ? tabsDelRol(data, u.rol) : ROL_DESCONOCIDO;
   if (!tabs || tabs === "*") return true;
   // Soporte siempre accesible: es donde se pide ayuda si algo falla
   if (tab === "soporte") return true;
@@ -3021,6 +3045,25 @@ function ControlTienda() {
   }
 
   return /* @__PURE__ */ React.createElement(Wrapper, { mobile: isMobile, tema },
+    // El rol de esta persona no existe: la app la dejó con lo mínimo y hay
+    // que decirlo, si no parece que se rompió sola.
+    (() => {
+      const huerfano = rolHuerfano(data);
+      if (!huerfano) return null;
+      return /* @__PURE__ */ React.createElement("div", {
+        style: {
+          position: "fixed", top: 0, left: 0, right: 0, zIndex: 10001,
+          background: "var(--rose)", color: "#fff", padding: "10px 18px",
+          fontSize: 13, lineHeight: 1.4, display: "flex", alignItems: "center", gap: 11,
+          boxShadow: "0 2px 12px rgba(0,0,0,.25)"
+        }
+      },
+        /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17, style: { flexShrink: 0 } }),
+        /* @__PURE__ */ React.createElement("span", { style: { flex: 1, fontWeight: 600 } },
+          "El rol \u201C" + huerfano + "\u201D no existe. Hasta arreglarlo sólo se puede vender. " +
+          "Avisale al dueño para que lo cree de nuevo o le asigne otro rol."))
+    })(),
+
     // Ventas que todavía no llegaron a la nube. Se muestra siempre que haya
     // alguna: el vendedor tiene que saber que hay algo pendiente, aunque la
     // venta ya esté cobrada y figure en la pantalla.
