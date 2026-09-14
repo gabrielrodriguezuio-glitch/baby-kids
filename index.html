@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.926";
+const VERSION_APP = "9.928";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -9526,27 +9526,44 @@ const textoReposicion = (productos, negocioId, negocioNombre) => {
 // Escaneando en el mostrador no se mira la pantalla: el sonido confirma si el
 // artículo entró o si el código no existe, sin levantar la vista.
 let _audioCtx = null;
-const pitido = (ok) => {
+const pitido = (ok, fuerte) => {
   try {
     if (localStorage.getItem("ct-sonido") === "0") return;
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) return;
     _audioCtx = _audioCtx || new Ctx();
+    // En Android el contexto queda suspendido si la pantalla se apagó o si
+    // todavía no hubo un toque: sin esto el pitido no suena y el operario
+    // cree que no leyó.
+    if (_audioCtx.state === "suspended") { try { _audioCtx.resume(); } catch (e) {} }
     const t = _audioCtx.currentTime;
-    const tocar = (frec, desde, dura) => {
+    const tocar = (frec, desde, dura, pico, tipo) => {
       const osc = _audioCtx.createOscillator();
       const vol = _audioCtx.createGain();
-      osc.type = "sine";
+      // Onda cuadrada en el modo fuerte: tiene más armónicos que la senoidal
+      // y se escucha mucho mejor sobre el ruido del local, al mismo volumen.
+      osc.type = tipo || "sine";
       osc.frequency.value = frec;
       vol.gain.setValueAtTime(0.0001, t + desde);
-      vol.gain.exponentialRampToValueAtTime(0.16, t + desde + 0.01);
+      vol.gain.exponentialRampToValueAtTime(pico, t + desde + 0.008);
       vol.gain.exponentialRampToValueAtTime(0.0001, t + desde + dura);
       osc.connect(vol); vol.connect(_audioCtx.destination);
       osc.start(t + desde); osc.stop(t + desde + dura + 0.02);
     };
-    // Un pitido corto y agudo si entró; dos graves si no se encontró
-    if (ok) tocar(1180, 0, 0.09);
-    else { tocar(300, 0, 0.12); tocar(240, 0.14, 0.16); }
+    if (fuerte) {
+      // Dos tonos ascendentes, fuerte y largo: pensado para escanear de
+      // corrido sin mirar la pantalla. Si uno no suena, faltó cargarlo.
+      if (ok) { tocar(1050, 0, 0.11, 0.5, "square"); tocar(1500, 0.1, 0.16, 0.5, "square"); }
+      else { tocar(320, 0, 0.18, 0.55, "square"); tocar(200, 0.2, 0.28, 0.55, "square"); }
+    } else {
+      // Un pitido corto y agudo si entró; dos graves si no se encontró
+      if (ok) tocar(1180, 0, 0.09, 0.16);
+      else { tocar(300, 0, 0.12, 0.16); tocar(240, 0.14, 0.16, 0.16); }
+    }
+  } catch (e) {}
+  // El teléfono en el bolsillo o el local ruidoso: la vibración avisa igual.
+  try {
+    if (fuerte && navigator.vibrate) navigator.vibrate(ok ? 60 : [90, 70, 90]);
   } catch (e) {}
 };
 
@@ -22340,8 +22357,22 @@ const hayCamara = () => typeof navigator !== "undefined" &&
 
 const FORMATOS_ESCANER = ["ean_13", "ean_8", "code_128", "code_39", "upc_a", "upc_e", "itf", "codabar"];
 
-function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
+function EscanerModal({ titulo, onLeer, onClose, sinManual, continuo, contador, ultimoTexto }) {
   const videoRef = React.useRef(null);
+  // En modo continuo la cámara NO se apaga al leer. Estos dos refs evitan
+  // que el mismo código entre veinte veces por segundo mientras la etiqueta
+  // sigue delante del lente: se ignora el repetido durante un rato corto,
+  // pero un código distinto entra al instante.
+  const ultimoRef = React.useRef("");
+  const cuandoRef = React.useRef(0);
+  const ESPERA_REPETIDO = 1200;
+  const aceptar = (valor) => {
+    const ahora = Date.now();
+    if (valor === ultimoRef.current && ahora - cuandoRef.current < ESPERA_REPETIDO) return false;
+    ultimoRef.current = valor;
+    cuandoRef.current = ahora;
+    return true;
+  };
   // El lector alterno se guarda para poder apagarlo al cerrar: si queda vivo,
   // la cámara sigue prendida.
   const alternoRef = React.useRef(null);
@@ -22485,6 +22516,12 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
               if (!resultado) return;
               const valor = String(resultado.getText() || "").trim();
               if (!valor) return;
+              if (continuo) {
+                // Seguir leyendo: la cámara queda viva para el próximo código.
+                if (!aceptar(valor)) return;
+                onLeer(valor);
+                return;
+              }
               try { alterno.reset(); } catch (e2) {}
               detener();
               onLeer(valor);
@@ -22512,7 +22549,10 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
             const encontrados = await lector.detect(videoRef.current);
             if (encontrados && encontrados.length) {
               const valor = String(encontrados[0].rawValue || "").trim();
-              if (valor && valor !== ultimo) {
+              if (continuo) {
+                if (valor && aceptar(valor)) onLeer(valor);
+                // Sin return: el bucle sigue mirando cuadros.
+              } else if (valor && valor !== ultimo) {
                 setUltimo(valor);
                 detener();
                 onLeer(valor);
@@ -22581,6 +22621,32 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
                 boxShadow: "0 0 0 100vmax rgba(0,0,0,0.35)"
               }
             }),
+            // En modo continuo, la cuenta corrida y lo último que entró.
+            // Sirve para escanear sin frenar: si el número no sube, ese
+            // producto no se cargó.
+            continuo && estado === "leyendo" && React.createElement(
+              "div",
+              {
+                style: {
+                  position: "absolute", left: 12, top: 12, right: 12,
+                  display: "flex", alignItems: "center", gap: 9,
+                  background: "rgba(0,0,0,0.62)", borderRadius: 9,
+                  padding: "7px 11px", color: "#fff", pointerEvents: "none"
+                }
+              },
+              React.createElement("span", {
+                style: {
+                  fontFamily: "'IBM Plex Mono', monospace", fontSize: 17,
+                  fontWeight: 700, lineHeight: 1, flexShrink: 0
+                }
+              }, contador || 0),
+              React.createElement("span", {
+                style: {
+                  fontSize: 12, opacity: 0.9, lineHeight: 1.35,
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
+                }
+              }, ultimoTexto || "Escaneá una etiqueta")
+            ),
             estado === "iniciando" && React.createElement(
               "div",
               { style: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 13.5 } },
@@ -24759,6 +24825,10 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
   const [query, setQuery] = useState("");
   const [escaneando, setEscaneando] = useState(false);
   const [abierto, setAbierto] = useState(null);
+  // Cuenta de lo escaneado y lo último que entró: se muestran sobre la
+  // cámara para poder escanear de corrido sin mirar la lista.
+  const [escaneos, setEscaneos] = useState(0);
+  const [ultimoEscaneado, setUltimoEscaneado] = useState("");
   // Lo que se va a transferir: { "productoId|talle": cantidad }
   const [sel, setSel] = useState({});
   const [error, setError] = useState("");
@@ -24809,19 +24879,23 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
     if (hallada) {
       const hay = Number(hallada.variante.stock) || 0;
       if (!sinControl && hay <= 0) {
-        pitido(false);
+        pitido(false, true);
+        setUltimoEscaneado("Sin stock: " + hallada.producto.nombre);
         setError('"' + hallada.producto.nombre + '" ' + etiquetaVariante(hallada.variante) + ' no tiene stock en el origen.');
         return;
       }
-      pitido(true);
+      pitido(true, true);
       setQuery("");
+      setUltimoEscaneado(hallada.producto.nombre + " " + etiquetaVariante(hallada.variante));
+      setEscaneos((n) => n + 1);
       sumar(hallada.producto, claveVariante(hallada.variante), 1, true, hay);
       return;
     }
     const prod = data.productos.find((p) =>
       (p.codigoBarras || "").trim() === limpio || mismoCodigo(p.codigoBarras, limpio));
     if (!prod) {
-      pitido(false);
+      pitido(false, true);
+      setUltimoEscaneado("Código desconocido: " + limpio);
       setError('Ningún producto tiene el código "' + limpio + '".');
       return;
     }
@@ -24832,18 +24906,25 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
       // se perdía y la prenda llegaba al otro local sin él.
       const talle = sinTalles ? "" : claveVariante(vs[0]);
       const hay = sinTalles ? stockNegocio(prod, origen) : Number(vs[0].stock) || 0;
-      pitido(true);
+      pitido(true, true);
       setQuery("");
+      setUltimoEscaneado(prod.nombre + (talle ? " " + talle.replace("|", " · ") : ""));
+      setEscaneos((n) => n + 1);
       sumar(prod, talle, 1, false, hay);
       return;
     }
     if (!vs.length && !sinControl) {
-      pitido(false);
+      pitido(false, true);
+      setUltimoEscaneado("Sin stock: " + prod.nombre);
       setError('"' + prod.nombre + '" no tiene stock en el origen.');
       return;
     }
-    // Con varios talles se muestra ese producto para elegir cuál
-    pitido(true);
+    // Con varios talles hay que elegir cuál, así que se corta el escaneo
+    // seguido: dejar la cámara abierta mientras se pide una decisión hacía
+    // que el operario no viera la pregunta y siguiera escaneando al vacío.
+    pitido(false, true);
+    setUltimoEscaneado(prod.nombre + ": elegí talle");
+    setEscaneando(false);
     setQuery(prod.nombre);
     setAbierto(prod.id);
   };
@@ -24897,7 +24978,7 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
 
   const selectNegocio = (valor, onChange, excluir) => React.createElement(
     "select",
-    { style: { ...inputEditor }, value: valor, onChange: (e) => { onChange(e.target.value); setSel({}); setError(""); } },
+    { style: { ...inputEditor }, value: valor, onChange: (e) => { onChange(e.target.value); setSel({}); setError(""); setEscaneos(0); setUltimoEscaneado(""); } },
     React.createElement("option", { value: "" }, "Seleccionar…"),
     negocios.filter((n) => n.id !== excluir).map((n) => React.createElement("option", { key: n.id, value: n.id }, n.nombre))
   );
@@ -25069,6 +25150,12 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
       ),
       escaneando && React.createElement(EscanerModal, {
         titulo: "Escanear para transferir",
+        // Continuo: la cámara queda prendida y se cargan uno atrás de otro.
+        // Antes se apagaba al primer código y había que reabrirla cada vez,
+        // que es donde se pasaban productos por alto.
+        continuo: true,
+        contador: escaneos,
+        ultimoTexto: ultimoEscaneado,
         onLeer: (code) => { porCodigo(code); },
         onClose: () => setEscaneando(false)
       }),
@@ -26805,22 +26892,62 @@ function TransferenciasView({ data, persist }) {
   const transferencias = data.transferencias || [];
   const nombreDe = (id) => (negocios.find((n) => n.id === id) || {}).nombre || "—";
 
+  // La hora se guardó con toLocaleTimeString, que según el equipo devuelve
+  // "14:42" en unos y "2:42 p. m." en otros. Comparadas como texto, las de
+  // la tarde caían antes que las de la mañana y el historial quedaba
+  // mezclado. Se pasa todo a minutos desde medianoche y se compara número
+  // contra número.
+  const minutosDeHora = (h) => {
+    const bruto = String(h || "").trim().toLowerCase();
+    if (!bruto) return -1;
+    const m = bruto.match(/(\d{1,2})[:.](\d{2})/);
+    if (!m) return -1;
+    let hora = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
+    if (isNaN(hora) || isNaN(min)) return -1;
+    // "p. m.", "pm", "p.m." y variantes; lo mismo para la mañana
+    const tarde = /p\s*\.?\s*m/.test(bruto);
+    const manana = /a\s*\.?\s*m/.test(bruto);
+    if (tarde && hora < 12) hora += 12;
+    if (manana && hora === 12) hora = 0;
+    return hora * 60 + min;
+  };
+  // Día en formato YYYY-MM-DD, tolerando fechas guardadas como timestamp
+  const diaDe = (t) => String(t && t.fecha || "").slice(0, 10);
+  // Un solo número por transferencia: día * 10000 + minuto del día. Ordenar
+  // por esto es estable y no depende del formato de texto.
+  const pesoDe = (t) => {
+    const dia = parseInt(diaDe(t).replace(/\D/g, ""), 10) || 0;
+    return dia * 10000 + (minutosDeHora(t && t.hora) + 1);
+  };
+
   const visibles = transferencias.filter((t) => {
     if (filtroEstado && (t.estado || "completada") !== filtroEstado) return false;
     if (filtroNegocio && t.origen !== filtroNegocio && t.destino !== filtroNegocio) return false;
     return true;
   }).sort((a, b) => {
-    // La más nueva arriba. Se ordena por fecha y hora y, si empatan, por el
-    // número de remito: dos transferencias del mismo minuto quedaban en el
-    // orden en que vinieron de la nube, que con el delta sync ya no es el
-    // de carga.
-    const claveA = String(a.fecha || "") + " " + String(a.hora || "").padStart(5, "0");
-    const claveB = String(b.fecha || "") + " " + String(b.hora || "").padStart(5, "0");
-    if (claveA !== claveB) return claveB.localeCompare(claveA);
+    // La más nueva arriba.
+    const pA = pesoDe(a);
+    const pB = pesoDe(b);
+    if (pA !== pB) return pB - pA;
+    // Empate en fecha y hora: manda el número de remito, que es correlativo.
+    // Sin esto quedaban en el orden en que vinieron de la nube, que con el
+    // delta sync ya no es el de carga.
     const nA = parseInt(String(a.remito || "").replace(/\D/g, ""), 10) || 0;
     const nB = parseInt(String(b.remito || "").replace(/\D/g, ""), 10) || 0;
     return nB - nA;
   });
+
+  // Cuántas hay por día, para el contador del encabezado
+  const porDia = {};
+  visibles.forEach((t) => { const d = diaDe(t); porDia[d] = (porDia[d] || 0) + 1; });
+  const hoyStr = todayISO();
+  const ayerStr = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return isoLocal(d);
+  })();
+  const tituloDia = (d) => !d ? "Sin fecha" : d === hoyStr ? "Hoy" : d === ayerStr ? "Ayer" : fecha(d);
 
   // Aplica el movimiento de stock de una transferencia
   const aplicar = (productos, items, origenId, destinoId) => {
@@ -26985,10 +27112,15 @@ function TransferenciasView({ data, persist }) {
 : React.createElement(
             "div",
             { style: { display: "flex", flexDirection: "column", gap: 10, padding: "0 22px 22px" } },
-            visibles.map((t) => {
+            visibles.map((t, i) => {
               const est = ESTADOS_TRANSFER[t.estado || "completada"];
               const unidades = (t.items || []).reduce((a, x) => a + x.cantidad, 0);
-              return React.createElement(
+              // Encabezado cada vez que cambia el día: sin esto era una tira
+              // de tarjetas iguales donde no se veía dónde terminaba una
+              // jornada y empezaba la otra.
+              const dia = diaDe(t);
+              const abreDia = i === 0 || dia !== diaDe(visibles[i - 1]);
+              const tarjeta = React.createElement(
                 "div",
                 {
                   key: t.id,
@@ -27075,6 +27207,30 @@ React.createElement(
                   className: "ct-accion",
                   style: { background: "none", border: "none", cursor: "pointer", fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "var(--muted)", padding: 0, flexShrink: 0 }
                 }, t.remito || "sin n\u00B0")
+              );
+              if (!abreDia) return tarjeta;
+              return React.createElement(
+                React.Fragment,
+                { key: "dia-" + t.id },
+                React.createElement(
+                  "div",
+                  {
+                    style: {
+                      display: "flex", alignItems: "center", gap: 10,
+                      marginTop: i === 0 ? 0 : 12, marginBottom: 2
+                    }
+                  },
+                  React.createElement("span", {
+                    style: { fontSize: 12.5, fontWeight: 700, color: "var(--ink)", letterSpacing: "0.01em" }
+                  }, tituloDia(dia)),
+                  React.createElement("span", {
+                    style: { fontSize: 11.5, color: "var(--muted)" }
+                  }, porDia[dia] + (porDia[dia] === 1 ? " transferencia" : " transferencias")),
+                  React.createElement("span", {
+                    style: { flex: 1, height: 1, background: "var(--line)" }
+                  })
+                ),
+                tarjeta
               );
             })
           )
