@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.921";
+const VERSION_APP = "9.922";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -1760,22 +1760,41 @@ const PUEDE = {
 // Quién está usando la app ahora
 // Quién entró con su cuenta. Ya no hay selector de usuario: cada persona usa
 // su mail y contraseña, así que esto es lo único que define quién es.
+// IMPORTANTE: si no se pudo identificar, NO se devuelve otro usuario de la
+// lista. Antes caía al primero activo, que suele ser el dueño: cualquier
+// empleado cuya sesión no se resolviera terminaba con permisos de Propietario.
 const usuarioSesion = (data) => {
   const lista = data.usuarios || [];
-  return lista.find((x) => x.esVos) || lista.find((x) => x.activo !== false) || lista[0] || null;
+  const yo = lista.find((x) => x.esVos);
+  if (yo) return yo;
+  // Sin nadie marcado: si hay un solo usuario cargado es obvio quién es.
+  // Con varios, no se adivina.
+  if (lista.length === 1) return lista[0];
+  return null;
+};
+
+// Igual que arriba pero para saber si la app está en el limbo: hay usuarios
+// cargados y ninguno es el de la sesión. Sirve para avisarlo en pantalla.
+const sesionSinIdentificar = (data) => {
+  const lista = (data && data.usuarios) || [];
+  return lista.length > 1 && !lista.some((x) => x.esVos);
 };
 
 // El dueño o un administrador: pueden cerrar la caja de cualquiera si alguien
 // se fue sin cerrar y hay que dejar el día cuadrado.
 // S\u00F3lo el due\u00F1o (no el administrador): para acciones sensibles de caja.
 const esPropietario = (data) => {
+  const lista = (data && data.usuarios) || [];
+  if (!lista.length) return true;   // app sin equipo cargado
   const u = usuarioSesion(data);
-  return !u || u.rol === "Propietario";
+  return !!u && u.rol === "Propietario";
 };
 
 const esJefe = (data) => {
+  const lista = (data && data.usuarios) || [];
+  if (!lista.length) return true;
   const u = usuarioSesion(data);
-  if (!u) return true;
+  if (!u) return false;
   return u.rol === "Propietario" || u.rol === "Administrador";
 };
 
@@ -1805,9 +1824,13 @@ const rolHuerfano = (data) => {
 };
 
 const puede = (data, accion) => {
+  const lista = (data && data.usuarios) || [];
+  // Sin ningún usuario cargado (app recién instalada) no hay a quién limitar
+  if (!lista.length) return true;
   const u = usuarioSesion(data);
-  // Sin usuarios cargados no hay a quién limitar: la app funciona completa
-  if (!u) return true;
+  // Hay usuarios pero no se sabe cuál es el de esta sesión: no se regalan
+  // permisos. Antes esto devolvía true y quien no se identificaba podía todo.
+  if (!u) return false;
   // Ficha sin rol: no se le dan los permisos del dueño. Antes el "|| Propietario"
   // de más abajo convertía un campo vacío en permiso total.
   if (!u.rol) return false;
@@ -1837,10 +1860,14 @@ const tabPermitida = (data, tab) => {
 
 // Quién está usando la app: se estampa en cada movimiento para poder saber
 // después quién cobró, quién repuso y quién cargó cada producto.
+// Si no se pudo identificar la sesión NO se pone el nombre de otro: una venta
+// firmada por quien no la hizo es peor que una sin firma.
 const usuarioActivo = (data) => {
-  const lista = data.usuarios || [];
-  const u = lista.find((x) => x.esVos) || lista.find((x) => x.activo !== false) || lista[0];
-  return u ? u.nombre : "";
+  const lista = (data && data.usuarios) || [];
+  const yo = lista.find((x) => x.esVos);
+  if (yo) return yo.nombre;
+  if (lista.length === 1) return lista[0].nombre;
+  return lista.length ? "(sin identificar)" : "";
 };
 
 const nuevoMovimiento = ({ producto, cantidad, origen, motivo, stockResultante, usuario }) => ({
@@ -3027,7 +3054,7 @@ function ControlTienda() {
     : 0;
   const tareasHoy = tareasPendientesHoy(data, usuarioActualId(data), negocioActivo(data).id).length;
   const paradasHoy = (elReparto(data).paradas || []).filter((x) => x.estado === "pendiente").length;
-  const usuario = (data.usuarios || []).find((u) => u.esVos) || (data.usuarios || []).find((u) => u.activo !== false) || (data.usuarios || [])[0] || null;
+  const usuario = usuarioSesion(data);
 
   if (errorNube) {
     return /* @__PURE__ */ React.createElement(Wrapper, { mobile: isMobile, tema },
@@ -3045,11 +3072,13 @@ function ControlTienda() {
   }
 
   return /* @__PURE__ */ React.createElement(Wrapper, { mobile: isMobile, tema },
-    // El rol de esta persona no existe: la app la dejó con lo mínimo y hay
-    // que decirlo, si no parece que se rompió sola.
+    // El rol de esta persona no existe, o la app no pudo saber quién entró.
+    // En los dos casos queda con lo mínimo y hay que decirlo, si no parece
+    // que se rompió sola.
     (() => {
-      const huerfano = rolHuerfano(data);
-      if (!huerfano) return null;
+      const sinIdent = sesionSinIdentificar(data);
+      const huerfano = sinIdent ? "" : rolHuerfano(data);
+      if (!sinIdent && !huerfano) return null;
       return /* @__PURE__ */ React.createElement("div", {
         style: {
           position: "fixed", top: 0, left: 0, right: 0, zIndex: 10001,
@@ -3060,8 +3089,10 @@ function ControlTienda() {
       },
         /* @__PURE__ */ React.createElement(AlertTriangle, { size: 17, style: { flexShrink: 0 } }),
         /* @__PURE__ */ React.createElement("span", { style: { flex: 1, fontWeight: 600 } },
-          "El rol \u201C" + huerfano + "\u201D no existe. Hasta arreglarlo sólo se puede vender. " +
-          "Avisale al dueño para que lo cree de nuevo o le asigne otro rol."))
+          sinIdent
+            ? "No se pudo reconocer con qué cuenta entraste. Hasta resolverlo sólo se puede vender. Cerrá sesión y volvé a entrar."
+            : "El rol \u201C" + huerfano + "\u201D no existe. Hasta arreglarlo sólo se puede vender. " +
+              "Avisale al dueño para que lo cree de nuevo o le asigne otro rol."))
     })(),
 
     // Ventas que todavía no llegaron a la nube. Se muestra siempre que haya
