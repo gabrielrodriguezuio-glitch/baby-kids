@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.914";
+const VERSION_APP = "9.915";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -15774,6 +15774,115 @@ function construirTicketTexto(data, venta) {
   return escposEncode(out.join("\n"));
 }
 
+// ===== Remito de transferencia para la impresora térmica =====
+// Mismo documento que el remito en papel pero sin fotos: en 58 mm una foto
+// no se distingue y hace lentísima la impresión. Va todo lo que hace falta
+// para controlar el bulto al recibirlo: nombre, código, talle, color y
+// cantidad de cada renglón, más el origen, el destino y las observaciones.
+function construirRemitoTexto(data, transferencia, lineas, negocios) {
+  const ANCHO = 32;
+  const t = transferencia || {};
+  const negocio = data.negocio || {};
+  const buscarNeg = (id) => (negocios || []).find((n) => n.id === id) || { nombre: "-" };
+  const origen = buscarNeg(t.origen);
+  const destino = buscarNeg(t.destino);
+  const items = lineas || [];
+  const unidades = items.reduce((a, l) => a + (Number(l.cantidad) || 0), 0);
+  const valorTotal = items.reduce((a, l) => a + (Number(l.precio) || 0) * (Number(l.cantidad) || 0), 0);
+
+  const linea = (izq, der) => {
+    izq = izq || "";
+    der = der || "";
+    const espacio = Math.max(1, ANCHO - izq.length - der.length);
+    return izq + " ".repeat(espacio) + der;
+  };
+  const partir = (texto, ancho) => {
+    const palabras = String(texto || "").split(" ");
+    const salida = [];
+    let actual = "";
+    palabras.forEach((pal) => {
+      if (!actual) { actual = pal; return; }
+      if ((actual + " " + pal).length <= ancho) actual += " " + pal;
+      else { salida.push(actual); actual = pal; }
+    });
+    if (actual) salida.push(actual);
+    return salida.length ? salida : [""];
+  };
+  const dashes = SUBRAYADO + " ".repeat(ANCHO) + SIN_SUBRAYADO;
+  const out = [];
+  out.push(CURSIVA + NEGRITA);
+
+  // Encabezado
+  out.push(CENTRO + GRANDE + NEGRITA + "REMITO" + NORMAL + SIN_NEGRITA);
+  out.push(CENTRO + (negocio.nombre || "Mi negocio").toUpperCase());
+  out.push(IZQ + dashes);
+
+  out.push(NEGRITA + "N " + (t.remito || "-") + SIN_NEGRITA);
+  out.push(linea(fecha(t.fecha), t.hora || ""));
+  out.push(dashes);
+
+  // De dónde sale y a dónde entra: lo primero que se mira al recibir
+  out.push(NEGRITA + "SALE DE" + SIN_NEGRITA);
+  partir(origen.nombre || "-", ANCHO - 2).forEach((l) => out.push("  " + l));
+  out.push(NEGRITA + "ENTRA EN" + SIN_NEGRITA);
+  partir(destino.nombre || "-", ANCHO - 2).forEach((l) => out.push("  " + l));
+  out.push(dashes);
+
+  // Detalle. Cada renglón: nombre, después código y talle/color, y la
+  // cantidad al final bien a la derecha.
+  out.push(NEGRITA + "DETALLE" + SIN_NEGRITA);
+  out.push("");
+  items.forEach((l, i) => {
+    partir((i + 1) + ". " + (l.nombre || ""), ANCHO - 3)
+      .forEach((x, k) => out.push(k === 0 ? NEGRITA + x + SIN_NEGRITA : "   " + x));
+    if (l.codigo) out.push("   Cod " + l.codigo);
+    const tc = [];
+    if (l.talle) tc.push("T " + l.talle);
+    if (l.color) tc.push(l.color);
+    if (tc.length) out.push("   " + tc.join("  "));
+    out.push(linea("   Cantidad", String(l.cantidad) + " " +
+      String(l.unidad || "unidades").toLowerCase()));
+    out.push("");
+  });
+  out.push(dashes);
+
+  // Totales
+  out.push(ALTO + linea("TOTAL", String(unidades) + (unidades === 1 ? " UNID" : " UNIDS")) + NORMAL);
+  out.push(linea("Renglones", String(items.length)));
+  if (valorTotal > 0) out.push(linea("Valor", money(valorTotal)));
+  out.push(dashes);
+
+  // Motivo y observaciones. Se parten a 30 y no a 32 porque van con dos
+  // espacios de sangría: sin descontarlos, la impresora corta la palabra.
+  if (t.motivo) {
+    out.push(NEGRITA + "MOTIVO" + SIN_NEGRITA);
+    partir(t.motivo, ANCHO - 2).forEach((l) => out.push("  " + l));
+  }
+  if (t.nota) {
+    out.push(NEGRITA + "OBSERVACIONES" + SIN_NEGRITA);
+    partir(t.nota, ANCHO - 2).forEach((l) => out.push("  " + l));
+  }
+  if (t.motivo || t.nota) out.push(dashes);
+
+  // Quién lo mandó y quién lo recibió
+  if (t.usuarioNombre) out.push(linea("Entrega", t.usuarioNombre));
+  if (t.recibidaPor) {
+    out.push(linea("Recibe", t.recibidaPor));
+    if (t.recibidaEn) out.push(linea("", fecha(t.recibidaEn) + " " + (t.recibidaHora || "")));
+  } else {
+    // Espacio para firmar cuando todavía no se recibió
+    out.push("");
+    out.push("Recibe: ........................");
+    out.push("");
+    out.push("Firma:  ........................");
+  }
+
+  out.push(IZQ + SIN_CURSIVA + ESC + "!" + "\x00" + GS + "!" + "\x00");
+  out.push("");
+  out.push("");
+  return escposEncode(out.join("\n"));
+}
+
 // ===== El ticket dibujado como imagen =====
 // La impresora térmica solo tiene sus fuentes de fábrica. Dibujando el ticket
 // en un lienzo y mandándolo punto por punto se puede usar cualquier tipografía,
@@ -23871,6 +23980,34 @@ function RemitoTransferencia({ data, transferencia, negocios, onClose }) {
     }
   };
 
+  // Impresión por Bluetooth: el mismo remito pero sin fotos, en el papel de
+  // 58 mm de la impresora térmica. Es lo que viaja con el bulto.
+  const [estadoBLE, setEstadoBLE] = useState("");
+  const imprimirBluetooth = async () => {
+    setEstadoBLE("");
+    try {
+      if (!window.__blePrinter || !window.__blePrinter.device) {
+        setEstadoBLE("Conectando con la impresora\u2026");
+        const nombre = await conectarImpresoraBLE();
+        setEstadoBLE("Conectado a " + nombre + ". Imprimiendo\u2026");
+      } else if (!window.__blePrinter.device.gatt.connected) {
+        setEstadoBLE("Reconectando con la impresora\u2026");
+        await caracteristicaImpresora();
+      } else {
+        setEstadoBLE("Imprimiendo\u2026");
+      }
+      await imprimirEscPos(construirRemitoTexto(data, t, lineas, negocios));
+      setEstadoBLE("");
+      avisar("Remito enviado a la impresora", { tono: "ok" });
+    } catch (e) {
+      setEstadoBLE("");
+      const m = String((e && e.message) || e);
+      if (!/cancel|abort|user gesture/i.test(m)) {
+        avisar("No se pudo imprimir. " + m, { tono: "error" });
+      }
+    }
+  };
+
   const caja = (rotulo, valor, detalle) => React.createElement(
     "div",
     { key: rotulo, style: { flex: 1, minWidth: 0, border: "none", borderRadius: 10, padding: "14px 16px" } },
@@ -23982,16 +24119,17 @@ function RemitoTransferencia({ data, transferencia, negocios, onClose }) {
               borderRadius: 12, padding: 6, minWidth: 190, boxShadow: "var(--sombra-alta)"
             }
           },
-          [["Enviar PDF", () => { setVerPapel(false); compartirPDF(); }],
+          [["Imprimir por Bluetooth", () => { setVerPapel(false); imprimirBluetooth(); }],
+           ["Enviar PDF", () => { setVerPapel(false); compartirPDF(); }],
            ["Mandar como texto", () => { setVerPapel(false); setEnviarWA(true); }],
-           ["Imprimir", () => { setVerPapel(false); imprimir(); }]]
+           ["Imprimir en hoja", () => { setVerPapel(false); imprimir(); }]]
             .map(([label, fn]) => React.createElement("button", {
               key: label, onClick: fn,
               style: { display: "block", width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer", color: "var(--ink)", fontSize: 13, padding: "10px 12px", borderRadius: 8, fontFamily: "'Inter', sans-serif" }
             }, label))
         )
       ),
-      estadoPDF && React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)", alignSelf: "center" } }, estadoPDF),
+      (estadoPDF || estadoBLE) && React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)", alignSelf: "center" } }, estadoBLE || estadoPDF),
       React.createElement(Button, { onClick: onClose, style: { padding: "12px 22px" } }, "Cerrar")
     ),
     enviarWA && React.createElement(EnviarWhatsAppModal, {
