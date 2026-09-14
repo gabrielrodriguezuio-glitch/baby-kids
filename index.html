@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.919";
+const VERSION_APP = "9.920";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -26606,6 +26606,17 @@ function TransferenciasView({ data, persist }) {
     if (filtroEstado && (t.estado || "completada") !== filtroEstado) return false;
     if (filtroNegocio && t.origen !== filtroNegocio && t.destino !== filtroNegocio) return false;
     return true;
+  }).sort((a, b) => {
+    // La más nueva arriba. Se ordena por fecha y hora y, si empatan, por el
+    // número de remito: dos transferencias del mismo minuto quedaban en el
+    // orden en que vinieron de la nube, que con el delta sync ya no es el
+    // de carga.
+    const claveA = String(a.fecha || "") + " " + String(a.hora || "").padStart(5, "0");
+    const claveB = String(b.fecha || "") + " " + String(b.hora || "").padStart(5, "0");
+    if (claveA !== claveB) return claveB.localeCompare(claveA);
+    const nA = parseInt(String(a.remito || "").replace(/\D/g, ""), 10) || 0;
+    const nB = parseInt(String(b.remito || "").replace(/\D/g, ""), 10) || 0;
+    return nB - nA;
   });
 
   // Aplica el movimiento de stock de una transferencia
