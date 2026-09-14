@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.925";
+const VERSION_APP = "9.926";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -2375,26 +2375,31 @@ const stockCombo = (producto, productos, negocioId) => {
 // el disco del navegador, se recorta hasta que entre.
 function guardarCopiaLocal(quien, frescos) {
   if (!quien || !frescos) return;
-  try {
-    const liviano = { ...frescos,
-      ventas: (frescos.ventas || []).slice(0, 200),
-      movimientosStock: [], cambios: [], gastos: [], compras: [],
-      devolucionesReparto: [], cajasCerradas: (frescos.cajasCerradas || []).slice(0, 30)
-    };
-    localStorage.setItem("ct-copia", JSON.stringify({ quien, datos: liviano }));
-  } catch (e) {
+  const base = { ...frescos,
+    movimientosStock: [], cambios: [], gastos: [], compras: [],
+    devolucionesReparto: [], cajasCerradas: (frescos.cajasCerradas || []).slice(0, 30)
+  };
+  // Se prueba de más a menos. Antes había un solo intento con 200 ventas y,
+  // si no entraba, el respaldo guardaba una copia armada sobre EMPTY: es
+  // decir SIN ventas, pero dejando intactas las marcas de sincronización.
+  // En la apertura siguiente la app creía tener delta disponible, veía
+  // actual.ventas vacío y se bajaba SEIS MESES de ventas enteros. Eran 53 MB
+  // por apertura y por dispositivo, y no aparecía en el monitor.
+  const escalones = [200, 120, 60, 25, 10];
+  for (const cuantas of escalones) {
     try {
-      localStorage.setItem("ct-copia", JSON.stringify({
-        quien,
-        datos: { ...EMPTY, productos: frescos.productos, negocios: frescos.negocios,
-                 listasPrecio: frescos.listasPrecio, categorias: frescos.categorias,
-                 usuarios: frescos.usuarios, negocio: frescos.negocio,
-                 clientes: (frescos.clientes || []).slice(0, 300) }
-      }));
-    } catch (e2) {
-      try { localStorage.removeItem("ct-copia"); } catch (e3) {}
-    }
+      const liviano = { ...base, ventas: (frescos.ventas || []).slice(0, cuantas) };
+      localStorage.setItem("ct-copia", JSON.stringify({ quien, datos: liviano }));
+      return;
+    } catch (e) { /* no entró: se prueba con menos */ }
   }
+  // Ni diez ventas entran: la copia no sirve. Se borra TODO, marcas
+  // incluidas, para que la próxima apertura haga una carga completa honesta
+  // y vuelva a dejar copia y marcas coherentes entre sí. Guardar una copia
+  // sin ventas con las marcas puestas es lo que causaba la recarga eterna.
+  try { localStorage.removeItem("ct-copia"); } catch (e) {}
+  try { localStorage.removeItem("ct-sync-ts-v1"); } catch (e) {}
+  try { MONITOR.alerta("copia-no-entra", "No entra la copia local: la próxima apertura baja todo", "alto"); } catch (e) {}
 }
 
 function ControlTienda() {
@@ -7252,6 +7257,9 @@ async function traerParcial(tablas, quienEntro, actual) {
       }
       // Si no vino nada, no tocar salida.ventas: React mantiene el actual
     } else {
+      // Carga completa de seis meses. Es la más cara de toda la app: acá se
+      // iban los 53 MB que el monitor no mostraba, porque esta rama nunca
+      // llamaba a deltaAnotar y el consumo quedaba fuera del informe.
       const [ventas, items] = await traerVentasConRenglones(haceMeses(6));
       const porVenta = {};
       (items || []).forEach((it) => {
@@ -7265,6 +7273,13 @@ async function traerParcial(tablas, quienEntro, actual) {
       const maxI = tsMaximo(items);
       const maxTs = [maxV, maxI].filter(Boolean).sort().pop();
       if (maxTs) tsSet("ventas", maxTs);
+      deltaAnotar("ventas", (ventas || []).length, "completa");
+      deltaAnotar("venta_items", (items || []).length, "completa");
+      try {
+        MONITOR.alerta("ventas-completa",
+          "Se bajaron 6 meses de ventas (" + (ventas || []).length + " filas): no había copia local con ventas",
+          "alto");
+      } catch (e) {}
     }
   }
 
