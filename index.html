@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.928";
+const VERSION_APP = "9.929";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -22359,6 +22359,16 @@ const FORMATOS_ESCANER = ["ean_13", "ean_8", "code_128", "code_39", "upc_a", "up
 
 function EscanerModal({ titulo, onLeer, onClose, sinManual, continuo, contador, ultimoTexto }) {
   const videoRef = React.useRef(null);
+  // La cámara se prepara UNA sola vez (useEffect con [] más abajo), pero en
+  // modo continuo el modal sigue montado durante todos los escaneos de la
+  // sesión. Sin este ref, cada lectura llamaba siempre a la función onLeer
+  // de aquel primer render — con el carrito tal cual estaba antes de
+  // arrancar a escanear. El segundo producto pisaba al primero en vez de
+  // sumarse: por afuera parecía que sólo entraba el que se escaneaba antes.
+  // Este ref se actualiza en cada render y el bucle de lectura llama
+  // siempre a la versión más nueva.
+  const onLeerRef = React.useRef(onLeer);
+  useEffect(() => { onLeerRef.current = onLeer; }, [onLeer]);
   // En modo continuo la cámara NO se apaga al leer. Estos dos refs evitan
   // que el mismo código entre veinte veces por segundo mientras la etiqueta
   // sigue delante del lente: se ignora el repetido durante un rato corto,
@@ -22519,12 +22529,12 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual, continuo, contador, 
               if (continuo) {
                 // Seguir leyendo: la cámara queda viva para el próximo código.
                 if (!aceptar(valor)) return;
-                onLeer(valor);
+                onLeerRef.current(valor);
                 return;
               }
               try { alterno.reset(); } catch (e2) {}
               detener();
-              onLeer(valor);
+              onLeerRef.current(valor);
             }).catch(() => {});
             alternoRef.current = alterno;
             setDetalle("");
@@ -22550,12 +22560,12 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual, continuo, contador, 
             if (encontrados && encontrados.length) {
               const valor = String(encontrados[0].rawValue || "").trim();
               if (continuo) {
-                if (valor && aceptar(valor)) onLeer(valor);
+                if (valor && aceptar(valor)) onLeerRef.current(valor);
                 // Sin return: el bucle sigue mirando cuadros.
               } else if (valor && valor !== ultimo) {
                 setUltimo(valor);
                 detener();
-                onLeer(valor);
+                onLeerRef.current(valor);
                 return;
               }
             }
@@ -22687,11 +22697,11 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual, continuo, contador, 
         React.createElement("input", {
           value: manual,
           onChange: (e) => setManual(e.target.value),
-          onKeyDown: (e) => { if (e.key === "Enter" && manual.trim()) onLeer(manual.trim()); },
+          onKeyDown: (e) => { if (e.key === "Enter" && manual.trim()) onLeerRef.current(manual.trim()); },
           placeholder: "7791000000011",
           style: { ...inputEditor, fontFamily: "'IBM Plex Mono', monospace" }
         }),
-        React.createElement(Button, { onClick: () => manual.trim() && onLeer(manual.trim()), disabled: !manual.trim(), style: { height: 46, padding: "0 20px" } }, "Usar")
+        React.createElement(Button, { onClick: () => manual.trim() && onLeerRef.current(manual.trim()), disabled: !manual.trim(), style: { height: 46, padding: "0 20px" } }, "Usar")
       )
     ),
 
@@ -24939,9 +24949,20 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
       return;
     }
     setError("");
-    const copia = { ...sel };
-    if (siguiente === 0) delete copia[k]; else copia[k] = siguiente;
-    setSel(copia);
+    // Forma funcional: mezcla contra el carrito más nuevo que React tenga en
+    // ese momento, no contra el `sel` de este closure. En escaneo continuo
+    // el mismo `sumar` puede quedar guardado en un cierre viejo (ver
+    // onLeerRef en EscanerModal); sin esto, el segundo producto pisaba al
+    // primero en vez de sumarse porque partía del carrito de ANTES de que
+    // se cargara el primero.
+    setSel((prev) => {
+      const actualFresco = Number(prev[k]) || 0;
+      const sigFresco = actualFresco + delta;
+      if (sigFresco < 0) return prev;
+      const copia = { ...prev };
+      if (sigFresco === 0) delete copia[k]; else copia[k] = sigFresco;
+      return copia;
+    });
   };
 
   const texto = query.trim().toLowerCase();
