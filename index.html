@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.912";
+const VERSION_APP = "9.913";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -412,6 +412,23 @@ const MONITOR = (() => {
     const mins = Math.max(1, (Date.now() - M.arranque) / 60000);
     const salida = [];
 
+    try {
+      const pend = (typeof COLA !== "undefined" && COLA.lista) ? COLA.lista() : [];
+      if (pend.length) {
+        const trabadas = pend.filter((p) => p.intentos >= 5).length;
+        salida.push({
+          nivel: "alto",
+          que: pend.length + " venta(s) todavía no llegaron a la nube",
+          porque: trabadas
+            ? "Hay " + trabadas + " que ya fallaron 5 veces o más: no es sólo falta de internet."
+            : "Se guardaron en el dispositivo porque no había conexión. Se suben solas cuando vuelva.",
+          hacer: trabadas
+            ? "Mirar el error en la pestaña Resumen y no cerrar la app de este equipo hasta resolverlo."
+            : "Dejar la app abierta con internet. Si urge, tocar Reintentar ahora."
+        });
+      }
+    } catch (e) {}
+
     if (c.recargasTotales > 0) {
       salida.push({
         nivel: "alto",
@@ -517,6 +534,18 @@ const MONITOR = (() => {
         " · " + s.filas + " filas · " + kb(s.bytes) + " · " + s.ms + " ms" +
         (s.error ? " · ERROR: " + s.error : ""));
     });
+    L.push("");
+    L.push("--- Ventas sin subir ---");
+    try {
+      const pend = (typeof COLA !== "undefined" && COLA.lista) ? COLA.lista() : [];
+      if (!pend.length) L.push("  ninguna");
+      else pend.forEach((p) => {
+        const v = p.venta || {};
+        L.push("  " + (v.fecha || "") + " " + (v.horaTexto || "") + " $" + (v.total || 0) +
+          " · id " + p.idLocal + " · " + p.intentos + " intentos" +
+          (p.ultimoError ? " · " + p.ultimoError : ""));
+      });
+    } catch (e) { L.push("  (no se pudo leer la cola)"); }
     L.push("");
     L.push("--- Errores (" + M.errores.length + ") ---");
     M.errores.slice(-30).forEach((e) => {
@@ -684,6 +713,26 @@ if (typeof window !== "undefined") {
     h += dato(c.reconexiones, "reconexiones");
     h += "</div></div>";
 
+    // Ventas que no llegaron a la nube: lo más importante de la pantalla
+    try {
+      const pend = (typeof COLA !== "undefined" && COLA.lista) ? COLA.lista() : [];
+      if (pend.length) {
+        h += '<div class="tarjeta"><h4>Ventas sin subir (' + pend.length + ")</h4>";
+        pend.forEach((p) => {
+          const v = p.venta || {};
+          h += '<div class="linea medio"><b>' + esc(v.fecha || "") + " " + esc(v.horaTexto || "") +
+            "</b> · $" + esc(v.total || 0) + " · " + esc(v.usuarioNombre || "") +
+            '<br><span class="t">id ' + esc(p.idLocal) + " · " + p.intentos + " intento(s) · " +
+            MONITOR.fmtHace(p.creado) + "</span>" +
+            (p.ultimoError ? "<br>" + esc(p.ultimoError) : "") + "</div>";
+        });
+        h += '<div class="acciones"><button data-a="subir-cola">Reintentar ahora</button></div></div>';
+      } else {
+        h += '<div class="tarjeta"><h4>Ventas sin subir</h4>' +
+          '<div class="linea ok">Ninguna. Todas las ventas llegaron a la nube.</div></div>';
+      }
+    } catch (e) {}
+
     h += '<div class="tarjeta"><h4>Diagnóstico automático</h4>';
     diag.forEach((d) => {
       h += '<div class="linea ' + d.nivel + '"><b>' + esc(d.que) + "</b><br>" +
@@ -811,6 +860,10 @@ if (typeof window !== "undefined") {
   }
 
   function acciones(a) {
+    if (a === "subir-cola") {
+      try { COLA.procesar(); alert("Reintentando subir las ventas pendientes..."); }
+      catch (e) { alert("No se pudo: " + e.message); }
+    }
     if (a === "copiar") {
       const txt = MONITOR.exportar();
       if (navigator.clipboard) navigator.clipboard.writeText(txt)
@@ -2223,6 +2276,29 @@ function ControlTienda() {
   // del effect y recrear el canal de suscripción cada vez.
   const dataRef = React.useRef(data);
   React.useEffect(() => { dataRef.current = data; }, [data]);
+  // Cuántas ventas están esperando subir. Se muestra en pantalla para que
+  // el vendedor sepa que algo quedó pendiente, sin tener que abrir nada.
+  const [ventasEnCola, setVentasEnCola] = useState(() => {
+    try { return COLA.cantidad(); } catch (e) { return 0; }
+  });
+  React.useEffect(() => {
+    // Cuando la cola logra subir una venta, la base le da su id definitivo:
+    // acá se reemplaza el provisorio para que las ediciones y devoluciones
+    // apunten al lugar correcto.
+    COLA.alSubir = (idLocal, idNube) => {
+      setData((actual) => {
+        if (!actual || !actual.ventas) return actual;
+        if (!actual.ventas.some((v) => v.id === idLocal)) return actual;
+        return {
+          ...actual,
+          ventas: actual.ventas.map((v) => v.id === idLocal ? { ...v, id: idNube } : v),
+          repoVentasVistas: (actual.repoVentasVistas || []).map((id) => id === idLocal ? idNube : id)
+        };
+      });
+    };
+    const cortar = COLA.suscribir((n) => setVentasEnCola(n));
+    return () => { cortar(); COLA.alSubir = null; };
+  }, []);
   const [loading, setLoading] = useState(true);
   const [tabPedida, setTab] = useState("pos");
   // Si el rol no llega a esa pantalla, se cae a la primera que sí puede usar.
@@ -2758,6 +2834,14 @@ function ControlTienda() {
       return true;
     } catch (e) {
       console.error("No se pudo guardar", e);
+      // Si la venta quedó en la cola, NO se vuelve atrás: el cobro ya se
+      // hizo y la mercadería salió. Se avisa que está pendiente de subir y
+      // la cola se encarga sola cuando vuelva la conexión.
+      if (e && e.encolado) {
+        try { MONITOR.guardado("venta-encolada", true); cronoGuardar(); } catch (x) {}
+        setErrorGuardado("Sin conexión: la venta quedó guardada en este dispositivo y se sube sola cuando vuelva internet.");
+        return true;
+      }
       try { MONITOR.guardado("cambios", false, e); cronoGuardar(); } catch (x) {}
       // Se vuelve atrás: la pantalla no puede mostrar algo que no se guardó
       setData(anterior);
@@ -2830,10 +2914,31 @@ function ControlTienda() {
   }
 
   return /* @__PURE__ */ React.createElement(Wrapper, { mobile: isMobile, tema },
+    // Ventas que todavía no llegaron a la nube. Se muestra siempre que haya
+    // alguna: el vendedor tiene que saber que hay algo pendiente, aunque la
+    // venta ya esté cobrada y figure en la pantalla.
+    ventasEnCola > 0 && /* @__PURE__ */ React.createElement("div", {
+      style: {
+        position: "fixed", top: 0, left: 0, right: 0, zIndex: 10000,
+        background: "#b45309", color: "#fff", padding: "10px 18px",
+        fontSize: 13, lineHeight: 1.4, display: "flex", alignItems: "center", gap: 11,
+        boxShadow: "0 2px 12px rgba(0,0,0,.25)"
+      }
+    },
+      /* @__PURE__ */ React.createElement(ArrowUpCircle, { size: 17, style: { flexShrink: 0 } }),
+      /* @__PURE__ */ React.createElement("span", { style: { flex: 1, fontWeight: 600 } },
+        ventasEnCola === 1
+          ? "1 venta guardada en este dispositivo, esperando internet"
+          : ventasEnCola + " ventas guardadas en este dispositivo, esperando internet"),
+      /* @__PURE__ */ React.createElement("button", {
+        onClick: () => { try { COLA.procesar(); } catch (e) {} },
+        style: { background: "rgba(255,255,255,.22)", border: "none", color: "#fff", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 12.5, fontWeight: 600, flexShrink: 0 }
+      }, "Reintentar ahora")),
+
     // Aviso fijo y bien visible: si esto aparece, lo último que hiciste NO se guardó
     errorGuardado && /* @__PURE__ */ React.createElement("div", {
       style: {
-        position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999,
+        position: "fixed", top: ventasEnCola > 0 ? 40 : 0, left: 0, right: 0, zIndex: 9999,
         background: "var(--rose)", color: "#fff", padding: "12px 18px",
         fontSize: 13.5, lineHeight: 1.45, display: "flex", alignItems: "center", gap: 12,
         boxShadow: "0 2px 12px rgba(0,0,0,.25)"
@@ -2849,7 +2954,7 @@ function ControlTienda() {
     // MEJORA 1: aviso de respaldo. Aparece cuando pasaron 7 días o nunca se hizo
     !errorGuardado && avisoRespaldo && /* @__PURE__ */ React.createElement("div", {
       style: {
-        position: "fixed", top: 0, left: 0, right: 0, zIndex: 9998,
+        position: "fixed", top: ventasEnCola > 0 ? 40 : 0, left: 0, right: 0, zIndex: 9998,
         background: "var(--mustard)", color: "#111", padding: "11px 18px",
         fontSize: 13.5, lineHeight: 1.45, display: "flex", alignItems: "center", gap: 12,
         boxShadow: "0 2px 12px rgba(0,0,0,.2)"
@@ -2866,7 +2971,7 @@ function ControlTienda() {
         style: { background: "none", border: "none", color: "#111", cursor: "pointer", fontSize: 12.5, opacity: .7, flexShrink: 0 }
       }, "Después")),
 
-    /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-start", paddingTop: (errorGuardado || avisoRespaldo) ? 46 : 0 } }, !isMobile && !railOculto && /* @__PURE__ */ React.createElement(Sidebar, { tab, setTab, lowStockCount, tareasHoy, paradasHoy, data, usuario, onAbrirCaja: () => setVerCaja(true), onBuscar: () => setBuscando(true), onOcultar: alternarRail, onCambiarUsuario: () => setCambiarUsuario(true) }),
+    /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-start", paddingTop: (ventasEnCola > 0 ? 40 : 0) + ((errorGuardado || avisoRespaldo) ? 46 : 0) } }, !isMobile && !railOculto && /* @__PURE__ */ React.createElement(Sidebar, { tab, setTab, lowStockCount, tareasHoy, paradasHoy, data, usuario, onAbrirCaja: () => setVerCaja(true), onBuscar: () => setBuscando(true), onOcultar: alternarRail, onCambiarUsuario: () => setCambiarUsuario(true) }),
     // El velo cierra el menú al tocar cualquier lugar fuera de él
     !isMobile && !railOculto && /* @__PURE__ */ React.createElement("div", {
       onClick: alternarRail,
@@ -5344,6 +5449,29 @@ const queCambio = (antes, despues) => {
 
 // Escribe en la base sólo lo que cambió. Devuelve los ids nuevos que asignó
 // la base, para que la app los use en vez de los suyos temporales.
+// Qué stock hay que descontar en la nube por una venta que quedó encolada.
+// Se saca de los renglones de la venta, no de comparar el catálogo: cuando
+// la venta se sube días después, el catálogo ya cambió y la comparación
+// daría cualquier cosa.
+function ajustesStockDeVenta(antes, despues, venta) {
+  const salida = [];
+  (venta.items || []).forEach((it) => {
+    if (!it.productoId) return;
+    const cant = Number(it.cantidad) || 0;
+    if (!cant) return;
+    salida.push({
+      producto_id: it.productoId,
+      negocio_id: venta.negocioId || "",
+      talle: it.talla || "",
+      color: it.color || "",
+      nombre: it.nombre || "",
+      // Negativo: la venta resta del stock
+      delta: -cant
+    });
+  });
+  return salida;
+}
+
 async function guardarEnLaNube(antes, despues, avisarProblema) {
   const listaMayor = listasDe(despues).find((l) => /mayor/i.test(l.nombre));
   const idMayor = listaMayor && listaMayor.id;
@@ -5775,36 +5903,58 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
 
   for (let i = 0; i < ventasNuevas.length; i += 50) {
     const tanda = ventasNuevas.slice(i, i + 50);
-    const { data: filas, error } = await nube.from("ventas").insert(
-      tanda.map((v) => ({
-        negocio_id: v.negocioId || null,
-        cliente_id: v.clienteId ? idRealCliente(v.clienteId) : null,
-        cliente_nombre: v.clienteNombre || null,
-        fecha: v.fecha,
-        hora_texto: v.horaTexto || null,
-        total: v.total || 0,
-        descuento: v.descuento || 0,
-        recargo: v.recargo || 0,
-        envio: v.envio || 0,
-        vuelto: v.vuelto || 0,
-        metodo_pago: v.metodoPago || null,
-        pagos: v.pagos || [],
-        lista_precio: v.listaPrecio || null,
-        es_devolucion: !!esDevolucion(v),
-        venta_original: v.ventaOriginalId || null,
-        usuario_nombre: v.usuarioNombre || null,
-        comprobantes: v.comprobantes || [],
-        numero_operacion: v.numeroOperacion || null
-      }))
-    ).select("id");
-    if (error) throw new Error("Al guardar la venta: " + error.message);
+    let filas = null;
+    try {
+      const r = await nube.from("ventas").insert(
+        tanda.map((v) => ({
+          // id_local: el id que generó la app. Si la venta ya había llegado
+          // (por ejemplo: se cortó justo después de guardarla), la base la
+          // rechaza por repetida en vez de cargarla dos veces.
+          id_local: v.id,
+          negocio_id: v.negocioId || null,
+          cliente_id: v.clienteId ? idRealCliente(v.clienteId) : null,
+          cliente_nombre: v.clienteNombre || null,
+          fecha: v.fecha,
+          hora_texto: v.horaTexto || null,
+          total: v.total || 0,
+          descuento: v.descuento || 0,
+          recargo: v.recargo || 0,
+          envio: v.envio || 0,
+          vuelto: v.vuelto || 0,
+          metodo_pago: v.metodoPago || null,
+          pagos: v.pagos || [],
+          lista_precio: v.listaPrecio || null,
+          es_devolucion: !!esDevolucion(v),
+          venta_original: v.ventaOriginalId || null,
+          usuario_nombre: v.usuarioNombre || null,
+          comprobantes: v.comprobantes || [],
+          numero_operacion: v.numeroOperacion || null
+        }))
+      ).select("id");
+      if (r.error) throw new Error(r.error.message);
+      filas = r.data;
+    } catch (e) {
+      // Si el problema es la conexión, la venta NO se pierde ni se deshace:
+      // queda en la cola del dispositivo y se sube sola cuando vuelva. El
+      // vendedor ya cobró; hacerle repetir la venta sería peor.
+      if (COLA.esDeRed(e)) {
+        tanda.forEach((v) => COLA.agregar(v, ajustesStockDeVenta(antes, despues, v)));
+        // Marca para que persist() sepa que no debe volver atrás
+        const aviso = new Error("ENCOLADO");
+        aviso.encolado = true;
+        aviso.cuantas = tanda.length;
+        throw aviso;
+      }
+      throw new Error("Al guardar la venta: " + String((e && e.message) || e));
+    }
     tanda.forEach((v, k) => cambios.push({ tipo: "venta", viejo: v.id, nuevo: filas[k].id }));
 
 
     // Los renglones, con el id que asignó la base
     const renglones = [];
     tanda.forEach((v, k) => {
-      (v.items || []).forEach((it) => renglones.push({
+      (v.items || []).forEach((it, j) => renglones.push({
+        id_local: v.id + "#" + j,
         venta_id: filas[k].id,
         producto_id: it.productoId || null,
         nombre: it.nombre,
@@ -6166,6 +6316,255 @@ async function guardarVariantesEnTanda(items) {
   }
 }
 
+
+// ===== COLA DE VENTAS SIN SUBIR (v9.913) =============================
+// Si la nube no contesta, la venta NO se pierde: queda guardada en el
+// dispositivo y se sube sola cuando vuelve la conexión. El vendedor cobra
+// igual y no se entera de nada.
+// Sólo cubre ventas: productos, clientes y gastos pueden esperar a que
+// vuelva internet, una venta en el mostrador no.
+const COLA = (() => {
+  const CLAVE = "ct-cola-ventas-v1";
+  const ESPERA = [3000, 8000, 20000, 60000, 180000]; // reintentos, en ms
+
+  let items = [];
+  let procesando = false;
+  let reloj = null;
+  let oyentes = [];
+
+  const leer = () => {
+    try {
+      const c = localStorage.getItem(CLAVE);
+      return c ? JSON.parse(c) : [];
+    } catch (e) { return []; }
+  };
+  const escribir = () => {
+    try { localStorage.setItem(CLAVE, JSON.stringify(items)); }
+    catch (e) {
+      // Si no entra en el disco, se avisa fuerte: es una venta real
+      MONITOR.error("cola:disco", e);
+      MONITOR.alerta("cola-llena", "No hay espacio para guardar las ventas pendientes", "alto");
+    }
+  };
+  const avisar = () => { try { oyentes.forEach((f) => f(items.length)); } catch (e) {} };
+
+  items = leer();
+
+  // ¿El error es de red (se reintenta) o de la base (no tiene sentido
+  // reintentar)? Confundirlos hace que una venta se reintente para siempre
+  // o que se descarte una que sí se podía subir.
+  const esDeRed = (e) => {
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return true;
+    const m = String((e && e.message) || e || "").toLowerCase();
+    return /failed to fetch|networkerror|network error|timeout|timed out|aborted|load failed|ecconnreset|fetch/.test(m);
+  };
+
+  const C = {};
+  C.esDeRed = esDeRed;
+  C.cantidad = () => items.length;
+  C.lista = () => items.slice();
+  C.suscribir = (f) => { oyentes.push(f); return () => { oyentes = oyentes.filter((x) => x !== f); }; };
+
+  // Encolar: se guarda todo lo necesario para rearmar la venta más tarde,
+  // incluido el descuento de stock que quedó pendiente.
+  C.agregar = (venta, ajustesStock) => {
+    if (!venta || !venta.id) return;
+    if (items.some((x) => x.idLocal === venta.id)) return; // ya estaba
+    items.push({
+      idLocal: venta.id,
+      venta,
+      ajustes: ajustesStock || [],
+      creado: Date.now(),
+      intentos: 0,
+      ultimoError: ""
+    });
+    escribir();
+    avisar();
+    MONITOR.evento("cola", "venta guardada para subir después (" + items.length + " en espera)");
+    MONITOR.alerta("cola-pendiente", items.length + " venta(s) esperando subir a la nube", "medio");
+    C.programar(0);
+  };
+
+  C.quitar = (idLocal) => {
+    items = items.filter((x) => x.idLocal !== idLocal);
+    escribir();
+    avisar();
+    if (!items.length) {
+      MONITOR.alertas = MONITOR.alertas.filter((a) => a.clave !== "cola-pendiente");
+      MONITOR.evento("cola", "todas las ventas pendientes se subieron");
+    }
+  };
+
+  C.programar = (ms) => {
+    if (reloj) clearTimeout(reloj);
+    if (!items.length) return;
+    const espera = ms != null ? ms : ESPERA[Math.min(
+      Math.max(0, ...items.map((x) => x.intentos)), ESPERA.length - 1)];
+    reloj = setTimeout(() => C.procesar(), espera);
+  };
+
+  // Sube una venta. Con id_local, si ya había llegado antes la base la
+  // rechaza por duplicada y se da por buena: así un corte a mitad de
+  // camino no deja la venta cargada dos veces.
+  C.subirUna = async (item) => {
+    const v = item.venta;
+    const fila = {
+      id_local: v.id,
+      negocio_id: v.negocioId || null,
+      cliente_id: v.clienteId || null,
+      cliente_nombre: v.clienteNombre || null,
+      fecha: v.fecha,
+      hora_texto: v.horaTexto || null,
+      total: v.total || 0,
+      descuento: v.descuento || 0,
+      recargo: v.recargo || 0,
+      envio: v.envio || 0,
+      vuelto: v.vuelto || 0,
+      metodo_pago: v.metodoPago || null,
+      pagos: v.pagos || [],
+      lista_precio: v.listaPrecio || null,
+      es_devolucion: !!v.esDevolucion,
+      venta_original: v.ventaOriginalId || null,
+      usuario_nombre: v.usuarioNombre || null,
+      comprobantes: v.comprobantes || [],
+      numero_operacion: v.numeroOperacion || null
+    };
+
+    let ventaId = null;
+    const { data: creada, error } = await nube.from("ventas")
+      .insert(fila).select("id").single();
+
+    if (error) {
+      // 23505 = clave duplicada: la venta ya estaba. No es un fallo.
+      if (error.code === "23505" || /duplicate key|already exists/i.test(error.message || "")) {
+        const { data: yaEsta } = await nube.from("ventas")
+          .select("id").eq("id_local", v.id).limit(1);
+        if (yaEsta && yaEsta[0]) {
+          MONITOR.evento("cola", "la venta ya estaba en la nube, no se duplicó");
+          return { ok: true, id: yaEsta[0].id, duplicada: true };
+        }
+      }
+      throw new Error(error.message);
+    }
+    ventaId = creada && creada.id;
+    if (!ventaId) throw new Error("La base no devolvió el id de la venta");
+
+    // Renglones, también con id_local para que no se dupliquen
+    const renglones = (v.items || []).map((it, k) => ({
+      id_local: v.id + "#" + k,
+      venta_id: ventaId,
+      producto_id: it.productoId || null,
+      nombre: it.nombre,
+      talle: it.talla || null,
+      color: it.color || null,
+      cantidad: it.cantidad,
+      precio_unit: it.precioUnit || 0,
+      costo: it.costo || 0
+    }));
+    if (renglones.length) {
+      const { error: e2 } = await nube.from("venta_items")
+        .upsert(renglones, { onConflict: "id_local", ignoreDuplicates: true });
+      if (e2 && !/duplicate key|already exists/i.test(e2.message || "")) {
+        throw new Error("Al subir el detalle: " + e2.message);
+      }
+    }
+
+    // El stock que quedó sin descontar mientras no había conexión
+    for (const a of (item.ajustes || [])) {
+      try {
+        const { data: filasV } = await nube.from("variantes")
+          .select("id").eq("producto_id", a.producto_id).eq("negocio_id", a.negocio_id)
+          .eq("talle", a.talle || "").eq("color", a.color || "").limit(1);
+        const fv = filasV && filasV[0];
+        if (!fv) continue;
+        const { error: e3 } = await nube.rpc("descontar_stock", {
+          p_variante: fv.id, p_cantidad: -a.delta
+        });
+        // Si no alcanza el stock se deja constancia pero la venta NO se
+        // deshace: ya se cobró y la mercadería salió del local.
+        if (e3 && /sin_stock/.test(e3.message || "")) {
+          MONITOR.alerta("stock-negativo",
+            "Una venta sin conexión dejó el stock en negativo (" + (a.nombre || a.producto_id) + ")", "alto");
+          await nube.rpc("descontar_stock", { p_variante: fv.id, p_cantidad: 0 }).catch(() => {});
+        }
+      } catch (e) {
+        MONITOR.error("cola:stock", e, { producto: a.producto_id });
+      }
+    }
+    return { ok: true, id: ventaId };
+  };
+
+  C.procesar = async () => {
+    if (procesando || !items.length) return;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      C.programar(15000);
+      return;
+    }
+    procesando = true;
+    const crono = MONITOR.cronometro("subir-cola");
+    let subidas = 0, quedan = 0;
+
+    // De a una y en orden: si la segunda falla, la primera ya quedó bien
+    for (const item of items.slice()) {
+      try {
+        const r = await C.subirUna(item);
+        if (r && r.ok) {
+          C.quitar(item.idLocal);
+          subidas++;
+          if (typeof C.alSubir === "function") {
+            try { C.alSubir(item.idLocal, r.id); } catch (e) {}
+          }
+        }
+      } catch (e) {
+        item.intentos++;
+        item.ultimoError = String((e && e.message) || e);
+        quedan++;
+        escribir();
+        if (esDeRed(e)) {
+          MONITOR.evento("cola", "sin conexión, se reintenta más tarde (intento " + item.intentos + ")");
+          break; // no tiene sentido seguir con las demás
+        }
+        MONITOR.error("cola:subir", e, { idLocal: item.idLocal, intentos: item.intentos });
+        if (item.intentos >= 8) {
+          MONITOR.alerta("cola-trabada",
+            "Una venta no se puede subir después de 8 intentos: " + item.ultimoError, "alto");
+        }
+      }
+    }
+    crono({ subidas, quedan });
+    if (subidas) MONITOR.evento("cola", subidas + " venta(s) subida(s)");
+    procesando = false;
+    avisar();
+    if (items.length) C.programar();
+  };
+
+  // Cuando vuelve internet, no hay que esperar al próximo reintento
+  if (typeof window !== "undefined") {
+    window.addEventListener("online", () => {
+      MONITOR.evento("red", "volvió la conexión");
+      C.programar(1500);
+    });
+    window.addEventListener("offline", () => {
+      MONITOR.evento("red", "se cortó la conexión");
+      MONITOR.alerta("sin-internet", "Sin conexión: las ventas se guardan en el dispositivo", "medio");
+    });
+    // Al volver a la pestaña, revisar por las dudas
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && items.length) C.programar(800);
+    });
+  }
+
+  // Al abrir la app, si quedó algo de la sesión anterior, se sube
+  if (items.length) {
+    MONITOR.evento("cola", items.length + " venta(s) quedaron sin subir de antes");
+    MONITOR.alerta("cola-pendiente", items.length + " venta(s) esperando subir a la nube", "medio");
+    setTimeout(() => C.procesar(), 4000);
+  }
+
+  return C;
+})();
+
+if (typeof window !== "undefined") window.ctCola = COLA;
 
 // === Delta sync (v9.910) ============================================
 // Timestamps de última sincronización por tabla. Sirven para que la
