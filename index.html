@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.915";
+const VERSION_APP = "9.916";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -18801,6 +18801,40 @@ function ResumenPreCierreModal({ data, caja, onContinuar, onVolver, onClose }) {
 }
 
 
+// Sección que se abre y se cierra. El título siempre a la vista con su
+// número al costado: así se ve de un golpe qué hay adentro sin tener que
+// desplegar todo y perderse en la lista.
+function Plegable({ titulo, extra, abiertoInicial, children }) {
+  const [abierto, setAbierto] = useState(!!abiertoInicial);
+  return React.createElement(
+    "div",
+    { style: { marginTop: 10, border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden" } },
+    React.createElement(
+      "button",
+      {
+        onClick: () => setAbierto(!abierto),
+        style: {
+          display: "flex", alignItems: "center", gap: 9, width: "100%",
+          padding: "11px 13px", background: abierto ? "var(--surface-2)" : "transparent",
+          border: "none", cursor: "pointer", color: "var(--ink)",
+          fontFamily: "'Inter', sans-serif", textAlign: "left"
+        }
+      },
+      React.createElement(ChevronDown, {
+        size: 15, style: {
+          flexShrink: 0, color: "var(--muted)",
+          transform: abierto ? "none" : "rotate(-90deg)", transition: "transform .15s"
+        }
+      }),
+      React.createElement("span", { style: { flex: 1, fontSize: 13, fontWeight: 650 } }, titulo),
+      extra != null && React.createElement("span", {
+        style: { fontSize: 12, color: "var(--muted)", fontFamily: "'IBM Plex Mono', monospace" }
+      }, extra)
+    ),
+    abierto && React.createElement("div", { style: { padding: "4px 13px 12px" } }, children)
+  );
+}
+
 // Movimientos del turno y cierres anteriores, dentro del mismo flujo de caja
 function HistorialCajaModal({ data, caja, cierres, onVolver, onClose }) {
   const [detalle, setDetalle] = useState(null);
@@ -18936,11 +18970,31 @@ function HistorialCajaModal({ data, caja, cierres, onVolver, onClose }) {
           "div",
           null,
 
-          // Todo lo cobrado, no sólo el efectivo
+          // Las cuatro cifras que importan, arriba de todo. Antes había que
+          // bajar por cuatro listas para saber cuánto se hizo en el turno.
+          (delTurno.length > 0 || movs.length > 0) && React.createElement(
+            "div",
+            { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(118px, 1fr))", gap: 8, marginBottom: 4 } },
+            [
+              ["Cobrado", money(totalCobrado), delTurno.length + (delTurno.length === 1 ? " venta" : " ventas")],
+              ["Efectivo en caja", money(efectivoEnCaja(caja)), "incluye apertura"],
+              ["Unidades", String(unidades), listaArticulos.length + (listaArticulos.length === 1 ? " artículo" : " artículos")],
+              ["Movimientos", String(movs.length), comprobantes.length ? comprobantes.length + " comprob." : "de efectivo"]
+            ].map(([rot, val, pie]) => React.createElement(
+              "div",
+              { key: rot, style: { background: "var(--surface-2)", borderRadius: 10, padding: "11px 12px" } },
+              React.createElement("div", { style: { fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.06, color: "var(--muted)", fontWeight: 600 } }, rot),
+              React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 16, fontWeight: 650, marginTop: 4, letterSpacing: -0.02 } }, val),
+              React.createElement("div", { style: { fontSize: 10.5, color: "var(--muted)", marginTop: 2 } }, pie)
+            ))
+          ),
+
+          // Cada detalle queda plegado: se abre el que se necesita mirar.
+          // Los medios de pago vienen abiertos porque es lo que se controla
+          // primero al cerrar la caja.
           delTurno.length > 0 && React.createElement(
-            React.Fragment,
-            null,
-            rotulo("Cobrado en el turno", delTurno.length + (delTurno.length === 1 ? " venta" : " ventas")),
+            Plegable,
+            { titulo: "Medios de pago", extra: money(totalCobrado), abiertoInicial: true },
             React.createElement(
               "div",
               { style: { display: "flex", flexDirection: "column", gap: 2 } },
@@ -18961,12 +19015,11 @@ function HistorialCajaModal({ data, caja, cierres, onVolver, onClose }) {
 
           // Qué se vendió
           listaArticulos.length > 0 && React.createElement(
-            React.Fragment,
-            null,
-            rotulo("Mercadería vendida", unidades + (unidades === 1 ? " unidad" : " unidades")),
+            Plegable,
+            { titulo: "Mercadería vendida", extra: unidades + (unidades === 1 ? " unidad" : " unidades") },
             React.createElement(
               "div",
-              { style: { maxHeight: 200, overflowY: "auto" } },
+              { style: { maxHeight: 240, overflowY: "auto" } },
               listaArticulos.map((a2, k) => React.createElement(
                 "div",
                 { key: k, style: { display: "flex", alignItems: "center", gap: 10, fontSize: 13, padding: "7px 0", borderBottom: "1px solid color-mix(in srgb, var(--line) 50%, transparent)" } },
@@ -18988,14 +19041,40 @@ function HistorialCajaModal({ data, caja, cierres, onVolver, onClose }) {
             )
           ),
 
-          // Los comprobantes de transferencia con su foto
-          comprobantes.length > 0 && React.createElement(
-            React.Fragment,
-            null,
-            rotulo("Comprobantes recibidos", comprobantes.length),
+          // Movimientos de efectivo
+          movs.length > 0 && React.createElement(
+            Plegable,
+            { titulo: "Movimientos de efectivo", extra: String(movs.length) },
             React.createElement(
               "div",
-              { style: { display: "flex", flexDirection: "column", gap: 8 } },
+              { style: { maxHeight: 260, overflowY: "auto" } },
+              movs.map((m) => {
+                const sale = m.tipo === "retiro" || m.tipo === "devolucion";
+                return React.createElement(
+                  "div",
+                  { key: m.id, style: { display: "flex", alignItems: "center", gap: 9, fontSize: 13, padding: "8px 0", borderBottom: "1px solid color-mix(in srgb, var(--line) 50%, transparent)" } },
+                  React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "var(--muted)", flexShrink: 0 } }, horaHMS(m.fecha)),
+                  React.createElement(
+                    "span",
+                    { style: { flex: 1, minWidth: 0 } },
+                    React.createElement("span", { style: { display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, m.concepto || (TIPO_MOV_LABEL[m.tipo] || m.tipo)),
+                    React.createElement("span", { style: { display: "block", fontSize: 11, color: "var(--muted)", marginTop: 1 } }, TIPO_MOV_LABEL[m.tipo] || m.tipo)
+                  ),
+                  React.createElement("span", {
+                    style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, flexShrink: 0, color: sale ? "var(--rose)" : "var(--sage)" }
+                  }, (sale ? "− " : "+ ") + money(m.monto))
+                );
+              })
+            )
+          ),
+
+          // Los comprobantes de transferencia con su foto
+          comprobantes.length > 0 && React.createElement(
+            Plegable,
+            { titulo: "Comprobantes recibidos", extra: String(comprobantes.length) },
+            React.createElement(
+              "div",
+              { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: 260, overflowY: "auto" } },
               comprobantes.map((c) => React.createElement(
                 "div",
                 { key: c.clave, style: { display: "flex", alignItems: "center", gap: 11, background: "var(--surface-2)", borderRadius: 10, padding: "9px 11px" } },
@@ -19029,33 +19108,7 @@ function HistorialCajaModal({ data, caja, cierres, onVolver, onClose }) {
 
           delTurno.length === 0 && movs.length === 0
             ? React.createElement(Empty, { icono: Clock3, compacto: true, text: "Todavía no hubo movimientos en este turno." })
-            : null,
-
-          movs.length > 0 && React.createElement(
-            React.Fragment,
-            null,
-            rotulo("Movimientos de efectivo", movs.length),
-            React.createElement(
-              "div",
-              { style: { maxHeight: "50vh", overflowY: "auto", border: "none", borderRadius: 10 } },
-              React.createElement(
-                "table",
-                null,
-                React.createElement("tbody", null, movs.map((m) => {
-                  const sale = m.tipo === "retiro" || m.tipo === "devolucion";
-                  return React.createElement(
-                    "tr",
-                    { key: m.id },
-                    React.createElement("td", { style: { paddingLeft: 15, color: "var(--muted)", whiteSpace: "nowrap" } }, horaHMS(m.fecha)),
-                    React.createElement("td", null, React.createElement(SwingTag, { tone: TIPO_MOV_TONE[m.tipo] || "ink", small: true }, TIPO_MOV_LABEL[m.tipo] || m.tipo)),
-                    React.createElement("td", { style: { color: "var(--muted)" } }, m.concepto),
-                    React.createElement("td", { style: { textAlign: "right", paddingRight: 15, fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, color: sale ? "var(--rose)" : "var(--sage)" } },
-                      (sale ? "− " : "+ ") + money(m.monto))
-                  );
-                }))
-              )
-            )
-          )
+            : null
         )
       : (cierres.length === 0
           ? React.createElement(Empty, { icono: Archive, compacto: true, text: "Todavía no cerraste ninguna caja." })
