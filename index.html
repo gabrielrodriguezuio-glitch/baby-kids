@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.913";
+const VERSION_APP = "9.914";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -21581,10 +21581,29 @@ function NegociosProductos({ data, persist, setTab, senalNuevo }) {
 }
 
 // Numeración correlativa de remitos: 0001-00000001
-const numeroRemito = (transferencias) => {
-  const siguiente = (transferencias || []).length + 1;
-  return "0001-" + String(siguiente).padStart(8, "0");
+// El próximo número libre de una serie. Mira el más alto ya usado en vez
+// de contar cuántos hay: contando, borrar uno hacía retroceder el contador
+// y el número se repetía. Con dos personas cargando a la vez el problema
+// era el mismo, porque cada dispositivo contaba sólo lo que ya había
+// sincronizado.
+const proximoDeSerie = (lista, campo, prefijo, largo) => {
+  let max = 0;
+  (lista || []).forEach((x) => {
+    const txt = String((x && x[campo]) || "");
+    // Se toma el último grupo de dígitos: sirve para "R-0007" y para
+    // "0001-00000007" sin tener que tratarlos distinto.
+    const m = txt.match(/(\d+)\s*$/);
+    if (!m) return;
+    const n = parseInt(m[1], 10);
+    if (n > max) max = n;
+  });
+  return prefijo + String(max + 1).padStart(largo, "0");
 };
+
+const proximoNumeroRepo = (reposiciones) => proximoDeSerie(reposiciones, "remito", "R-", 4);
+
+const numeroRemito = (transferencias) =>
+  proximoDeSerie(transferencias, "remito", "0001-", 8);
 
 
 
@@ -23419,7 +23438,10 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
 
     const registro = {
       id: uid(),
-      remito: "R-" + String((data.reposiciones || []).length + 1).padStart(4, "0"),
+      // Se busca el número más alto ya usado, no la cantidad de remitos:
+      // contando, si alguien borraba una reposición el contador retrocedía
+      // y repetía el número (así salieron dos R-0003 el 11/09).
+      remito: proximoNumeroRepo(data.reposiciones),
       fecha: todayISO(),
       hora: new Date().toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }),
       negocioId, negocioNombre,
@@ -24667,7 +24689,7 @@ function NuevoPedidoModal({ data, persist, negocioId, onClose }) {
     const ahora = new Date();
     const pedido = {
       id: uid(),
-      numero: "P-" + String((data.pedidos || []).length + 1).padStart(4, "0"),
+      numero: proximoDeSerie(data.pedidos, "numero", "P-", 4),
       clienteId, clienteNombre: cli ? cli.nombre : "",
       negocioId, estado: "pendiente", items,
       nota: nota.trim(),
@@ -25212,7 +25234,7 @@ function ResolverCambioModal({ data, persist, venta, itemsDevueltos, valorDevuel
 
     const cambio = {
       id: uid(),
-      numero: "C-" + String((data.cambios || []).length + 1).padStart(4, "0"),
+      numero: proximoDeSerie(data.cambios, "numero", "C-", 4),
       ventaId: venta.id,
       clienteNombre: venta.clienteNombre || "",
       negocioId,
@@ -25233,7 +25255,7 @@ function ResolverCambioModal({ data, persist, venta, itemsDevueltos, valorDevuel
     if (saldo > 0) {
       notaSaldo = {
         id: uid(),
-        numero: "NC-" + String((data.notasCredito || []).length + 1).padStart(4, "0"),
+        numero: proximoDeSerie(data.notasCredito, "numero", "NC-", 4),
         ventaId: venta.id, ventaFecha: venta.fecha,
         clienteId: venta.clienteId || "", clienteNombre: venta.clienteNombre || "",
         negocioId,
@@ -25282,7 +25304,7 @@ function ResolverCambioModal({ data, persist, venta, itemsDevueltos, valorDevuel
     const anterior = data;
     const nota = {
       id: uid(),
-      numero: "NC-" + String((data.notasCredito || []).length + 1).padStart(4, "0"),
+      numero: proximoDeSerie(data.notasCredito, "numero", "NC-", 4),
       ventaId: venta.id, ventaFecha: venta.fecha,
       clienteId: venta.clienteId || "", clienteNombre: venta.clienteNombre || "",
       negocioId,
@@ -25293,7 +25315,7 @@ function ResolverCambioModal({ data, persist, venta, itemsDevueltos, valorDevuel
     };
     const cambio = {
       id: uid(),
-      numero: "C-" + String((data.cambios || []).length + 1).padStart(4, "0"),
+      numero: proximoDeSerie(data.cambios, "numero", "C-", 4),
       ventaId: venta.id, clienteNombre: venta.clienteNombre || "", negocioId,
       devuelto: itemsDevueltos, entregado: [],
       diferencia: -valorDevuelto, notaCreditoId: nota.id,
