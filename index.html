@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.902";
+const VERSION_APP = "9.903";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -13425,12 +13425,10 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
       )
     ),
 
-    // Con transferencia conviene guardar la captura del comprobante
-    !variosPagos && (metodoPago === "transferencia" || metodoPago === "qr") &&
-      // Sólo cuando hay transferencia: es el único medio con número de operación
-      // Los comprobantes van sólo con transferencia: es el único medio que
-      // trae número de operación para chequear repetidos.
-      hayTransferencia && React.createElement(ListaComprobantes, { ventas, lista: comprobantes, onCambiar: setComprobantes }),
+    // Con transferencia conviene guardar la captura del comprobante.
+    // Funciona tanto en pago simple como dividido: hayTransferencia ya
+    // revisa los métodos elegidos en ambos modos.
+    hayTransferencia && React.createElement(ListaComprobantes, { ventas, lista: comprobantes, onCambiar: setComprobantes }),
 
     error && React.createElement("p", { style: { color: "var(--rose)", fontSize: 13, marginTop: 12, textAlign: "center" } }, error),
 
