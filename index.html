@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.901";
+const VERSION_APP = "9.902";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -565,6 +565,20 @@ const buscarVariantePorCodigo = (productos, negocioId, codigo) => {
     if (v) return { producto: p, variante: v };
   }
   return null;
+};
+
+// Todos los códigos de variante de un producto, concatenados en un string.
+// Se usa en los buscadores para encontrar por código de talle/color sin
+// recorrer cada variante por separado. Es liviano: solo concatena strings
+// que ya están en memoria.
+const codigosVarianteDe = (p) => {
+  const partes = [];
+  Object.values(p.porNegocio || {}).forEach((d) => {
+    (d.variantes || []).forEach((v) => {
+      if (v.codigo) partes.push(v.codigo);
+    });
+  });
+  return partes.join(" ");
 };
 
 const variantesNegocio = (producto, negocioId) => {
@@ -6550,7 +6564,7 @@ function InventarioStock({ data, persist }) {
   // se nota, así que sólo se rehace cuando cambia algo que importa.
   const productos = useMemo(() => data.productos.filter((p) => {
     if (!publicadoEn(p, negId, listaNegocios(data)[0].id)) return false;
-    if (q && !((p.nombre || "").toLowerCase().includes(q) || (p.codigoBarras || "").toLowerCase().includes(q))) return false;
+    if (q && !((p.nombre || "").toLowerCase().includes(q) || (p.codigoBarras || "").toLowerCase().includes(q) || codigosVarianteDe(p).toLowerCase().includes(q))) return false;
     if (filtroCategoria && p.categoria !== filtroCategoria) return false;
     if (filtroSituacion === "sin" && enEste(p) > 0) return false;
     if (filtroSituacion === "bajo" && !(enEste(p) > 0 && enEste(p) <= STOCK_MINIMO)) return false;
@@ -9160,7 +9174,7 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
   const filtrados = data.productos.filter((p) => {
     // Sólo los de este local
     if (!publicadoEn(p, negocioActivo(data).id, listaNegocios(data)[0].id)) return false;
-    if (q && !((p.nombre || "").toLowerCase().includes(q) || (p.codigoBarras || "").toLowerCase().includes(q))) return false;
+    if (q && !((p.nombre || "").toLowerCase().includes(q) || (p.codigoBarras || "").toLowerCase().includes(q) || codigosVarianteDe(p).toLowerCase().includes(q))) return false;
     if (filtros.categoria && p.categoria !== filtros.categoria) return false;
     const hay = stockNegocio(p, negocioActivo(data).id);
     if (filtros.stockBajo && !(hay <= STOCK_MINIMO)) return false;
@@ -11742,7 +11756,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
   // convertían los 1173 productos en cada tecla que se escribía.
   const buscables = useMemo(() => data.productos
     .filter((p) => p.activo !== false)
-    .map((p) => ({ p, texto: ((p.nombre || "") + " " + (p.codigoBarras || "")).toLowerCase() })),
+    .map((p) => ({ p, texto: ((p.nombre || "") + " " + (p.codigoBarras || "") + " " + codigosVarianteDe(p)).toLowerCase() })),
     [data.productos]);
 
   const sugerencias = useMemo(() => {
@@ -19612,7 +19626,7 @@ function NegociosProductos({ data, persist, setTab, senalNuevo }) {
   const principal = negocios[0];
   const q = query.trim().toLowerCase();
   const filtrados = data.productos.filter((p) =>
-    !q || (p.nombre || "").toLowerCase().includes(q) || (p.codigoBarras || "").toLowerCase().includes(q));
+    !q || (p.nombre || "").toLowerCase().includes(q) || (p.codigoBarras || "").toLowerCase().includes(q) || codigosVarianteDe(p).toLowerCase().includes(q));
   const totalPaginas = Math.max(1, Math.ceil(filtrados.length / POR_PAGINA));
   const paginaSegura = Math.min(pagina, totalPaginas);
   const visibles = filtrados.slice((paginaSegura - 1) * POR_PAGINA, paginaSegura * POR_PAGINA);
