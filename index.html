@@ -129,8 +129,17 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.900";
-// v9.900 (2026-09-15)
+const VERSION_APP = "9.901";
+// v9.901 (2026-09-15)
+// - ARREGLO CRÍTICO del saldo de cuenta corriente: cada venta a CC creaba
+//   además un movimiento "cargo" del mismo importe. El cálculo sumaba
+//   ventas + cargos, así que la deuda se contaba dos veces (por eso en la
+//   ficha aparecían dos "Fiado" idénticos por cada venta). Ahora la venta
+//   es la única fuente. Los cargos duplicados que ya están en la base se
+//   IGNORAN al calcular saldo, ficha y estado de cuenta — no se borran, para
+//   no perder datos históricos como pasó en la sesión anterior.
+//
+// v9.900
 // - Cobro desde la ficha del cliente: el monto viene precargado con el saldo
 //   completo. Botón "Cobrar $X", atajo "Todo el saldo" y autoselección del campo.
 // - Lista de clientes en el POS muestra la deuda de cada uno al elegirlo.
@@ -141,6 +150,347 @@ const VERSION_APP = "9.900";
 // - Avisos al mover stock: cancelar transferencia, ajuste de inventario,
 //   ajuste manual, devolución, reposición. Con deshacer donde aplica.
 // - Arreglo: tono "primary" en botón del escáner rompía la app al abrir.
+// - MONITOR del sistema reconstruido (no estaba en esta base): tráfico con la
+//   nube tabla por tabla, memoria, almacenamiento local, errores y bitácora.
+//   Se abre desde Configuración o con ctMonitor() en la consola. Vive fuera
+//   de React: si la app se rompe, el monitor sigue pudiendo abrirse.
+
+// ===== MONITOR DEL SISTEMA =====
+// Vive fuera de React a propósito: si la app se rompe, esto sigue andando y
+// se puede abrir desde la consola con ctMonitor() para ver qué pasó.
+// Registra todo el tráfico con la nube (qué tabla, cuánto pesó, cuánto tardó),
+// los errores de la app y una bitácora de eventos. Seis pestañas: Resumen,
+// Alertas, Sincronizaciones, Tablas, Errores y Bitácora.
+const MONITOR = (() => {
+  const tope = (arr, n) => { if (arr.length > n) arr.length = n; };
+  const est = {
+    inicio: Date.now(),
+    red: [],        // últimas llamadas a la nube
+    porTabla: {},   // acumulado por tabla
+    errores: [],
+    bitacora: [],
+    ws: { mensajes: 0, bytes: 0 }
+  };
+
+  // Identidad del dispositivo: persiste para reconocerlo entre sesiones
+  let dispositivo = "";
+  try {
+    dispositivo = localStorage.getItem("ct-dispositivo-id") || "";
+    if (!dispositivo) {
+      dispositivo = "D-" + Math.random().toString(36).slice(2, 8).toUpperCase();
+      localStorage.setItem("ct-dispositivo-id", dispositivo);
+    }
+  } catch (e) { dispositivo = "D-?"; }
+
+  const hhmmss = (t) => new Date(t).toLocaleTimeString("es-AR", { hour12: false });
+  const kb = (b) => b >= 1048576 ? (b / 1048576).toFixed(2) + " MB" : b >= 1024 ? (b / 1024).toFixed(1) + " KB" : b + " B";
+  const anotar = (texto) => { est.bitacora.unshift({ t: Date.now(), texto: String(texto) }); tope(est.bitacora, 250); };
+  anotar("App abierta · v" + VERSION_APP + " · " + dispositivo);
+
+  // --- Errores de toda la app ---
+  window.addEventListener("error", (e) => {
+    est.errores.unshift({ t: Date.now(), msg: String(e.message || "error"), stack: e.error && e.error.stack ? String(e.error.stack).slice(0, 700) : (e.filename ? e.filename + ":" + e.lineno : "") });
+    tope(est.errores, 120);
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    const r = e.reason;
+    est.errores.unshift({ t: Date.now(), msg: "Promesa sin capturar: " + (r && r.message ? r.message : String(r)), stack: r && r.stack ? String(r.stack).slice(0, 700) : "" });
+    tope(est.errores, 120);
+  });
+  window.addEventListener("online", () => anotar("Volvió la conexión"));
+  window.addEventListener("offline", () => anotar("Se cortó la conexión"));
+  document.addEventListener("visibilitychange", () => anotar(document.hidden ? "App al fondo" : "App al frente"));
+
+  // --- Tráfico con la nube: se envuelve fetch antes de crear el cliente ---
+  const tablaDeUrl = (url) => {
+    const m = String(url).match(/\/rest\/v1\/([^?\/]+)/);
+    if (m) return m[1];
+    if (/\/auth\/v1\//.test(url)) return "(sesión)";
+    if (/\/storage\/v1\//.test(url)) return "(fotos)";
+    if (/\/realtime\/v1\//.test(url)) return "(realtime)";
+    return "(otro)";
+  };
+  const registrarRed = (fila) => {
+    est.red.unshift(fila); tope(est.red, 400);
+    const t = est.porTabla[fila.tabla] || (est.porTabla[fila.tabla] = { n: 0, bytes: 0, ms: 0, errores: 0 });
+    t.n++; t.bytes += fila.bytes || 0; t.ms += fila.ms || 0;
+    if (fila.error || (fila.status && fila.status >= 400)) t.errores++;
+  };
+  const fetchOriginal = window.fetch.bind(window);
+  window.fetch = function (recurso, opciones) {
+    const url = typeof recurso === "string" ? recurso : (recurso && recurso.url) || "";
+    if (!/supabase\.co/.test(url)) return fetchOriginal(recurso, opciones);
+    const t0 = performance.now();
+    const metodo = ((opciones && opciones.method) || (recurso && recurso.method) || "GET").toUpperCase();
+    const tabla = tablaDeUrl(url);
+    return fetchOriginal(recurso, opciones).then((resp) => {
+      const fila = { t: Date.now(), metodo, tabla, status: resp.status, ms: Math.round(performance.now() - t0), bytes: 0 };
+      const cl = resp.headers && resp.headers.get && resp.headers.get("content-length");
+      if (cl) { fila.bytes = Number(cl) || 0; registrarRed(fila); }
+      else {
+        // Sin cabecera de tamaño se lee una copia: el original sigue intacto
+        try { resp.clone().blob().then((b) => { fila.bytes = b.size; registrarRed(fila); }).catch(() => registrarRed(fila)); }
+        catch (e) { registrarRed(fila); }
+      }
+      return resp;
+    }).catch((err) => {
+      registrarRed({ t: Date.now(), metodo, tabla, status: 0, ms: Math.round(performance.now() - t0), bytes: 0, error: String((err && err.message) || err) });
+      throw err;
+    });
+  };
+
+  // --- Realtime: cuántos avisos llegan por el canal en vivo ---
+  try {
+    const WSOriginal = window.WebSocket;
+    const WSNuevo = function (url, protos) {
+      const ws = protos !== undefined ? new WSOriginal(url, protos) : new WSOriginal(url);
+      if (/supabase\.co/.test(String(url))) {
+        ws.addEventListener("message", (ev) => {
+          est.ws.mensajes++;
+          est.ws.bytes += (ev.data && ev.data.length) || 0;
+        });
+        ws.addEventListener("open", () => anotar("Realtime conectado"));
+        ws.addEventListener("close", () => anotar("Realtime desconectado"));
+      }
+      return ws;
+    };
+    WSNuevo.prototype = WSOriginal.prototype;
+    ["CONNECTING", "OPEN", "CLOSING", "CLOSED"].forEach((k) => { WSNuevo[k] = WSOriginal[k]; });
+    window.WebSocket = WSNuevo;
+  } catch (e) {}
+
+  // --- Qué hay guardado en este dispositivo ---
+  const medirLocal = () => {
+    const claves = [];
+    let total = 0;
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        const v = localStorage.getItem(k) || "";
+        claves.push({ k, largo: v.length });
+        total += v.length;
+      }
+    } catch (e) {}
+    claves.sort((a, b) => b.largo - a.largo);
+    return { total, claves: claves.slice(0, 8) };
+  };
+  const medirCopia = () => {
+    try {
+      const cruda = localStorage.getItem("ct-copia");
+      if (!cruda) return null;
+      const copia = JSON.parse(cruda);
+      const datos = (copia && copia.datos) || {};
+      const colecciones = Object.keys(datos)
+        .filter((k) => Array.isArray(datos[k]))
+        .map((k) => ({ k, filas: datos[k].length, largo: JSON.stringify(datos[k]).length }))
+        .sort((a, b) => b.largo - a.largo);
+      return { colecciones };
+    } catch (e) { return null; }
+  };
+
+  // --- Alertas: qué se pasó de la raya ---
+  const calcularAlertas = () => {
+    const alertas = [];
+    const local = medirLocal();
+    if (local.total > 4000000) alertas.push({ nivel: "rojo", texto: "El almacenamiento local está muy cargado (" + kb(local.total) + "). Cerca del límite del navegador la app puede fallar al guardar." });
+    else if (local.total > 2500000) alertas.push({ nivel: "amarillo", texto: "Almacenamiento local en " + kb(local.total) + ". Conviene vigilarlo." });
+    const bajado = Object.keys(est.porTabla).reduce((a, k) => a + est.porTabla[k].bytes, 0);
+    if (bajado > 50 * 1048576) alertas.push({ nivel: "rojo", texto: "Esta sesión ya bajó " + kb(bajado) + " de la nube. A este ritmo el egress mensual se pasa del límite." });
+    else if (bajado > 15 * 1048576) alertas.push({ nivel: "amarillo", texto: "Bajados " + kb(bajado) + " en esta sesión. Revisá en Tablas cuál es la que más pesa." });
+    Object.keys(est.porTabla).forEach((k) => {
+      const t = est.porTabla[k];
+      if (t.bytes > 8 * 1048576) alertas.push({ nivel: "amarillo", texto: 'La tabla "' + k + '" lleva ' + kb(t.bytes) + " en " + t.n + " llamadas. Puede estar trayendo todo en vez de lo nuevo." });
+      if (t.errores >= 3) alertas.push({ nivel: "rojo", texto: 'La tabla "' + k + '" tuvo ' + t.errores + " llamadas con error." });
+    });
+    const haceUnMin = Date.now() - 60000;
+    const ultMin = est.red.filter((r) => r.t > haceUnMin).length;
+    if (ultMin > 60) alertas.push({ nivel: "rojo", texto: ultMin + " llamadas a la nube en el último minuto. Algo está sincronizando en bucle." });
+    const grandes = est.red.filter((r) => r.bytes > 1048576).length;
+    if (grandes) alertas.push({ nivel: "amarillo", texto: grandes + " respuesta" + (grandes === 1 ? "" : "s") + " de más de 1 MB. En Sincronizaciones se ve cuáles." });
+    if (est.errores.length) alertas.push({ nivel: "rojo", texto: est.errores.length + " error" + (est.errores.length === 1 ? "" : "es") + " registrado" + (est.errores.length === 1 ? "" : "s") + ". El detalle está en la pestaña Errores." });
+    if (performance.memory && performance.memory.usedJSHeapSize > 350 * 1048576) alertas.push({ nivel: "amarillo", texto: "La app está usando " + kb(performance.memory.usedJSHeapSize) + " de memoria. Si sigue subiendo sin bajar, hay algo acumulando." });
+    if (!alertas.length) alertas.push({ nivel: "ok", texto: "Sin excedentes a la vista: tráfico, memoria y almacenamiento dentro de lo normal." });
+    return alertas;
+  };
+
+  // --- Reporte completo en texto, para copiar o descargar ---
+  const armarReporte = () => {
+    const L = [];
+    L.push("MONITOR CONTROL TIENDA · v" + VERSION_APP);
+    L.push("Dispositivo: " + dispositivo + " · " + new Date().toLocaleString("es-AR"));
+    L.push("Sesión abierta hace " + Math.round((Date.now() - est.inicio) / 60000) + " min");
+    if (performance.memory) L.push("Memoria JS: " + kb(performance.memory.usedJSHeapSize));
+    const local = medirLocal();
+    L.push("Almacenamiento local: " + kb(local.total));
+    local.claves.forEach((c) => L.push("  " + c.k + ": " + kb(c.largo)));
+    L.push("");
+    L.push("== ALERTAS ==");
+    calcularAlertas().forEach((a) => L.push("[" + a.nivel.toUpperCase() + "] " + a.texto));
+    L.push("");
+    L.push("== TABLAS (acumulado de la sesión) ==");
+    Object.keys(est.porTabla).sort((a, b) => est.porTabla[b].bytes - est.porTabla[a].bytes).forEach((k) => {
+      const t = est.porTabla[k];
+      L.push(k + ": " + t.n + " llamadas · " + kb(t.bytes) + " · prom " + Math.round(t.ms / Math.max(1, t.n)) + " ms" + (t.errores ? " · " + t.errores + " errores" : ""));
+    });
+    L.push("Realtime: " + est.ws.mensajes + " mensajes · " + kb(est.ws.bytes));
+    const copia = medirCopia();
+    if (copia) {
+      L.push("");
+      L.push("== DATOS LOCALES (filas por colección) ==");
+      copia.colecciones.slice(0, 15).forEach((c) => L.push(c.k + ": " + c.filas + " filas · " + kb(c.largo)));
+    }
+    L.push("");
+    L.push("== ÚLTIMAS SINCRONIZACIONES ==");
+    est.red.slice(0, 60).forEach((r) => L.push(hhmmss(r.t) + " " + r.metodo + " " + r.tabla + " · " + (r.status || "ERR") + " · " + kb(r.bytes) + " · " + r.ms + " ms" + (r.error ? " · " + r.error : "")));
+    L.push("");
+    L.push("== ERRORES ==");
+    if (!est.errores.length) L.push("(ninguno)");
+    est.errores.forEach((e) => { L.push(hhmmss(e.t) + " " + e.msg); if (e.stack) L.push("  " + e.stack.split("\n").slice(0, 3).join(" | ")); });
+    L.push("");
+    L.push("== BITÁCORA ==");
+    est.bitacora.forEach((b) => L.push(hhmmss(b.t) + " " + b.texto));
+    return L.join("\n");
+  };
+
+  // --- La ventana: DOM pelado, sin React ---
+  let caja = null, pestanaActiva = "resumen", reloj = null;
+  const C = { fondo: "#0F1216", panel: "#161B22", borde: "#232A33", texto: "#E8EAED", gris: "#94A0AC", azul: "#5B8DD9", rojo: "#E4646E", amarillo: "#D9A62E", verde: "#5CA87C" };
+  const el = (tag, css, html) => { const d = document.createElement(tag); if (css) d.style.cssText = css; if (html !== undefined) d.innerHTML = html; return d; };
+  const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  const filaTabla = (celdas, encabezado) => "<tr>" + celdas.map((c, i) =>
+    "<" + (encabezado ? "th" : "td") + " style='padding:6px 10px;text-align:" + (i === 0 ? "left" : "right") + ";border-bottom:1px solid " + C.borde + ";font-weight:" + (encabezado ? "700" : "400") + ";color:" + (encabezado ? C.gris : C.texto) + ";font-size:12px;white-space:nowrap'>" + c + "</" + (encabezado ? "th" : "td") + ">").join("") + "</tr>";
+
+  const pintar = () => {
+    if (!caja) return;
+    const cont = caja.querySelector("#ctm-cont");
+    if (!cont) return;
+    let html = "";
+    if (pestanaActiva === "resumen") {
+      const local = medirLocal();
+      const bajado = Object.keys(est.porTabla).reduce((a, k) => a + est.porTabla[k].bytes, 0);
+      const llamadas = Object.keys(est.porTabla).reduce((a, k) => a + est.porTabla[k].n, 0);
+      const tarjeta = (titulo, valor, nota) => "<div style='background:" + C.panel + ";border-radius:10px;padding:12px 14px;min-width:130px;flex:1'><div style='font-size:11px;color:" + C.gris + ";text-transform:uppercase;letter-spacing:.05em'>" + titulo + "</div><div style='font-size:19px;font-weight:700;margin-top:4px;font-family:monospace'>" + valor + "</div>" + (nota ? "<div style='font-size:11px;color:" + C.gris + ";margin-top:3px'>" + nota + "</div>" : "") + "</div>";
+      html += "<div style='display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px'>";
+      html += tarjeta("Sesión", Math.round((Date.now() - est.inicio) / 60000) + " min", "v" + VERSION_APP + " · " + dispositivo);
+      html += tarjeta("Bajado de la nube", kb(bajado), llamadas + " llamadas");
+      if (performance.memory) html += tarjeta("Memoria JS", kb(performance.memory.usedJSHeapSize), "de " + kb(performance.memory.jsHeapSizeLimit));
+      html += tarjeta("Local", kb(local.total), "almacenado en el equipo");
+      html += tarjeta("Realtime", est.ws.mensajes + " msj", kb(est.ws.bytes));
+      html += "</div>";
+      const copia = medirCopia();
+      if (copia) {
+        html += "<div style='font-size:12px;color:" + C.gris + ";margin:10px 0 6px;font-weight:700'>DATOS EN EL EQUIPO (por tamaño)</div><table style='border-collapse:collapse;width:100%'>";
+        html += filaTabla(["Colección", "Filas", "Tamaño"], true);
+        copia.colecciones.slice(0, 12).forEach((c) => { html += filaTabla([esc(c.k), c.filas, kb(c.largo)]); });
+        html += "</table>";
+      }
+      html += "<div style='font-size:12px;color:" + C.gris + ";margin:14px 0 6px;font-weight:700'>ALMACENAMIENTO LOCAL (claves más pesadas)</div><table style='border-collapse:collapse;width:100%'>";
+      local.claves.forEach((c) => { html += filaTabla([esc(c.k), "", kb(c.largo)]); });
+      html += "</table>";
+    }
+    if (pestanaActiva === "alertas") {
+      calcularAlertas().forEach((a) => {
+        const color = a.nivel === "rojo" ? C.rojo : a.nivel === "amarillo" ? C.amarillo : C.verde;
+        html += "<div style='display:flex;gap:10px;align-items:flex-start;background:" + C.panel + ";border-left:3px solid " + color + ";border-radius:8px;padding:11px 13px;margin-bottom:8px'><span style='color:" + color + ";font-weight:700;font-size:11px;text-transform:uppercase;flex-shrink:0;margin-top:1px'>" + (a.nivel === "ok" ? "OK" : a.nivel) + "</span><span style='font-size:13px;line-height:1.5'>" + esc(a.texto) + "</span></div>";
+      });
+    }
+    if (pestanaActiva === "sync") {
+      html += "<table style='border-collapse:collapse;width:100%'>" + filaTabla(["Hora", "Método", "Tabla", "Estado", "Tamaño", "ms"], true);
+      est.red.slice(0, 100).forEach((r) => {
+        const st = r.error ? "<span style='color:" + C.rojo + "'>ERR</span>" : r.status >= 400 ? "<span style='color:" + C.rojo + "'>" + r.status + "</span>" : r.status;
+        const peso = r.bytes > 1048576 ? "<span style='color:" + C.amarillo + "'>" + kb(r.bytes) + "</span>" : kb(r.bytes);
+        html += filaTabla([hhmmss(r.t), r.metodo, esc(r.tabla), st, peso, r.ms]);
+      });
+      html += "</table>";
+      if (!est.red.length) html += "<div style='color:" + C.gris + ";font-size:13px;padding:20px;text-align:center'>Todavía no hubo llamadas a la nube.</div>";
+    }
+    if (pestanaActiva === "tablas") {
+      html += "<table style='border-collapse:collapse;width:100%'>" + filaTabla(["Tabla", "Llamadas", "Bajado", "Prom ms", "Errores"], true);
+      Object.keys(est.porTabla).sort((a, b) => est.porTabla[b].bytes - est.porTabla[a].bytes).forEach((k) => {
+        const t = est.porTabla[k];
+        html += filaTabla([esc(k), t.n, kb(t.bytes), Math.round(t.ms / Math.max(1, t.n)), t.errores ? "<span style='color:" + C.rojo + "'>" + t.errores + "</span>" : "0"]);
+      });
+      html += "</table>";
+      if (!Object.keys(est.porTabla).length) html += "<div style='color:" + C.gris + ";font-size:13px;padding:20px;text-align:center'>Sin tráfico registrado todavía.</div>";
+    }
+    if (pestanaActiva === "errores") {
+      if (!est.errores.length) html += "<div style='color:" + C.verde + ";font-size:13px;padding:20px;text-align:center'>Ningún error registrado en esta sesión.</div>";
+      est.errores.forEach((e) => {
+        html += "<div style='background:" + C.panel + ";border-radius:8px;padding:11px 13px;margin-bottom:8px'><div style='font-size:12px;color:" + C.gris + "'>" + hhmmss(e.t) + "</div><div style='font-size:13px;color:" + C.rojo + ";margin-top:3px'>" + esc(e.msg) + "</div>" + (e.stack ? "<pre style='font-size:11px;color:" + C.gris + ";margin:6px 0 0;white-space:pre-wrap;word-break:break-all'>" + esc(e.stack) + "</pre>" : "") + "</div>";
+      });
+    }
+    if (pestanaActiva === "bitacora") {
+      est.bitacora.forEach((b) => {
+        html += "<div style='display:flex;gap:12px;padding:7px 4px;border-bottom:1px solid " + C.borde + ";font-size:13px'><span style='color:" + C.gris + ";font-family:monospace;flex-shrink:0'>" + hhmmss(b.t) + "</span><span>" + esc(b.texto) + "</span></div>";
+      });
+    }
+    cont.innerHTML = html;
+  };
+
+  const abrir = () => {
+    if (caja) { caja.remove(); caja = null; }
+    caja = el("div", "position:fixed;inset:0;z-index:2147483000;background:" + C.fondo + ";color:" + C.texto + ";font-family:system-ui,sans-serif;display:flex;flex-direction:column");
+    const cab = el("div", "display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid " + C.borde + ";flex-shrink:0");
+    cab.appendChild(el("div", "font-weight:800;font-size:15px", "Monitor del sistema"));
+    cab.appendChild(el("div", "font-size:12px;color:" + C.gris, "v" + VERSION_APP + " · " + dispositivo));
+    const cerrarBtn = el("button", "margin-left:auto;background:" + C.panel + ";border:1px solid " + C.borde + ";color:" + C.texto + ";border-radius:8px;padding:7px 14px;cursor:pointer;font-size:13px", "Cerrar");
+    cerrarBtn.onclick = cerrar;
+    cab.appendChild(cerrarBtn);
+    caja.appendChild(cab);
+
+    const barra = el("div", "display:flex;gap:4px;padding:10px 12px;border-bottom:1px solid " + C.borde + ";overflow-x:auto;flex-shrink:0");
+    const pestanas = [["resumen", "Resumen"], ["alertas", "Alertas"], ["sync", "Sincronizaciones"], ["tablas", "Tablas"], ["errores", "Errores"], ["bitacora", "Bitácora"]];
+    const botones = {};
+    pestanas.forEach(([id, label]) => {
+      const b = el("button", "", label + (id === "errores" && est.errores.length ? " (" + est.errores.length + ")" : ""));
+      const estilo = (activa) => b.style.cssText = "background:" + (activa ? C.azul : "transparent") + ";color:" + (activa ? "#fff" : C.gris) + ";border:none;border-radius:8px;padding:8px 13px;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap";
+      estilo(id === pestanaActiva);
+      b.onclick = () => { pestanaActiva = id; pestanas.forEach(([j]) => botones[j].refrescar(j === id)); pintar(); };
+      b.refrescar = estilo;
+      botones[id] = b;
+      barra.appendChild(b);
+    });
+    caja.appendChild(barra);
+
+    const cont = el("div", "flex:1;overflow:auto;padding:14px 16px");
+    cont.id = "ctm-cont";
+    caja.appendChild(cont);
+
+    const pie = el("div", "display:flex;gap:8px;padding:11px 16px;border-top:1px solid " + C.borde + ";flex-shrink:0");
+    const bCopiar = el("button", "background:" + C.azul + ";color:#fff;border:none;border-radius:8px;padding:9px 16px;cursor:pointer;font-size:13px;font-weight:600", "Copiar reporte");
+    bCopiar.onclick = () => {
+      const txt = armarReporte();
+      const listo = () => { bCopiar.textContent = "Copiado ✓"; setTimeout(() => bCopiar.textContent = "Copiar reporte", 1800); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(listo).catch(() => {});
+      else { const ta = document.createElement("textarea"); ta.value = txt; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); listo(); }
+    };
+    const bBajar = el("button", "background:" + C.panel + ";color:" + C.texto + ";border:1px solid " + C.borde + ";border-radius:8px;padding:9px 16px;cursor:pointer;font-size:13px", "Descargar .txt");
+    bBajar.onclick = () => {
+      const blob = new Blob([armarReporte()], { type: "text/plain;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "monitor-" + dispositivo + "-" + new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-") + ".txt";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    };
+    pie.appendChild(bCopiar);
+    pie.appendChild(bBajar);
+    caja.appendChild(pie);
+
+    document.body.appendChild(caja);
+    pintar();
+    // Se refresca solo mientras está abierto, para ver el tráfico llegar
+    reloj = setInterval(pintar, 2000);
+  };
+  const cerrar = () => {
+    if (reloj) { clearInterval(reloj); reloj = null; }
+    if (caja) { caja.remove(); caja = null; }
+  };
+
+  window.ctMonitor = abrir;
+  return { abrir, anotar };
+})();
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -537,7 +887,12 @@ const saldoDeCliente = (data, clienteId) => {
     .filter((v) => v.clienteId === clienteId && !esDevolucion(v) && v.metodoPago === "cuenta_corriente")
     .reduce((a, v) => a + (v.total || 0), 0);
   const movs = (data.movimientosCC || []).filter((m) => m.clienteId === clienteId);
-  const cargos = movs.filter((m) => m.tipo === "cargo").reduce((a, m) => a + (m.monto || 0), 0);
+  // Los "Venta en cuenta corriente" antiguos eran duplicados de la venta: la
+  // venta ya sumaba al saldo, y este cargo la sumaba otra vez. Se saltean acá
+  // sin borrarlos de la base — así el historial queda intacto y el saldo
+  // deja de estar contado doble para las ventas viejas.
+  const esDuplicado = (m) => m.tipo === "cargo" && m.concepto === "Venta en cuenta corriente";
+  const cargos = movs.filter((m) => m.tipo === "cargo" && !esDuplicado(m)).reduce((a, m) => a + (m.monto || 0), 0);
   const pagos = movs.filter((m) => m.tipo !== "cargo").reduce((a, m) => a + (m.monto || 0), 0);
   return Math.max(0, ventas + cargos - pagos);
 };
@@ -11641,6 +11996,9 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     });
     (data.movimientosCC || []).forEach((x) => {
       if (!x.clienteId) return;
+      // Mismo criterio que saldoDeCliente: los cargos antiguos "Venta en
+      // cuenta corriente" duplican la venta y se saltean.
+      if (x.tipo === "cargo" && x.concepto === "Venta en cuenta corriente") return;
       m[x.clienteId] = (m[x.clienteId] || 0) + (x.tipo === "cargo" ? (x.monto || 0) : -(x.monto || 0));
     });
     Object.keys(m).forEach((k) => { m[k] = Math.max(0, m[k]); });
@@ -11959,13 +12317,15 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     productosActualizados = productosActualizados.map((p) =>
       esCombo(p) ? fijarEnNegocio(p, negocioId, { activo: p.activo !== false, stock: stockCombo(p, productosActualizados, negocioId), variantes: [] }) : p);
     let movimientosCC = data.movimientosCC || [];
-    const montoCC = montoPorMetodo("cuenta_corriente");
-    if (montoCC > 0 && clienteId) {
-      movimientosCC = [
-        { id: uid(), clienteId, fecha: todayISO(), tipo: "cargo", monto: montoCC, concepto: "Venta en cuenta corriente" },
-        ...movimientosCC
-      ];
-    }
+    // Antes se creaba un movimiento "cargo" con el mismo monto de la venta a
+    // cuenta corriente. La venta ya suma al saldo por sí sola (el cálculo
+    // toma ventas + cargos), así que ese cargo hacía que la deuda se contara
+    // dos veces: por eso en la ficha aparecían dos "Fiado" del mismo importe
+    // y el cliente parecía deber el doble. La venta es la fuente de verdad y
+    // el cargo ya no se crea.
+    // Los cargos "Compras anteriores" (importación de clientes) y los cargos
+    // manuales del "Registrar fiado" siguen igual: no tienen venta asociada,
+    // y sin ellos el saldo no cierra.
     // La deuda que se sumó al carrito se descuenta de la cuenta del cliente
     const lineaDeuda = cart.find((it) => it.esDeuda);
     if (lineaDeuda && lineaDeuda.clienteDeuda) {
@@ -15287,7 +15647,10 @@ function ClienteFormModal({ inicial, listasPrecio, onGuardar, onClose }) {
 // Las filas del estado de cuenta, ordenadas por fecha. Se calculan una sola
 // vez y las usan las tres salidas (PDF, térmica, chat).
 const filasEstadoCuenta = (data, cliente) => {
-  const movs = (data.movimientosCC || []).filter((m) => m.clienteId === cliente.id);
+  // Mismo criterio que en la ficha: los cargos "Venta en cuenta corriente"
+  // son duplicados de la venta y quedan fuera del estado de cuenta.
+  const movs = (data.movimientosCC || []).filter((m) =>
+    m.clienteId === cliente.id && !(m.tipo === "cargo" && m.concepto === "Venta en cuenta corriente"));
   const ventas = (data.ventas || []).filter((v) => v.clienteId === cliente.id && !esDevolucion(v));
   return [
     ...ventas.map((v) => ({
@@ -16048,7 +16411,12 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
   const [movForm, setMovForm] = useState({ tipo: "pago", monto: "", concepto: "", metodo: "Efectivo" });
   const [movError, setMovError] = useState("");
 
-  const movimientos = (data.movimientosCC || []).filter((m) => m.clienteId === cliente.id);
+  // Los cargos "Venta en cuenta corriente" son duplicados de la venta: la
+  // venta ya aparece como "Fiado" en la línea de tiempo, y este movimiento
+  // hacía que apareciera dos veces con el mismo monto. Se ocultan de la vista
+  // sin borrarlos de la base — así el historial queda intacto.
+  const esCargoDuplicado = (m) => m.tipo === "cargo" && m.concepto === "Venta en cuenta corriente";
+  const movimientos = (data.movimientosCC || []).filter((m) => m.clienteId === cliente.id && !esCargoDuplicado(m));
   // Solo las ventas en cuenta corriente son deuda. Una venta pagada al contado
   // no deja saldo, aunque sea del mismo cliente.
   const ventasFiadas = data.ventas.filter((v) =>
@@ -25173,6 +25541,20 @@ function ConfiguracionView({ data, persist, tema, setTema }) {
           },
           title: "Sonido del lector"
         })
+      }
+    ),
+
+    React.createElement(
+      BloqueCatalogo,
+      {
+        icono: BarChart3,
+        titulo: "Monitor del sistema",
+        ayuda: "Tráfico con la nube tabla por tabla, memoria, errores y bitácora. Para encontrar qué está gastando de más. También se abre escribiendo ctMonitor() en la consola.",
+        extra: React.createElement(Button, {
+          tone: "ghost",
+          onClick: () => window.ctMonitor && window.ctMonitor(),
+          style: { padding: "10px 16px" }
+        }, "Abrir · v" + VERSION_APP)
       }
     ),
 
