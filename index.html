@@ -129,7 +129,18 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.899";
+const VERSION_APP = "9.900";
+// v9.900 (2026-09-15)
+// - Cobro desde la ficha del cliente: el monto viene precargado con el saldo
+//   completo. Botón "Cobrar $X", atajo "Todo el saldo" y autoselección del campo.
+// - Lista de clientes en el POS muestra la deuda de cada uno al elegirlo.
+// - Transferencias: escáner continuo (la cámara no se cierra entre lecturas).
+//   Contador de lecturas, aviso de fallo dentro del modal.
+// - Transferencias: eliminar productos de la lista (−, ✕, Vaciar lista).
+//   Arreglo de borrado con color que no funcionaba.
+// - Avisos al mover stock: cancelar transferencia, ajuste de inventario,
+//   ajuste manual, devolución, reposición. Con deshacer donde aplica.
+// - Arreglo: tono "primary" en botón del escáner rompía la app al abrir.
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
