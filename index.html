@@ -129,8 +129,21 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.901";
-// v9.901 (2026-09-15)
+const VERSION_APP = "9.902";
+// v9.902 (2026-09-15)
+// - ARREGLO: cancelar una transferencia no descontaba del destino en algunos
+//   casos. La cancelación ahora se guía por "está en el destino" (estado
+//   completada, o sin estado guardado — transferencias viejas), no depende
+//   estrictamente del string "completada" que podía llegar desactualizado
+//   por sync desde otro dispositivo.
+// - ARREGLO auxiliar: si una transferencia vieja tenía el campo "talla"
+//   (como las ventas) en vez de "talle", el descuento caía sobre el stock
+//   general y la variante del destino quedaba con la mercadería. Se acepta
+//   cualquiera de los dos nombres al aplicar el movimiento.
+// - El aviso al cancelar dice también de qué local se descontaron las
+//   unidades, para poder verificar de un vistazo que el stock volvió bien.
+//
+// v9.901
 // - ARREGLO CRÍTICO del saldo de cuenta corriente: cada venta a CC creaba
 //   además un movimiento "cargo" del mismo importe. El cálculo sumaba
 //   ventas + cargos, así que la deuda se contaba dos veces (por eso en la
@@ -24785,7 +24798,12 @@ function TransferenciasView({ data, persist }) {
   const aplicar = (productos, items, origenId, destinoId) => {
     let out = productos;
     items.forEach((it) => {
-      const claveVar = it.talle ? it.talle + (it.color ? "|" + it.color : "") : "";
+      // Transferencias viejas podían guardarse con "talla" (como las ventas)
+      // en vez de "talle": si ocurre, la clave quedaba vacía y el descuento
+      // caía sobre el stock general, dejando la variante del destino intacta
+      // cuando se cancelaba. Se acepta cualquiera de los dos.
+      const talleReal = it.talle || it.talla || "";
+      const claveVar = talleReal ? talleReal + (it.color ? "|" + it.color : "") : "";
       out = out.map((p) => p.id === it.productoId
         ? moverEntreNegocios(p, origenId, destinoId, it.cantidad, claveVar)
         : p);
@@ -24841,8 +24859,19 @@ function TransferenciasView({ data, persist }) {
   };
   const cancelar = (t) => {
     const anterior = data;
-    // Vuelve al origen lo que había salido; si ya llegó, sale del destino
-    const productos = aplicar(data.productos, t.items, t.estado === "completada" ? t.destino : null, t.origen);
+    // Se saca de donde EFECTIVAMENTE está la mercadería ahora y se devuelve
+    // al origen. El estado guardado no siempre refleja lo real (una
+    // transferencia sincronizada desde otro dispositivo o de una versión
+    // anterior puede tener el estado desactualizado), así que se toma como
+    // "está en el destino" cuando figura entregada o cuando no hay campo de
+    // estado — así el stock del destino se descuenta siempre que corresponda.
+    const yaLlegoAlDestino = t.estado === "completada" || !t.estado;
+    const productos = aplicar(
+      data.productos,
+      t.items,
+      yaLlegoAlDestino ? t.destino : null,
+      t.origen
+    );
     const unidades = (t.items || []).reduce((a, x) => a + x.cantidad, 0);
     persist({
       ...data,
@@ -24852,8 +24881,11 @@ function TransferenciasView({ data, persist }) {
     setMenu(null);
     // Cancelar mueve stock de verdad: hay que decir adónde volvió, porque si
     // se cancela la equivocada no queda rastro visible de lo que pasó.
-    avisar(t.remito + " cancelada · " + unidades + " u vuelven a " + nombreDe(t.origen),
-      { tono: "info", deshacer: () => persist(anterior) });
+    avisar(
+      t.remito + " cancelada · " + unidades + " u vuelven a " + nombreDe(t.origen) +
+        (yaLlegoAlDestino ? " (descontadas de " + nombreDe(t.destino) + ")" : ""),
+      { tono: "info", deshacer: () => persist(anterior) }
+    );
   };
 
   const selectFiltro = (valor, onChange, opciones, textoTodos) => React.createElement(
