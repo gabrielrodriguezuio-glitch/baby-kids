@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.912";
+const VERSION_APP = "9.913";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -13670,167 +13670,250 @@ function TicketVenta({ data, venta }) {
   const fechaHora = venta.horaTexto ? `${fecha(venta.fecha)} \xB7 ${venta.horaTexto}` : fecha(venta.fecha);
   const unidades = (venta.items || []).reduce((a, it) => a + (it.cantidad || 0), 0);
 
-  // El ticket también se imprime en papel: negro sobre blanco, sin fondos fuertes
+  // Paleta pensada para pantalla; el ticket sigue siendo blanco por si se
+  // toma captura para imprimir, pero se usan grises y un acento para dar
+  // jerarquía a lo que importa (total, saldo, secciones).
   const gris = "#6B6B72";
-  const linea = "#DDDDE2";
-  // Arial para todo el ticket, incluidos los números
-  const mono = "'Arial MT', Arial, Helvetica, sans-serif";
+  const grisTenue = "#9AA0A6";
+  const grisFondo = "#F5F5F7";
+  const grisBorde = "#E4E4E9";
+  const tinta = "#0A0B10";
+  const acento = "#1F2937";
+  const rose = "#B4293C";
+  const sage = "#118A55";
+  const mono = "'IBM Plex Mono', ui-monospace, monospace";
+  const sans = "'Inter', 'Arial MT', Arial, Helvetica, sans-serif";
 
-  const fila = (izq, der, opciones) => {
+  // Chip de sección: label pequeño en mayúsculas, para separar bloques
+  const chipSeccion = (texto) => React.createElement("div", {
+    style: {
+      display: "inline-flex", alignItems: "center", gap: 6,
+      fontSize: 9.5, fontWeight: 800, letterSpacing: "0.14em", color: gris,
+      textTransform: "uppercase", fontFamily: sans
+    }
+  },
+    React.createElement("span", { style: { width: 14, height: 1, background: grisBorde } }),
+    texto,
+    React.createElement("span", { style: { flex: 1, height: 1, background: grisBorde } })
+  );
+
+  // Fila estilo "label ---- valor" con puntos discretos
+  const filaKV = (izq, der, opciones) => {
     const o = opciones || {};
     return React.createElement(
       "div",
-      { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, marginTop: o.arriba || 0 } },
-      React.createElement("span", { style: { color: o.tenue ? gris : "#000", fontSize: o.tam || 12.5, fontWeight: o.fuerte ? 700 : 400, letterSpacing: o.fuerte ? "0.05em" : "normal", whiteSpace: "nowrap" } }, izq),
-      React.createElement("span", { style: { fontFamily: mono, fontSize: o.tam || 12.5, fontWeight: o.fuerte ? 700 : 500 } }, der)
+      { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, marginTop: o.arriba || 0, fontFamily: sans } },
+      React.createElement("span", {
+        style: { color: o.tenue ? gris : tinta, fontSize: o.tam || 12.5, fontWeight: o.fuerte ? 700 : 500, letterSpacing: o.fuerte ? "0.04em" : "normal" }
+      }, izq),
+      React.createElement("span", {
+        style: { fontFamily: mono, fontSize: o.tam || 12.5, fontWeight: o.fuerte ? 700 : 600, color: o.color || tinta }
+      }, der)
     );
   };
 
-  const separador = (margen) => React.createElement("div", {
-    style: { height: 1, background: linea, margin: (margen || 12) + "px 0" }
-  });
+  // Íconos por método de pago (un carácter simbólico limpio)
+  const iconoPago = {
+    efectivo: "\uD83D\uDCB5", tarjeta: "\uD83D\uDCB3",
+    transferencia: "\u21C4", qr: "\u25A6", cuenta_corriente: "\u2022"
+  };
 
   return React.createElement(
     "div",
     {
       id: "ticket-print-area",
       style: {
-        fontFamily: "'Arial MT', Arial, Helvetica, sans-serif",
-        color: "#000",
-        background: "#fff",
-        width: 320,
-        maxWidth: "100%",
-        margin: "0 auto",
-        padding: "22px 20px"
+        fontFamily: sans, color: tinta, background: "#fff",
+        width: 340, maxWidth: "100%", margin: "0 auto",
+        padding: "26px 22px 20px", borderRadius: 8, position: "relative"
       }
     },
 
-    // Encabezado: el negocio
+    // ── Encabezado del negocio ──
     React.createElement(
       "div",
-      { style: { textAlign: "center" } },
+      { style: { textAlign: "center", paddingBottom: 16, borderBottom: "2px solid " + tinta } },
       React.createElement("div", {
-        style: { fontSize: 19, fontWeight: 700, letterSpacing: -0.02, textTransform: "uppercase" }
+        style: { fontSize: 20, fontWeight: 800, letterSpacing: -0.02, textTransform: "uppercase", lineHeight: 1.15 }
       }, negocio.nombre || "Mi negocio"),
-      negocio.direccion && React.createElement("div", { style: { fontSize: 11.5, color: gris, marginTop: 3 } }, negocio.direccion),
-      negocio.telefono && React.createElement("div", { style: { fontSize: 11.5, color: gris, marginTop: 1 } }, "Tel " + negocio.telefono)
+      negocio.direccion && React.createElement("div", {
+        style: { fontSize: 11, color: gris, marginTop: 5, lineHeight: 1.4 }
+      }, negocio.direccion),
+      negocio.telefono && React.createElement("div", {
+        style: { fontSize: 11, color: gris, marginTop: 2 }
+      }, "Tel " + negocio.telefono)
     ),
 
-    separador(16),
-
-    // Datos de la venta
+    // ── Datos de la venta: nº grande, fecha, cliente ──
     React.createElement(
       "div",
-      { style: { fontSize: 11.5, color: gris, display: "flex", flexDirection: "column", gap: 3 } },
+      { style: { marginTop: 16, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 } },
       React.createElement(
-        "div",
-        { style: { display: "flex", justifyContent: "space-between", gap: 10 } },
-        React.createElement("span", { style: { fontFamily: mono, color: "#000", fontWeight: 600 } }, "N\u00BA " + numero),
-        React.createElement("span", null, fechaHora)
+        "div", null,
+        React.createElement("div", {
+          style: { fontSize: 9.5, color: grisTenue, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase" }
+        }, "Ticket"),
+        React.createElement("div", {
+          style: { fontFamily: mono, fontSize: 22, fontWeight: 700, letterSpacing: -0.02, lineHeight: 1.1, marginTop: 2 }
+        }, "N\u00BA " + numero)
       ),
-      React.createElement("div", null, venta.clienteNombre || "Consumidor final"),
-      venta.listaPrecio && React.createElement("div", null, "Precio " + venta.listaPrecio.toLowerCase())
+      React.createElement(
+        "div", { style: { textAlign: "right" } },
+        React.createElement("div", {
+          style: { fontSize: 9.5, color: grisTenue, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase" }
+        }, "Fecha"),
+        React.createElement("div", {
+          style: { fontFamily: mono, fontSize: 12.5, fontWeight: 600, marginTop: 3 }
+        }, fechaHora)
+      )
     ),
 
-    // Lo que debía de antes
+    React.createElement(
+      "div",
+      { style: { marginTop: 14, padding: "10px 12px", background: grisFondo, borderRadius: 7 } },
+      React.createElement("div", {
+        style: { fontSize: 9.5, color: grisTenue, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase" }
+      }, "Cliente"),
+      React.createElement("div", {
+        style: { fontSize: 13.5, fontWeight: 600, marginTop: 2 }
+      }, venta.clienteNombre || "Consumidor final"),
+      (venta.listaPrecio || venta.usuarioNombre) && React.createElement("div", {
+        style: { fontSize: 11, color: gris, marginTop: 3, display: "flex", gap: 10, flexWrap: "wrap" } },
+        venta.listaPrecio && React.createElement("span", null, "Lista: " + venta.listaPrecio),
+        venta.usuarioNombre && React.createElement("span", null, "Vendedor: " + venta.usuarioNombre)
+      )
+    ),
+
+    // Saldo anterior si lo hay
     venta.saldoAnterior > 0 && React.createElement(
       "div",
-      { style: { marginTop: 12, padding: "9px 12px", border: "1px solid " + linea, borderRadius: 8 } },
-      fila("SALDO ANTERIOR", money(venta.saldoAnterior), { tam: 11.5, fuerte: true })
+      { style: { marginTop: 10, padding: "9px 12px", background: "#FFF5E6", border: "1px solid #F0D28A", borderRadius: 7, display: "flex", justifyContent: "space-between", alignItems: "center" } },
+      React.createElement("span", { style: { fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "#7A5B00" } }, "Saldo anterior"),
+      React.createElement("span", { style: { fontFamily: mono, fontSize: 13.5, fontWeight: 700, color: "#7A5B00" } }, money(venta.saldoAnterior))
     ),
 
-    separador(),
-
-    // Los productos
+    // ── Productos ──
+    React.createElement("div", { style: { marginTop: 20 } }, chipSeccion("Detalle de compra")),
     React.createElement(
       "div",
-      { style: { display: "flex", flexDirection: "column", gap: 10 } },
+      { style: { marginTop: 12, display: "flex", flexDirection: "column", gap: 12 } },
       (venta.items || []).map((it, i) => {
         const detalle = detalleItem(it);
+        const subtotal = (it.cantidad || 0) * (it.precioUnit || 0);
         return React.createElement(
           "div",
-          { key: i },
+          { key: i, style: { display: "flex", gap: 10, alignItems: "flex-start" } },
+          // Cantidad como chip
+          React.createElement("div", {
+            style: { flexShrink: 0, minWidth: 34, padding: "3px 7px", background: tinta, color: "#fff", borderRadius: 5, textAlign: "center", fontFamily: mono, fontSize: 11.5, fontWeight: 700, marginTop: 1 }
+          }, (it.cantidad || 0) + "\u00D7"),
+          // Nombre + detalle
           React.createElement(
-            "div",
-            { style: { display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" } },
-            React.createElement("span", { style: { fontSize: 12.5, fontWeight: 600, lineHeight: 1.3 } }, it.nombre),
-            React.createElement("span", { style: { fontFamily: mono, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" } },
-              money(it.cantidad * it.precioUnit))
+            "div", { style: { flex: 1, minWidth: 0 } },
+            React.createElement("div", { style: { fontSize: 13, fontWeight: 600, lineHeight: 1.3 } }, it.nombre),
+            React.createElement("div", { style: { fontSize: 11, color: gris, marginTop: 2 } },
+              money(it.precioUnit) + " c/u" + (detalle ? "  \u00B7  " + detalle : ""))
           ),
-          React.createElement("div", { style: { fontSize: 11, color: gris, marginTop: 2 } },
-            it.cantidad + " \u00D7 " + money(it.precioUnit) + (detalle ? "  \u00B7  " + detalle : ""))
+          // Precio total del ítem
+          React.createElement("div", {
+            style: { fontFamily: mono, fontSize: 13, fontWeight: 700, whiteSpace: "nowrap", marginTop: 1 }
+          }, money(subtotal))
         );
       })
     ),
 
-    separador(),
-
-    // Totales
+    // ── Totales ──
+    React.createElement("div", { style: { marginTop: 20 } }, chipSeccion("Total")),
     React.createElement(
       "div",
-      null,
+      { style: { marginTop: 10 } },
       (venta.descuento > 0 || venta.recargo > 0 || venta.envio > 0) &&
-        fila("Subtotal", money(venta.subtotal != null ? venta.subtotal : venta.total), { tenue: true }),
-      venta.descuento > 0 && fila("Descuento", "\u2212" + money(venta.descuento), { tenue: true, arriba: 4 }),
-      venta.recargo > 0 && fila("Recargo", money(venta.recargo), { tenue: true, arriba: 4 }),
-      venta.envio > 0 && fila("Envío", money(venta.envio), { tenue: true, arriba: 4 }),
-      React.createElement("div", { style: { height: 1, background: "#000", margin: "10px 0" } }),
+        filaKV("Subtotal", money(venta.subtotal != null ? venta.subtotal : venta.total), { tenue: true, tam: 12 }),
+      venta.descuento > 0 && filaKV("Descuento", "\u2212 " + money(venta.descuento), { tenue: true, arriba: 3, tam: 12, color: sage }),
+      venta.recargo > 0 && filaKV("Recargo", "+ " + money(venta.recargo), { tenue: true, arriba: 3, tam: 12 }),
+      venta.envio > 0 && filaKV("Env\u00EDo", "+ " + money(venta.envio), { tenue: true, arriba: 3, tam: 12 })
+    ),
+    // Total con contraste fuerte
+    React.createElement(
+      "div",
+      {
+        style: {
+          marginTop: 12, padding: "14px 16px", background: tinta, color: "#fff",
+          borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center"
+        }
+      },
       React.createElement(
-        "div",
-        { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 } },
-        React.createElement("span", { style: { fontSize: 11.5, fontWeight: 700, letterSpacing: "0.05em", whiteSpace: "nowrap" } }, "TOTAL"),
-        React.createElement("span", { style: { fontFamily: mono, fontSize: 22, fontWeight: 700, letterSpacing: -0.02 } }, money(venta.total))
+        "div", null,
+        React.createElement("div", { style: { fontSize: 10.5, fontWeight: 700, letterSpacing: "0.14em", opacity: 0.75 } }, "TOTAL"),
+        React.createElement("div", { style: { fontSize: 10.5, opacity: 0.65, marginTop: 3 } },
+          unidades + (unidades === 1 ? " unidad" : " unidades"))
       ),
-      React.createElement("div", { style: { fontSize: 11, color: gris, marginTop: 3 } },
-        unidades + (unidades === 1 ? " unidad" : " unidades"))
+      React.createElement("div", {
+        style: { fontFamily: mono, fontSize: 26, fontWeight: 800, letterSpacing: -0.02, whiteSpace: "nowrap" }
+      }, money(venta.total))
     ),
 
-    separador(),
-
-    // Cómo pagó
+    // ── Pago ──
+    React.createElement("div", { style: { marginTop: 20 } }, chipSeccion("Pago")),
     React.createElement(
+      "div", { style: { marginTop: 12, display: "flex", flexDirection: "column", gap: 8 } },
+      (venta.pagos && venta.pagos.length > 1 ? venta.pagos : [{ metodo: venta.metodoPago, monto: venta.total }])
+        .map((x, i) => React.createElement(
+          "div",
+          { key: i, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 12px", background: grisFondo, borderRadius: 6, fontFamily: sans } },
+          React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 9, fontSize: 12.5, fontWeight: 600 } },
+            React.createElement("span", { style: { fontSize: 14, opacity: 0.7 } }, iconoPago[x.metodo] || "\u2022"),
+            metodoPagoLabel[x.metodo] || x.metodo || "\u2014"
+          ),
+          React.createElement("span", { style: { fontFamily: mono, fontSize: 12.5, fontWeight: 700 } }, money(x.monto))
+        ))
+    ),
+
+    // Pagó con / Vuelto / A cuenta
+    venta.montoEntregado != null && venta.montoEntregado > (venta.total || 0) && React.createElement(
       "div",
-      null,
-      React.createElement("div", { style: { fontSize: 10.5, color: gris, letterSpacing: "0.1em", fontWeight: 700, marginBottom: 7 } }, "PAGO"),
-      venta.pagos && venta.pagos.length > 1
-        ? venta.pagos.map((x, i) => fila(metodoPagoLabel[x.metodo] || x.metodo, money(x.monto), { arriba: i ? 4 : 0 }))
-        : fila(metodoPagoLabel[venta.metodoPago] || venta.metodoPago || "\u2014", money(venta.total)),
-      // "Pagó con" y "Vuelto" aparecen cuando lo entregado difiere del total:
-      // efectivo con vuelto, o pago dividido con excedente que va a cuenta.
-      venta.montoEntregado != null && venta.montoEntregado > (venta.total || 0) && React.createElement(
-        "div",
-        { style: { marginTop: 7, paddingTop: 7, borderTop: "1px dotted " + linea } },
-        fila("Pagó con", money(venta.montoEntregado), { tenue: true }),
-        fila("Vuelto", money(venta.vuelto || 0), { tenue: true, arriba: 4 }),
-        // Si el excedente fue a cuenta, se aclara para que quede documentado
-        (venta.montoEntregado - (venta.total || 0) > 0 && (venta.vuelto || 0) === 0) && fila(
-          "A cuenta", money(venta.montoEntregado - (venta.total || 0)), { tenue: true, arriba: 4 }
-        )
+      { style: { marginTop: 10, padding: "10px 12px", border: "1px dashed " + grisBorde, borderRadius: 6 } },
+      filaKV("Pag\u00F3 con", money(venta.montoEntregado), { tenue: true, tam: 12 }),
+      filaKV("Vuelto", money(venta.vuelto || 0), { tenue: true, arriba: 4, tam: 12 }),
+      (venta.montoEntregado - (venta.total || 0) > 0 && (venta.vuelto || 0) === 0) && filaKV(
+        "A cuenta", money(venta.montoEntregado - (venta.total || 0)),
+        { tenue: true, arriba: 4, tam: 12, color: sage }
       )
     ),
 
-    // Con qué saldo se va
+    // ── Saldo pendiente ──
     venta.saldoPosterior != null && (venta.saldoPosterior > 0 || venta.saldoAnterior > 0) && React.createElement(
       "div",
       {
         style: {
-          marginTop: 12, padding: "11px 13px", borderRadius: 8,
-          border: "1.5px solid #000"
+          marginTop: 16, padding: "13px 15px", borderRadius: 8,
+          border: "2px solid " + (venta.saldoPosterior > 0 ? rose : sage),
+          background: venta.saldoPosterior > 0 ? "#FFF0F2" : "#EEFAF4",
+          display: "flex", justifyContent: "space-between", alignItems: "center"
         }
       },
-      React.createElement(
-        "div",
-        { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 } },
-        React.createElement("span", { style: { fontSize: 11.5, fontWeight: 700, letterSpacing: "0.05em", whiteSpace: "nowrap" } },
-          venta.saldoPosterior > 0 ? "SALDO PENDIENTE" : "SALDO"),
-        React.createElement("span", { style: { fontFamily: mono, fontSize: 15, fontWeight: 700 } },
-          venta.saldoPosterior > 0 ? money(venta.saldoPosterior) : "Sin deuda")
-      )
+      React.createElement("div", null,
+        React.createElement("div", {
+          style: { fontSize: 10, fontWeight: 800, letterSpacing: "0.14em", textTransform: "uppercase", color: venta.saldoPosterior > 0 ? rose : sage }
+        }, venta.saldoPosterior > 0 ? "Saldo pendiente" : "Saldo"),
+        React.createElement("div", {
+          style: { fontSize: 10.5, color: gris, marginTop: 3 }
+        }, venta.saldoPosterior > 0 ? "Queda por pagar" : "\u00A1Cliente al d\u00EDa!")
+      ),
+      React.createElement("div", {
+        style: { fontFamily: mono, fontSize: 20, fontWeight: 800, letterSpacing: -0.02, color: venta.saldoPosterior > 0 ? rose : sage }
+      }, venta.saldoPosterior > 0 ? money(venta.saldoPosterior) : "Al d\u00EDa")
     ),
 
+    // ── Pie ──
     React.createElement("div", {
-      style: { textAlign: "center", marginTop: 18, paddingTop: 14, borderTop: "1px solid " + linea, fontSize: 11.5, color: gris }
-    }, negocio.mensaje || "\xA1Gracias por su compra!")
+      style: { textAlign: "center", marginTop: 20, paddingTop: 14, borderTop: "1px solid " + grisBorde, fontSize: 11, color: gris, lineHeight: 1.5 }
+    },
+      React.createElement("div", { style: { fontWeight: 600, color: tinta, marginBottom: 4 } },
+        negocio.mensaje || "\u00A1Gracias por su compra!"),
+      React.createElement("div", { style: { fontSize: 10, color: grisTenue, letterSpacing: "0.08em", textTransform: "uppercase", marginTop: 8 } },
+        "Conserv\u00E1 este ticket para cualquier cambio")
+    )
   );
 }
 const BLE_PRINTER_SERVICES = [
