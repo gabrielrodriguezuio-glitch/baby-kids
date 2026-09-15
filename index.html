@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.908";
+const VERSION_APP = "9.909";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -28815,6 +28815,7 @@ function VentasReportes({ data, rango, persist }) {
   const [anulando, setAnulando] = useState(null);
   const [editando, setEditando] = useState(null);
   const [reimprimiendo, setReimprimiendo] = useState(null);
+  const [menuVenta, setMenuVenta] = useState(null);
   const [anulandoVarias, setAnulandoVarias] = useState(null);
   // IDs de las ventas tildadas. Vacío = no hay selección, se exporta todo.
   const [seleccionadas, setSeleccionadas] = useState([]);
@@ -29107,52 +29108,33 @@ function VentasReportes({ data, rango, persist }) {
                           "div",
                           { style: { display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" } },
                           conDevolucionParcial && React.createElement(SwingTag, { tone: "mustard", small: true }, "Parcial"),
-                          React.createElement(
-                            "button",
-                            {
-                              onClick: () => setReimprimiendo(v),
-                              className: "ct-accion",
-                              title: "Reimprimir el ticket de esta venta",
-                              style: { display: "inline-flex", alignItems: "center", gap: 5, background: "var(--surface-2)", border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12, color: "var(--ink)", cursor: "pointer" }
+                          // Un solo botón de 3 puntos con todas las acciones adentro:
+                          // Ticket, Editar, Devolver y Anular. Antes eran cuatro botones
+                          // en una sola celda y ocupaban demasiado ancho.
+                          React.createElement("button", {
+                            onClick: (e) => {
+                              e.stopPropagation();
+                              setMenuVenta(menuVenta && menuVenta.id === v.id
+                                ? null
+                                : { id: v.id, rect: e.currentTarget.getBoundingClientRect() });
                             },
-                            React.createElement(Receipt, { size: 12 }),
-                            " Ticket"
-                          ),
-                          React.createElement(
-                            "button",
-                            {
-                              onClick: () => setEditando(v),
-                              className: "ct-accion",
-                              title: "Editar la venta: quitar productos ya cobrados",
-                              style: { display: "inline-flex", alignItems: "center", gap: 5, background: "var(--surface-2)", border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12, color: "var(--denim)", cursor: "pointer" }
-                            },
-                            React.createElement(Pencil, { size: 12 }),
-                            " Editar"
-                          ),
-                          React.createElement(
-                            "button",
-                            {
-                              onClick: () => setDevolviendo(v),
-                              className: "ct-accion",
-                              title: "Devolver o anular esta venta",
-                              style: { display: "inline-flex", alignItems: "center", gap: 5, background: "var(--surface-2)", border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12, color: "var(--ink)", cursor: "pointer" }
-                            },
-                            React.createElement(ArrowRightLeft, { size: 12 }),
-                            " Devolver"
-                          ),
-                          // Anular es devolver todo de una: el caso más común
-                          // es una venta cargada por error, y hacerlo producto
-                          // por producto era tedioso.
-                          puede(data, "hacerDevoluciones") && React.createElement(
-                            "button",
-                            {
-                              onClick: () => setAnulando(v),
-                              className: "ct-accion",
-                              title: "Anular la venta entera",
-                              style: { display: "inline-flex", alignItems: "center", gap: 5, background: "var(--surface-2)", border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12, color: "var(--rose)", cursor: "pointer" }
-                            },
-                            React.createElement(X, { size: 12 }),
-                            " Anular"
+                            title: "Acciones",
+                            className: "ct-accion",
+                            style: { background: "var(--surface-2)", border: "none", borderRadius: 7, padding: "6px 8px", cursor: "pointer", color: "var(--muted)", display: "inline-flex" }
+                          }, React.createElement(MoreHorizontal, { size: 17 })),
+                          menuVenta && menuVenta.id === v.id && React.createElement(
+                            MenuFila,
+                            { ancla: menuVenta.rect, onClose: () => setMenuVenta(null) },
+                            [
+                              ["Ver ticket", () => { setReimprimiendo(v); setMenuVenta(null); }, Receipt, false],
+                              ["Editar venta", () => { setEditando(v); setMenuVenta(null); }, Pencil, false],
+                              ["Devolver", () => { setDevolviendo(v); setMenuVenta(null); }, ArrowRightLeft, false],
+                              puede(data, "hacerDevoluciones") ? ["Anular venta", () => { setAnulando(v); setMenuVenta(null); }, X, true] : null
+                            ].filter(Boolean).map(([texto, fn, Icono, peligro]) => React.createElement("button", {
+                              key: texto,
+                              onClick: fn,
+                              style: { display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left", padding: "10px 16px", border: "none", background: "none", cursor: "pointer", fontSize: 13.5, fontFamily: "'Inter', sans-serif", color: peligro ? "var(--rose)" : "var(--ink)" }
+                            }, React.createElement(Icono, { size: 16, color: peligro ? "var(--rose)" : "var(--muted)", strokeWidth: 1.9 }), texto))
                           )
                         )
                 )
