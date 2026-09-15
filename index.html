@@ -129,7 +129,13 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.903";
+const VERSION_APP = "9.904";
+// v9.904 (2026-09-15)
+// - Transferencias: eliminados los switches "Pedir confirmación de recepción"
+//   y "Transferir aunque no figure stock". Ahora el stock pasa directo al
+//   destino (sin paso de confirmación) y siempre se puede transferir aunque
+//   el origen figure en cero o negativo.
+//
 // v9.903 (2026-09-15)
 // - ARREGLO del pago dividido con parte a cuenta corriente: si una venta se
 //   cobraba con varios métodos y una parte iba a CC (ej. 5000 efectivo +
@@ -22747,20 +22753,16 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
   const [destino, setDestino] = useState("");
   const [motivo, setMotivo] = useState("");
   const [nota, setNota] = useState("");
-  // Viene activado: que alguien del destino confirme la llegada es lo que
-  // permite saber quién recibió y detectar si algo no llegó.
-  const [enCamino, setEnCamino] = useState(true);
+  // Las transferencias van directo al destino sin confirmación.
+  const enCamino = false;
   const [query, setQuery] = useState("");
   const [escaneando, setEscaneando] = useState(false);
   const [abierto, setAbierto] = useState(null);
   // Lo que se va a transferir: { "productoId|talle": cantidad }
   const [sel, setSel] = useState({});
   const [error, setError] = useState("");
-  // Mientras las cantidades cargadas no sean confiables, se permite
-  // transferir aunque el origen figure sin stock (queda en negativo ah\u00ED y
-  // el movimiento se registra igual). Cuando el stock est\u00E9 controlado,
-  // se apaga el interruptor y vuelve a exigir disponible.
-  const [sinControl, setSinControl] = useState(true);
+  // Siempre se permite transferir aunque no haya stock en el origen.
+  const sinControl = true;
 
   const listos = origen && destino && origen !== destino;
   const clave = (id, talle) => id + "|" + (talle || "");
@@ -23150,36 +23152,6 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
         React.createElement("input", { style: inputEditor, value: motivo, onChange: (e) => setMotivo(e.target.value), placeholder: "ej. reposición, evento…" })),
       React.createElement(CampoEditor, { label: "Notas (opcional)" },
         React.createElement("input", { style: inputEditor, value: nota, onChange: (e) => setNota(e.target.value), placeholder: "Notas adicionales…" }))
-    ),
-
-    React.createElement(
-      "label",
-      { style: { display: "flex", alignItems: "center", gap: 12, marginTop: 16, cursor: "pointer" } },
-      React.createElement(Switch, { on: enCamino, onChange: () => setEnCamino(!enCamino) }),
-      React.createElement(
-        "span",
-        null,
-        React.createElement("span", { style: { display: "block", fontSize: 14, fontWeight: 600 } }, "Pedir confirmación de recepción"),
-        React.createElement("span", { style: { display: "block", fontSize: 12.5, color: "var(--muted)", marginTop: 3 } },
-          enCamino
-            ? "Sale del origen ahora. Alguien del destino confirma la llegada y queda registrado quién."
-            : "Entra directo al destino, sin que nadie confirme que llegó.")
-      )
-    ),
-
-    React.createElement(
-      "label",
-      { style: { display: "flex", alignItems: "center", gap: 12, marginTop: 14, cursor: "pointer" } },
-      React.createElement(Switch, { on: sinControl, onChange: () => setSinControl(!sinControl) }),
-      React.createElement(
-        "span",
-        null,
-        React.createElement("span", { style: { display: "block", fontSize: 14, fontWeight: 600 } }, "Transferir aunque no figure stock"),
-        React.createElement("span", { style: { display: "block", fontSize: 12.5, color: "var(--muted)", marginTop: 3 } },
-          sinControl
-            ? "Se mueve igual y el origen puede quedar en negativo. \u00DAtil mientras las cantidades cargadas no sean las reales."
-            : "S\u00F3lo se puede transferir lo que el origen tiene disponible.")
-      )
     ),
 
     error && React.createElement("p", { style: { color: "var(--rose)", fontSize: 13, marginTop: 14 } }, error),
