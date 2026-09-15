@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.913";
+const VERSION_APP = "9.914";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -520,15 +520,16 @@ const mesCorto = (iso) => {
 
 // Lo que un cliente debe: las ventas fiadas y los cargos, menos los pagos.
 // Vive acá porque lo usan la ficha del cliente y el punto de venta.
+// El saldo sale SÓLO de movimientosCC: cada venta fiada deja su "cargo" y
+// cada cobro deja su "pago". Es el libro mayor y se carga completo desde la
+// nube. Las ventas se traen sólo de los últimos 6 meses, así que sumarlas
+// acá contaba doble lo reciente y perdía lo viejo.
 const saldoDeCliente = (data, clienteId) => {
   if (!clienteId) return 0;
-  const ventas = (data.ventas || [])
-    .filter((v) => v.clienteId === clienteId && !esDevolucion(v) && v.metodoPago === "cuenta_corriente")
-    .reduce((a, v) => a + (v.total || 0), 0);
   const movs = (data.movimientosCC || []).filter((m) => m.clienteId === clienteId);
   const cargos = movs.filter((m) => m.tipo === "cargo").reduce((a, m) => a + (m.monto || 0), 0);
   const pagos = movs.filter((m) => m.tipo !== "cargo").reduce((a, m) => a + (m.monto || 0), 0);
-  return Math.max(0, ventas + cargos - pagos);
+  return Math.max(0, cargos - pagos);
 };
 
 const claveVariante = (v) => String(v.talle || "") + "|" + String(v.color || "");
@@ -1792,20 +1793,6 @@ function ControlTienda() {
     if (hayHuerfanos(data)) persist(migrarDatos(data));
   }, [loading, data.negocios]);
 
-  // Arregla el doble cobro de cuenta corriente que había en versiones
-  // anteriores: cada venta fiada creaba, además de la venta, un movimiento
-  // "cargo" con el mismo monto, y saldoDeCliente los sumaba a los dos. Se
-  // eliminan esos cargos duplicados una sola vez. Los fiados manuales y los
-  // saldos importados ("Compras anteriores") NO se tocan.
-  useEffect(() => {
-    if (loading) return;
-    const duplicados = (data.movimientosCC || []).filter((m) =>
-      m.tipo === "cargo" && m.concepto === "Venta en cuenta corriente");
-    if (!duplicados.length) return;
-    const limpios = (data.movimientosCC || []).filter((m) =>
-      !(m.tipo === "cargo" && m.concepto === "Venta en cuenta corriente"));
-    persist({ ...data, movimientosCC: limpios });
-  }, [loading, data.movimientosCC]);
 
   // Cajas fantasma: sesiones que quedaron abiertas a nombre de un usuario
   // que ya no existe (uno que se borró, o una caja abierta antes de crear
@@ -11990,23 +11977,16 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     productosActualizados = productosActualizados.map((p) =>
       esCombo(p) ? fijarEnNegocio(p, negocioId, { activo: p.activo !== false, stock: stockCombo(p, productosActualizados, negocioId), variantes: [] }) : p);
     let movimientosCC = data.movimientosCC || [];
-    // La deuda de una venta en cuenta corriente vive en la venta misma
-    // (saldoDeCliente la cuenta). Antes acá se creaba además un movimiento
-    // "cargo" con el mismo monto: eso sumaba la deuda dos veces. Se quitó.
-    //
-    // PERO en pago dividido la venta se guarda con el método del primer pago
-    // (no como "cuenta_corriente"), así que la parte que el cliente dejó a
-    // cuenta NO la contaría saldoDeCliente. Para ese caso se registra un
-    // cargo solo por ese monto. Como la venta no está marcada como CC, no
-    // se duplica.
-    if (variosPagos && clienteId) {
-      const montoACuenta = montoPorMetodo("cuenta_corriente");
-      if (montoACuenta > 0) {
-        movimientosCC = [
-          { id: uid(), clienteId, fecha: todayISO(), tipo: "cargo", monto: montoACuenta, concepto: "Parte de venta a cuenta corriente" },
-          ...movimientosCC
-        ];
-      }
+    // Toda venta fiada deja su "cargo" en el libro mayor. Vale igual para
+    // pago simple en cuenta corriente y para la parte a cuenta de un pago
+    // dividido: montoPorMetodo suma los dos casos.
+    const montoCC = montoPorMetodo("cuenta_corriente");
+    if (montoCC > 0 && clienteId) {
+      movimientosCC = [
+        { id: uid(), clienteId, fecha: todayISO(), tipo: "cargo", monto: montoCC,
+          concepto: variosPagos ? "Parte de venta a cuenta corriente" : "Venta en cuenta corriente" },
+        ...movimientosCC
+      ];
     }
     // Si los pagos superan el total y hay un cliente con saldo pendiente, el
     // excedente se registra como pago a cuenta corriente. Es el caso de un
@@ -16375,7 +16355,19 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       monto: v.total,
       venta: v
     })),
-    ...movimientos.map((m) => ({
+    ...movimientos.filter((m) => {
+      // Un cargo de venta y su venta son el mismo hecho: el cargo es el
+      // asiento, la venta el detalle. Si la venta está cargada se muestra
+      // ella (tiene los productos) y se oculta el cargo. El cargo se
+      // muestra solo, tal cual, cuando su venta ya no se trae por antigua.
+      if (m.tipo !== "cargo") return true;
+      const deVenta = m.concepto === "Venta en cuenta corriente"
+        || m.concepto === "Parte de venta a cuenta corriente";
+      if (!deVenta) return true;
+      const tieneVenta = ventasFiadas.some((v) => v.fecha === m.fecha
+        && Math.round(v.total || 0) === Math.round(m.monto || 0));
+      return !tieneVenta;
+    }).map((m) => ({
       id: m.id,
       clase: m.tipo === "cargo" ? "venta" : "pago",
       fecha: m.fecha,
