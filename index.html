@@ -129,8 +129,19 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.902";
-// v9.902 (2026-09-15)
+const VERSION_APP = "9.903";
+// v9.903 (2026-09-15)
+// - ARREGLO del pago dividido con parte a cuenta corriente: si una venta se
+//   cobraba con varios métodos y una parte iba a CC (ej. 5000 efectivo +
+//   4000 transferencia + 1000 CC), ese tramo a CC no quedaba anotado en
+//   ningún lado. La venta se guarda con el método del primer pago
+//   (efectivo), así que el saldo no la contaba, y en v9.901 se había
+//   sacado el cargo automático porque duplicaba las ventas 100% CC. Ahora
+//   se crea un cargo específico "Parte a cuenta corriente de una venta"
+//   SÓLO cuando el pago es dividido y hay tramo a CC. Las ventas 100% CC
+//   siguen contándose una sola vez, como en la 9.901.
+//
+// v9.902
 // - ARREGLO: cancelar una transferencia no descontaba del destino en algunos
 //   casos. La cancelación ahora se guía por "está en el destino" (estado
 //   completada, o sin estado guardado — transferencias viejas), no depende
@@ -12330,15 +12341,27 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     productosActualizados = productosActualizados.map((p) =>
       esCombo(p) ? fijarEnNegocio(p, negocioId, { activo: p.activo !== false, stock: stockCombo(p, productosActualizados, negocioId), variantes: [] }) : p);
     let movimientosCC = data.movimientosCC || [];
-    // Antes se creaba un movimiento "cargo" con el mismo monto de la venta a
-    // cuenta corriente. La venta ya suma al saldo por sí sola (el cálculo
-    // toma ventas + cargos), así que ese cargo hacía que la deuda se contara
-    // dos veces: por eso en la ficha aparecían dos "Fiado" del mismo importe
-    // y el cliente parecía deber el doble. La venta es la fuente de verdad y
-    // el cargo ya no se crea.
-    // Los cargos "Compras anteriores" (importación de clientes) y los cargos
-    // manuales del "Registrar fiado" siguen igual: no tienen venta asociada,
-    // y sin ellos el saldo no cierra.
+    // Cuenta corriente en esta venta:
+    //   - Si toda la venta va a CC (metodoPago === "cuenta_corriente"), la
+    //     venta ya suma al saldo por sí sola (saldoDeCliente cuenta ventas
+    //     con ese método). No hay que crear ningún cargo.
+    //   - Si el pago es dividido y una PARTE va a CC, la venta se guarda con
+    //     el método del PRIMER pago (no CC), así que el saldo no la vería.
+    //     En ese caso hay que crear un cargo por la parte a CC. Sin esto, el
+    //     tramo a cuenta corriente queda perdido: el cliente pagó menos del
+    //     total y su deuda no crece.
+    const montoACC = montoPorMetodo("cuenta_corriente");
+    const ventaEsTodoCC = metodoPago === "cuenta_corriente";
+    if (montoACC > 0 && !ventaEsTodoCC && clienteId) {
+      movimientosCC = [
+        {
+          id: uid(), clienteId, fecha: todayISO(),
+          tipo: "cargo", monto: montoACC,
+          concepto: "Parte a cuenta corriente de una venta"
+        },
+        ...movimientosCC
+      ];
+    }
     // La deuda que se sumó al carrito se descuenta de la cuenta del cliente
     const lineaDeuda = cart.find((it) => it.esDeuda);
     if (lineaDeuda && lineaDeuda.clienteDeuda) {
