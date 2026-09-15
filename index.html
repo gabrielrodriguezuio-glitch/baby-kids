@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.903";
+const VERSION_APP = "9.904";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -11644,14 +11644,15 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
   const deudaEnCarrito = cart.find((it) => it.esDeuda);
 
   // Se puede cobrar todo el saldo o sólo una parte: el cliente queda debiendo
-  // la diferencia. Sin monto, se toma la deuda completa.
-  // Suma la deuda completa del cliente como una línea más del carrito
-  const sumarDeuda = () => {
+  // la diferencia. El monto viene del input del CheckoutModal; si no se pone
+  // nada, se cobra todo.
+  const sumarDeuda = (monto) => {
     if (!clienteDelCarrito || saldoCliente <= 0 || deudaEnCarrito) return;
+    const cobrar = Math.min(Math.max(1, Math.round(Number(monto) || saldoCliente)), saldoCliente);
     setCart([...cart, {
       productoId: null, manualId: uid(), esDeuda: true, clienteDeuda: clienteId,
-      nombre: "Saldo pendiente de " + clienteDelCarrito.nombre,
-      precioUnit: saldoCliente, costo: 0, cantidad: 1, stockDisp: Infinity
+      nombre: "Saldo pendiente de " + clienteDelCarrito.nombre + (cobrar < saldoCliente ? " (parcial)" : ""),
+      precioUnit: cobrar, costo: 0, cantidad: 1, stockDisp: Infinity
     }]);
   };
   // Prefijo por tipo para que una línea manual y una de producto nunca puedan
@@ -13148,6 +13149,7 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
   const [montoEntregado, setMontoEntregado] = useState("");
   const [extras, setExtras] = useState({ ...EXTRAS_VACIOS });
   const [comprobantes, setComprobantes] = useState([]);
+  const [montoDeuda, setMontoDeuda] = useState("");
   const [error, setError] = useState("");
 
   // El precio depende de cómo pague: efectivo va mayorista siempre, y
@@ -13210,7 +13212,13 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
       if (pagos.cuenta_corriente && !cliente) return setError("Elegí un cliente para usar cuenta corriente.");
     } else {
       if (metodoPago === "cuenta_corriente" && !cliente) return setError("Elegí un cliente para cargar la venta a su cuenta corriente.");
-      if (metodoPago === "efectivo" && montoEntregado !== "" && Number(montoEntregado) < total) return setError("El monto recibido es menor al total.");
+      if (metodoPago === "efectivo" && montoEntregado !== "" && Number(montoEntregado) < total) {
+        // Si el carrito tiene solo la deuda del cliente (sin productos), se
+        // permite pagar menos: el saldo se reduce por lo que pague. Si hay
+        // productos mezclados, esos sí tienen que estar cubiertos.
+        const soloDeuda = lineas.every((it) => it.esDeuda);
+        if (!soloDeuda) return setError("El monto recibido es menor al total.");
+      }
     }
     setError("");
     const detallePagos = variosPagos
@@ -13339,24 +13347,41 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
             }))
           ]
         }),
-        // Si el cliente debe plata, se suma la deuda completa de un toque
-        cliente && saldoCliente > 0 && !deudaEnCarrito && React.createElement("button", {
-          onClick: () => onSumarDeuda(),
-          style: {
-            display: "flex", alignItems: "center", gap: 9, width: "100%", marginTop: 9,
-            padding: "11px 12px", borderRadius: 9, cursor: "pointer",
-            border: "1px solid color-mix(in srgb, var(--rose) 35%, transparent)",
-            background: "color-mix(in srgb, var(--rose) 10%, transparent)",
-            color: "var(--ink)", fontSize: 13, fontFamily: "'Inter', sans-serif", textAlign: "left"
-          }
-        },
+        // Si el cliente debe plata, se puede cobrar todo o una parte.
+        // El monto es editable: el vendedor escribe cuánto paga el cliente.
+        cliente && saldoCliente > 0 && !deudaEnCarrito && React.createElement(
+          "div",
+          {
+            style: {
+              display: "flex", alignItems: "center", gap: 9, width: "100%", marginTop: 9,
+              padding: "11px 12px", borderRadius: 9,
+              border: "1px solid color-mix(in srgb, var(--rose) 35%, transparent)",
+              background: "color-mix(in srgb, var(--rose) 10%, transparent)",
+              fontSize: 13, fontFamily: "'Inter', sans-serif"
+            }
+          },
           React.createElement(Wallet, { size: 15, color: "var(--rose)", style: { flexShrink: 0 } }),
-          React.createElement("span", { style: { flex: 1 } }, "Debe ", money(saldoCliente)),
-          React.createElement("span", { style: { color: "var(--denim)", fontWeight: 600 } }, "Cobrar saldo")
+          React.createElement("span", { style: { flex: 1, minWidth: 0 } }, "Debe ", money(saldoCliente)),
+          React.createElement("input", {
+            type: "number",
+            min: 1, max: saldoCliente, step: 1,
+            placeholder: String(saldoCliente),
+            value: montoDeuda,
+            onChange: (e) => setMontoDeuda(e.target.value),
+            style: { ...inputStyle, width: 90, textAlign: "center", padding: "6px 8px", fontSize: 13, flexShrink: 0 }
+          }),
+          React.createElement("button", {
+            onClick: () => onSumarDeuda(Number(montoDeuda) || saldoCliente),
+            style: { background: "none", border: "none", cursor: "pointer", color: "var(--denim)", fontWeight: 600, fontSize: 13, whiteSpace: "nowrap", flexShrink: 0 }
+          }, "Cobrar")
         ),
         deudaEnCarrito && React.createElement("div", {
           style: { marginTop: 9, fontSize: 12.5, color: "var(--sage)", display: "flex", alignItems: "center", gap: 7 }
-        }, React.createElement(Check, { size: 14 }), "Saldo pendiente agregado al total")
+        }, React.createElement(Check, { size: 14 }),
+          "Saldo cobrado: ", money(deudaEnCarrito.precioUnit),
+          deudaEnCarrito.precioUnit < saldoCliente
+            ? " de " + money(saldoCliente) + " (queda " + money(saldoCliente - deudaEnCarrito.precioUnit) + ")"
+            : " (completo)")
       ),
 
       // --- Métodos de pago ---
