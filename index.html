@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.900";
+const VERSION_APP = "9.901";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -28621,6 +28621,8 @@ function VentasReportes({ data, rango, persist }) {
   const [abrirAcciones, setAbrirAcciones] = useState(false);
   const [devolviendo, setDevolviendo] = useState(null);
   const [anulando, setAnulando] = useState(null);
+  const [editando, setEditando] = useState(null);
+  const [reimprimiendo, setReimprimiendo] = useState(null);
   const [anulandoVarias, setAnulandoVarias] = useState(null);
   // IDs de las ventas tildadas. Vacío = no hay selección, se exporta todo.
   const [seleccionadas, setSeleccionadas] = useState([]);
@@ -28916,6 +28918,28 @@ function VentasReportes({ data, rango, persist }) {
                           React.createElement(
                             "button",
                             {
+                              onClick: () => setReimprimiendo(v),
+                              className: "ct-accion",
+                              title: "Reimprimir el ticket de esta venta",
+                              style: { display: "inline-flex", alignItems: "center", gap: 5, background: "var(--surface-2)", border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12, color: "var(--ink)", cursor: "pointer" }
+                            },
+                            React.createElement(Receipt, { size: 12 }),
+                            " Ticket"
+                          ),
+                          React.createElement(
+                            "button",
+                            {
+                              onClick: () => setEditando(v),
+                              className: "ct-accion",
+                              title: "Editar la venta: quitar productos ya cobrados",
+                              style: { display: "inline-flex", alignItems: "center", gap: 5, background: "var(--surface-2)", border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12, color: "var(--denim)", cursor: "pointer" }
+                            },
+                            React.createElement(Pencil, { size: 12 }),
+                            " Editar"
+                          ),
+                          React.createElement(
+                            "button",
+                            {
                               onClick: () => setDevolviendo(v),
                               className: "ct-accion",
                               title: "Devolver o anular esta venta",
@@ -28997,6 +29021,8 @@ function VentasReportes({ data, rango, persist }) {
         )
       )
     ),
+    reimprimiendo && React.createElement(TicketModal, { data, venta: reimprimiendo, onClose: () => setReimprimiendo(null) }),
+    editando && React.createElement(EditarVentaModal, { data, venta: editando, persist, onClose: () => setEditando(null) }),
     devolviendo && React.createElement(DevolucionModal, { data, venta: devolviendo, onConfirmar: confirmarDevolucion, onClose: () => setDevolviendo(null) }),
     anulando && React.createElement(AnularVentaModal, {
       data, venta: anulando, persist, onClose: () => setAnulando(null)
@@ -29289,6 +29315,140 @@ function ProductosCategoriasReportes({ data, rango }) {
 // Anular una venta entera. Por dentro es una devolución de todo: el stock
 // vuelve, la deuda se cancela y queda el rastro de qué pasó. Borrarla sin más
 // dejaría los números sin explicación.
+
+// ===== Editar venta (quitar ítems después de cobrar) =====
+// Muestra los productos de la venta y deja reducir cantidades o quitarlos.
+// Internamente usa registrarDevolucion para que el stock, la caja y la
+// cuenta corriente se ajusten igual que en una devolución, pero el flujo
+// es "editar" en vez de "devolver": más natural para el vendedor.
+function EditarVentaModal({ data, venta, persist, onClose }) {
+  const yaDevuelto = devueltoDeVenta(data, venta.id);
+  const lineas = (venta.items || []).map((it) => {
+    const k = it.productoId || it.nombre;
+    const devueltas = yaDevuelto[k] || 0;
+    const restante = Math.max(0, it.cantidad - devueltas);
+    return { ...it, clave: k, original: it.cantidad, devueltas, restante };
+  });
+  // cantidades editadas: empiezan iguales a lo restante
+  const [cantidades, setCantidades] = useState(() => {
+    const c = {};
+    lineas.forEach((l) => { c[l.clave] = l.restante; });
+    return c;
+  });
+  const [motivo, setMotivo] = useState("");
+  const [reintegro, setReintegro] = useState(
+    venta.metodoPago === "cuenta_corriente" ? "cuenta_corriente" : "efectivo");
+  const [error, setError] = useState("");
+
+  const cantDe = (l) => Number(cantidades[l.clave]) || 0;
+  const poner = (l, n) => setCantidades({ ...cantidades, [l.clave]: Math.max(0, Math.min(l.restante, n)) });
+
+  // Lo que se quita es la diferencia entre lo restante y lo que dejaron
+  const quitadas = lineas.filter((l) => cantDe(l) < l.restante);
+  const unidadesQuitadas = quitadas.reduce((s, l) => s + (l.restante - cantDe(l)), 0);
+
+  // Monto a devolver (prorrata como en DevolucionModal)
+  const proporcion = venta.subtotal ? venta.total / venta.subtotal : 1;
+  const brutoQuitado = quitadas.reduce((s, l) => s + (l.restante - cantDe(l)) * l.precioUnit, 0);
+  const aDevolver = Math.round(brutoQuitado * (isFinite(proporcion) ? proporcion : 1));
+
+  const opciones = [
+    { id: "efectivo", label: "Efectivo" },
+    { id: "transferencia", label: "Transferencia" },
+    { id: "cuenta_corriente", label: "A cuenta del cliente" }
+  ].filter((o) => o.id !== "cuenta_corriente" || venta.clienteId);
+
+  const confirmar = () => {
+    if (unidadesQuitadas === 0) return setError("No quitaste ningún producto. Modificá las cantidades o cerrá el editor.");
+    const seleccion = {};
+    quitadas.forEach((l) => { seleccion[l.clave] = l.restante - cantDe(l); });
+    const anterior = data;
+    const next = registrarDevolucion(data, venta, seleccion, motivo.trim() || "Edición de venta", reintegro);
+    if (!next) return setError("No se pudo aplicar el cambio.");
+    persist(next);
+    avisar(unidadesQuitadas + (unidadesQuitadas === 1 ? " producto quitado" : " productos quitados") + " · se devuelven " + money(aDevolver), { tono: "ok" });
+    onClose();
+  };
+
+  return React.createElement(
+    ModalOverlay, { width: 520 },
+    React.createElement(ModalHeader, {
+      icon: Pencil,
+      title: "Editar venta " + venta.id.slice(-6).toUpperCase(),
+      onClose
+    }),
+    React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: -8, marginBottom: 14 } },
+      fecha(venta.fecha), " \u00B7 ", venta.clienteNombre || "Consumidor final", " \u00B7 ", money(venta.total)),
+
+    React.createElement("p", { style: { fontSize: 13, lineHeight: 1.5, marginBottom: 14 } },
+      "Bajá la cantidad o poné 0 para quitar un producto. El stock vuelve y se registra la diferencia."),
+
+    React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+      lineas.filter((l) => l.restante > 0).map((l) => React.createElement(
+        "div",
+        {
+          key: l.clave,
+          style: {
+            display: "flex", alignItems: "center", gap: 10, fontSize: 13,
+            background: cantDe(l) < l.restante ? "color-mix(in srgb, var(--mustard) 8%, transparent)" : "transparent",
+            border: "none", borderRadius: 8, padding: "9px 11px",
+            transition: "background .15s ease"
+          }
+        },
+        React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+          React.createElement("div", { style: { fontWeight: 500 } }, l.nombre),
+          React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 2 } },
+            money(l.precioUnit), " c/u \u00B7 vendidas: ", l.restante,
+            l.devueltas > 0 ? " (ya devueltas: " + l.devueltas + ")" : "")),
+        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } },
+          React.createElement("button", {
+            onClick: () => poner(l, cantDe(l) - 1),
+            disabled: cantDe(l) <= 0,
+            style: { width: 30, height: 30, borderRadius: 7, border: "1.5px solid var(--line)", background: "var(--surface-2)", cursor: cantDe(l) <= 0 ? "default" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink)", opacity: cantDe(l) <= 0 ? 0.4 : 1 }
+          }, React.createElement(Minus, { size: 14 })),
+          React.createElement("input", {
+            type: "number", min: 0, max: l.restante, value: cantDe(l),
+            onChange: (e) => poner(l, Number(e.target.value)),
+            style: { ...inputStyle, width: 52, textAlign: "center", padding: "0 4px", fontWeight: 600 }
+          }),
+          React.createElement("button", {
+            onClick: () => poner(l, cantDe(l) + 1),
+            disabled: cantDe(l) >= l.restante,
+            style: { width: 30, height: 30, borderRadius: 7, border: "1.5px solid var(--line)", background: "var(--surface-2)", cursor: cantDe(l) >= l.restante ? "default" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink)", opacity: cantDe(l) >= l.restante ? 0.4 : 1 }
+          }, React.createElement(Plus, { size: 14 })))
+      ))
+    ),
+
+    unidadesQuitadas > 0 && React.createElement(
+      "div", { style: { marginTop: 16, display: "flex", flexDirection: "column", gap: 13 } },
+      React.createElement(Field, { label: "Cómo se le devuelve" },
+        React.createElement("select", { style: inputStyle, value: reintegro, onChange: (e) => setReintegro(e.target.value) },
+          opciones.map((o) => React.createElement("option", { key: o.id, value: o.id }, o.label)))),
+      React.createElement(Field, { label: "Motivo (opcional)" },
+        React.createElement("input", { style: inputStyle, value: motivo, onChange: (e) => setMotivo(e.target.value), placeholder: "Cliente se arrepintió, talle equivocado\u2026" })),
+      React.createElement("div", {
+        style: { display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 12, borderTop: "1px solid var(--line)" }
+      },
+        React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)" } },
+          unidadesQuitadas, unidadesQuitadas === 1 ? " producto se quita" : " productos se quitan"),
+        React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 19, fontWeight: 600 } },
+          "- ", money(aDevolver)))
+    ),
+
+    error && React.createElement("p", { style: { fontSize: 12.5, color: "var(--rose)", marginTop: 10 } }, error),
+
+    React.createElement(
+      "div", { style: { display: "flex", gap: 8, marginTop: 18 } },
+      React.createElement(Button, {
+        onClick: confirmar,
+        disabled: unidadesQuitadas === 0,
+        style: { flex: 1, justifyContent: "center" }
+      }, React.createElement(Check, { size: 15 }), " Guardar cambios"),
+      React.createElement(Button, { tone: "ghost", onClick: onClose, style: { flex: 1, justifyContent: "center" } }, "Cancelar")
+    )
+  );
+}
+
 function AnularVentaModal({ data, venta, persist, onClose }) {
   const [motivo, setMotivo] = useState("");
   const [reintegro, setReintegro] = useState(venta.metodoPago !== "cuenta_corriente");
