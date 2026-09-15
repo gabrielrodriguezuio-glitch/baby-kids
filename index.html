@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.909";
+const VERSION_APP = "9.910";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -11989,6 +11989,26 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
         ];
       }
     }
+    // Si los pagos superan el total y hay un cliente con saldo pendiente, el
+    // excedente se registra como pago a cuenta corriente. Es el caso de un
+    // cliente que aprovecha para abonar parte de lo que debe: paga la compra
+    // más un extra que baja su saldo.
+    if (variosPagos && clienteId) {
+      const sumaPagosTotal = detallePagos.reduce((a, p) => a + (Number(p.monto) || 0), 0);
+      const excedente = Math.round(sumaPagosTotal - total);
+      if (excedente > 0) {
+        // El método del pago se elige por prioridad: efectivo si lo hay, si no
+        // transferencia, si no lo que haya. Es solo un rótulo informativo.
+        const orden = ["efectivo", "transferencia", "tarjeta", "qr"];
+        const metodoAbono = orden.find((m) => detallePagos.some((p) => p.metodo === m && p.monto > 0)) || "efectivo";
+        movimientosCC = [
+          { id: uid(), clienteId, fecha: todayISO(), tipo: "pago", monto: excedente,
+            metodo: METODO_LABELS[metodoAbono] || metodoAbono,
+            concepto: "Abono a cuenta con vuelto de venta" },
+          ...movimientosCC
+        ];
+      }
+    }
     // La deuda que se sumó al carrito se descuenta de la cuenta del cliente
     const lineaDeuda = cart.find((it) => it.esDeuda);
     if (lineaDeuda && lineaDeuda.clienteDeuda) {
@@ -13232,8 +13252,15 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
         : "Agregá al menos un producto al carrito.");
     }
     if (variosPagos) {
-      if (Math.abs(faltante) > 0.5) {
-        return setError(faltante > 0 ? "Faltan " + money(faltante) + " por asignar." : "Los pagos superan el total en " + money(-faltante) + ".");
+      // "Falta asignar" (faltante > 0): sigue bloqueado. La venta no está cubierta.
+      if (faltante > 0.5) {
+        return setError("Faltan " + money(faltante) + " por asignar.");
+      }
+      // "Los pagos superan el total" (faltante < 0): solo se bloquea si NO hay
+      // cliente con saldo pendiente. Si el cliente debe, el excedente se abona
+      // a su cuenta corriente automáticamente en finalizarVenta.
+      if (faltante < -0.5 && !(cliente && saldoCliente > 0)) {
+        return setError("Los pagos superan el total en " + money(-faltante) + ".");
       }
       if (pagos.cuenta_corriente && !cliente) return setError("Elegí un cliente para usar cuenta corriente.");
     } else {
@@ -13452,12 +13479,23 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
                 React.createElement("span", { style: { flex: 1 } }, "Poner ", money(faltante), " a cuenta de ", cliente.nombre),
                 React.createElement("span", { style: { color: "var(--denim)", fontWeight: 600, whiteSpace: "nowrap" } }, "A cuenta")
               ),
-              React.createElement(
-                "div",
-                { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6, paddingTop: 14, borderTop: "1px solid var(--line)", fontSize: 13.5 } },
-                React.createElement("span", { style: { color: "var(--muted)" } }, faltante > 0 ? "Falta asignar" : faltante < 0 ? "Te pasaste por" : "Asignado completo"),
-                React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, color: Math.abs(faltante) < 0.5 ? "var(--sage)" : "var(--rose)" } }, money(Math.abs(faltante)))
-              )
+              (() => {
+                // Excedente que se puede abonar a la cuenta del cliente: NO es
+                // un error, es un abono. Se muestra en verde con la etiqueta clara.
+                const excedente = -faltante;
+                const abonaraCuenta = cliente && saldoCliente > 0 && excedente > 0.5;
+                const etiqueta = faltante > 0.5 ? "Falta asignar"
+                  : abonaraCuenta ? ("Se abona a cuenta de " + cliente.nombre)
+                  : faltante < -0.5 ? "Te pasaste por"
+                  : "Asignado completo";
+                const color = Math.abs(faltante) < 0.5 || abonaraCuenta ? "var(--sage)" : "var(--rose)";
+                return React.createElement(
+                  "div",
+                  { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6, paddingTop: 14, borderTop: "1px solid var(--line)", fontSize: 13.5 } },
+                  React.createElement("span", { style: { color: "var(--muted)" } }, etiqueta),
+                  React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, color } }, money(Math.abs(faltante)))
+                );
+              })()
             )
           : React.createElement(
               "div",
