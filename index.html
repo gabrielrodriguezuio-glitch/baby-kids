@@ -19831,7 +19831,7 @@ const hayCamara = () => typeof navigator !== "undefined" &&
 
 const FORMATOS_ESCANER = ["ean_13", "ean_8", "code_128", "code_39", "upc_a", "upc_e", "itf", "codabar"];
 
-function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
+function EscanerModal({ titulo, onLeer, onClose, sinManual, continuo }) {
   const videoRef = React.useRef(null);
   // El lector alterno se guarda para poder apagarlo al cerrar: si queda vivo,
   // la cámara sigue prendida.
@@ -19846,6 +19846,46 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
   // Si la cámara de este equipo permite prender la luz, mostramos el botón
   const [hayLinterna, setHayLinterna] = useState(false);
   const [linternaOn, setLinternaOn] = useState(false);
+  // Cuántos entraron sin cerrar la ventana: sirve para saber que la lectura
+  // está funcionando aunque la lista quede tapada por el modal.
+  const [leidos, setLeidos] = useState(0);
+  // Motivo de la última lectura que no entró, para mostrarlo sin cerrar
+  const [avisoLectura, setAvisoLectura] = useState("");
+
+  // El bucle de lectura arranca una sola vez, así que se queda con la primera
+  // versión de onLeer. En modo continuo eso es fatal: la segunda lectura
+  // trabajaría sobre la lista vacía del principio y pisaría la primera. Con
+  // esta referencia siempre se llama a la versión de ahora.
+  const onLeerRef = React.useRef(onLeer);
+  useEffect(() => { onLeerRef.current = onLeer; });
+
+  // El mismo código no vuelve a entrar hasta que pase este rato: la cámara
+  // manda muchos cuadros por segundo y, sin esto, un solo código cargaría
+  // veinte unidades de golpe.
+  const ESPERA_REPETIDO = 1500;
+  const cooldownRef = React.useRef({});
+  const ultimoRef = React.useRef("");
+
+  // ¿Se toma esta lectura o es la misma de recién?
+  const aceptar = (valor) => {
+    const ahora = Date.now();
+    const previo = cooldownRef.current[valor] || 0;
+    if (ahora - previo < ESPERA_REPETIDO) return false;
+    cooldownRef.current[valor] = ahora;
+    return true;
+  };
+
+  // Entra el código y la cámara sigue prendida esperando el siguiente
+  const registrarContinuo = (valor) => {
+    setUltimo(valor);
+    const resultado = onLeerRef.current(valor);
+    // Si el que recibe devuelve un texto, algo no cerró (código desconocido,
+    // sin stock): se muestra acá dentro y no se cuenta como cargado.
+    if (typeof resultado === "string" && resultado) { setAvisoLectura(resultado); return; }
+    if (resultado === false) return;
+    setAvisoLectura("");
+    setLeidos((n) => n + 1);
+  };
 
   // Prende o apaga la linterna del teléfono, si la cámara lo permite
   const alternarLinterna = async () => {
@@ -19976,9 +20016,15 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
               if (!resultado) return;
               const valor = String(resultado.getText() || "").trim();
               if (!valor) return;
+              // Continuo: no se apaga nada, se toma el código y se sigue
+              // mirando. Cerrar acá era lo que sacaba la cámara a cada lectura.
+              if (continuo) {
+                if (aceptar(valor)) registrarContinuo(valor);
+                return;
+              }
               try { alterno.reset(); } catch (e2) {}
               detener();
-              onLeer(valor);
+              onLeerRef.current(valor);
             }).catch(() => {});
             alternoRef.current = alterno;
             setDetalle("");
@@ -20003,11 +20049,19 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
             const encontrados = await lector.detect(videoRef.current);
             if (encontrados && encontrados.length) {
               const valor = String(encontrados[0].rawValue || "").trim();
-              if (valor && valor !== ultimo) {
-                setUltimo(valor);
-                detener();
-                onLeer(valor);
-                return;
+              if (valor) {
+                // Continuo: entra y el bucle sigue, la cámara no se toca
+                if (continuo) {
+                  if (aceptar(valor)) registrarContinuo(valor);
+                } else if (valor !== ultimoRef.current) {
+                  // El valor anterior va en una referencia: el estado quedaba
+                  // congelado en el bucle y nunca coincidía.
+                  ultimoRef.current = valor;
+                  setUltimo(valor);
+                  detener();
+                  onLeerRef.current(valor);
+                  return;
+                }
               }
             }
           }
@@ -20095,9 +20149,41 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
               React.createElement(linternaOn ? Sun : Moon, { size: 20 })
             )
           ),
+          // En continuo se avisa cuántos entraron: el modal tapa la lista, y
+          // sin esto no hay forma de saber si la lectura funcionó.
+          continuo && estado === "leyendo" && React.createElement(
+            "div",
+            {
+              style: {
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 9,
+                marginTop: 12, padding: "10px 12px", borderRadius: 9,
+                background: leidos > 0 ? "color-mix(in srgb, var(--sage) 14%, transparent)" : "var(--surface-2)",
+                fontSize: 13
+              }
+            },
+            React.createElement(leidos > 0 ? Check : ScanBarcode, { size: 15, color: leidos > 0 ? "var(--sage)" : "var(--muted)" }),
+            React.createElement("span", { style: { fontWeight: 650 } },
+              leidos === 0 ? "Esperando el primer código…" : leidos + (leidos === 1 ? " lectura" : " lecturas")),
+            ultimo && React.createElement("span", { style: { color: "var(--muted)", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12 } }, ultimo)
+          ),
+          continuo && avisoLectura && React.createElement(
+            "div",
+            {
+              style: {
+                display: "flex", alignItems: "center", gap: 8, marginTop: 8,
+                padding: "9px 12px", borderRadius: 9, fontSize: 12.5, lineHeight: 1.45,
+                background: "color-mix(in srgb, var(--rose) 12%, transparent)",
+                color: "var(--ink)"
+              }
+            },
+            React.createElement(AlertTriangle, { size: 14, color: "var(--rose)", style: { flexShrink: 0 } }),
+            React.createElement("span", { style: { flex: 1 } }, avisoLectura)
+          ),
           React.createElement("div", { style: { fontSize: 13, color: "var(--muted)", textAlign: "center", marginTop: 12, lineHeight: 1.55 } },
-            "Acercá el código y mantenelo derecho, llenando el ancho de la pantalla. Se lee solo." +
-            (hayLinterna ? " Si hay poca luz, tocá la luz." : ""))
+            continuo
+              ? "Acercá el código y mantenelo derecho. La cámara queda abierta: escaneá uno tras otro y tocá \u201CListo\u201D al terminar."
+              : "Acercá el código y mantenelo derecho, llenando el ancho de la pantalla. Se lee solo.",
+            hayLinterna ? " Si hay poca luz, tocá la luz." : "")
         ),
 
     // El campo a mano se puede ocultar: en el mostrador estorba, porque lo que
@@ -20112,18 +20198,35 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
         React.createElement("input", {
           value: manual,
           onChange: (e) => setManual(e.target.value),
-          onKeyDown: (e) => { if (e.key === "Enter" && manual.trim()) onLeer(manual.trim()); },
+          // En continuo el campo se vacía y queda listo para el siguiente,
+          // igual que la cámara: escribir uno no corta la carga.
+          onKeyDown: (e) => {
+            if (e.key !== "Enter" || !manual.trim()) return;
+            onLeerRef.current(manual.trim());
+            if (continuo) { setLeidos((n) => n + 1); setUltimo(manual.trim()); setManual(""); }
+          },
           placeholder: "7791000000011",
           style: { ...inputEditor, fontFamily: "'IBM Plex Mono', monospace" }
         }),
-        React.createElement(Button, { onClick: () => manual.trim() && onLeer(manual.trim()), disabled: !manual.trim(), style: { height: 46, padding: "0 20px" } }, "Usar")
+        React.createElement(Button, {
+          onClick: () => {
+            if (!manual.trim()) return;
+            onLeerRef.current(manual.trim());
+            if (continuo) { setLeidos((n) => n + 1); setUltimo(manual.trim()); setManual(""); }
+          },
+          disabled: !manual.trim(), style: { height: 46, padding: "0 20px" }
+        }, "Usar")
       )
     ),
 
     React.createElement(
       "div",
       { style: { display: "flex", justifyContent: "flex-end", marginTop: 18 } },
-      React.createElement(Button, { tone: "ghost", onClick: onClose, style: { padding: "12px 24px" } }, "Cerrar")
+      React.createElement(Button, {
+        tone: continuo && leidos > 0 ? "primary" : "ghost",
+        onClick: onClose,
+        style: { padding: "12px 24px" }
+      }, continuo ? (leidos > 0 ? "Listo · " + leidos : "Listo") : "Cerrar")
     )
   );
 }
@@ -22259,9 +22362,12 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
   // Escanear para cargar rápido: se busca el código, y si el producto tiene un
   // solo talle con stock entra derecho. Con varios talles se abre la lista de
   // ese producto para elegir, que es más rápido que buscarlo por nombre.
-  const porCodigo = (code) => {
+  // Devuelve true si entró, o un texto con el motivo si no pudo. En continuo
+  // ese texto se muestra dentro del escáner: el cartel de error de la pantalla
+  // queda tapado por el modal y nadie lo ve.
+  const porCodigo = (code, desdeCamara) => {
     const limpio = String(code || "").trim();
-    if (!limpio) return;
+    if (!limpio) return false;
     // Primero la etiqueta de la prenda: si el código es de un talle y color
     // puntual, entra derecho con los dos, sin preguntar nada.
     const hallada = buscarVariantePorCodigo(data.productos, origen, limpio);
@@ -22269,20 +22375,22 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
       const hay = Number(hallada.variante.stock) || 0;
       if (!sinControl && hay <= 0) {
         pitido(false);
-        setError('"' + hallada.producto.nombre + '" ' + etiquetaVariante(hallada.variante) + ' no tiene stock en el origen.');
-        return;
+        const msg = '"' + hallada.producto.nombre + '" ' + etiquetaVariante(hallada.variante) + ' no tiene stock en el origen.';
+        setError(msg);
+        return msg;
       }
       pitido(true);
-      setQuery("");
+      if (!desdeCamara) setQuery("");
       sumar(hallada.producto, claveVariante(hallada.variante), 1, true, hay);
-      return;
+      return true;
     }
     const prod = data.productos.find((p) =>
       (p.codigoBarras || "").trim() === limpio || mismoCodigo(p.codigoBarras, limpio));
     if (!prod) {
       pitido(false);
-      setError('Ningún producto tiene el código "' + limpio + '".');
-      return;
+      const msg = 'Ningún producto tiene el código "' + limpio + '".';
+      setError(msg);
+      return msg;
     }
     const vs = variantesNegocio(prod, origen).filter((v) => sinControl || (Number(v.stock) || 0) > 0);
     const sinTalles = !variantesNegocio(prod, origen).length && !tallesDelProducto(prod).length;
@@ -22292,34 +22400,44 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
       const talle = sinTalles ? "" : claveVariante(vs[0]);
       const hay = sinTalles ? stockNegocio(prod, origen) : Number(vs[0].stock) || 0;
       pitido(true);
-      setQuery("");
+      if (!desdeCamara) setQuery("");
       sumar(prod, talle, 1, false, hay);
-      return;
+      return true;
     }
     if (!vs.length && !sinControl) {
       pitido(false);
-      setError('"' + prod.nombre + '" no tiene stock en el origen.');
-      return;
+      const msg = '"' + prod.nombre + '" no tiene stock en el origen.';
+      setError(msg);
+      return msg;
     }
     // Con varios talles se muestra ese producto para elegir cuál
     pitido(true);
     setQuery(prod.nombre);
     setAbierto(prod.id);
+    // Éste es el único caso en que la cámara se cierra: hay que elegir el
+    // talle a mano y esa lista está detrás del modal.
+    if (desdeCamara) { setEscaneando(false); return true; }
+    return true;
   };
 
   const sumar = (prod, talle, delta, exacto, hay) => {
     const k = clave(prod.id, talle);
     const actual = Number(sel[k]) || 0;
-    const siguiente = actual + delta;
-    if (siguiente < 0) return;
+    if (actual + delta < 0) return;
     if (delta > 0 && margen(prod, talle, exacto, hay) <= 0) {
       setError("No queda stock de " + (talle ? "talle " + talle : "ese producto") + " en el origen.");
       return;
     }
     setError("");
-    const copia = { ...sel };
-    if (siguiente === 0) delete copia[k]; else copia[k] = siguiente;
-    setSel(copia);
+    // Se suma sobre la lista que hay en el momento, no sobre la copia de este
+    // render: escaneando uno atrás del otro, dos lecturas seguidas partían de
+    // la misma lista vieja y la segunda borraba la primera.
+    setSel((previa) => {
+      const siguiente = (Number(previa[k]) || 0) + delta;
+      const copia = { ...previa };
+      if (siguiente <= 0) delete copia[k]; else copia[k] = siguiente;
+      return copia;
+    });
   };
 
   const texto = query.trim().toLowerCase();
@@ -22526,7 +22644,10 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
       ),
       escaneando && React.createElement(EscanerModal, {
         titulo: "Escanear para transferir",
-        onLeer: (code) => { porCodigo(code); },
+        // La cámara queda abierta y cada lectura suma a la lista: cargar diez
+        // prendas era abrir y cerrar la cámara diez veces.
+        continuo: true,
+        onLeer: (code) => porCodigo(code, true),
         onClose: () => setEscaneando(false)
       }),
       React.createElement(
