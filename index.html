@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.904";
+const VERSION_APP = "9.905";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -1791,6 +1791,21 @@ function ControlTienda() {
     if (loading) return;
     if (hayHuerfanos(data)) persist(migrarDatos(data));
   }, [loading, data.negocios]);
+
+  // Arregla el doble cobro de cuenta corriente que había en versiones
+  // anteriores: cada venta fiada creaba, además de la venta, un movimiento
+  // "cargo" con el mismo monto, y saldoDeCliente los sumaba a los dos. Se
+  // eliminan esos cargos duplicados una sola vez. Los fiados manuales y los
+  // saldos importados ("Compras anteriores") NO se tocan.
+  useEffect(() => {
+    if (loading) return;
+    const duplicados = (data.movimientosCC || []).filter((m) =>
+      m.tipo === "cargo" && m.concepto === "Venta en cuenta corriente");
+    if (!duplicados.length) return;
+    const limpios = (data.movimientosCC || []).filter((m) =>
+      !(m.tipo === "cargo" && m.concepto === "Venta en cuenta corriente"));
+    persist({ ...data, movimientosCC: limpios });
+  }, [loading, data.movimientosCC]);
 
   // Cajas fantasma: sesiones que quedaron abiertas a nombre de un usuario
   // que ya no existe (uno que se borró, o una caja abierta antes de crear
@@ -11956,13 +11971,9 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     productosActualizados = productosActualizados.map((p) =>
       esCombo(p) ? fijarEnNegocio(p, negocioId, { activo: p.activo !== false, stock: stockCombo(p, productosActualizados, negocioId), variantes: [] }) : p);
     let movimientosCC = data.movimientosCC || [];
-    const montoCC = montoPorMetodo("cuenta_corriente");
-    if (montoCC > 0 && clienteId) {
-      movimientosCC = [
-        { id: uid(), clienteId, fecha: todayISO(), tipo: "cargo", monto: montoCC, concepto: "Venta en cuenta corriente" },
-        ...movimientosCC
-      ];
-    }
+    // La deuda de una venta en cuenta corriente vive en la venta misma
+    // (saldoDeCliente la cuenta). Antes acá se creaba además un movimiento
+    // "cargo" con el mismo monto: eso sumaba la deuda dos veces. Se quitó.
     // La deuda que se sumó al carrito se descuenta de la cuenta del cliente
     const lineaDeuda = cart.find((it) => it.esDeuda);
     if (lineaDeuda && lineaDeuda.clienteDeuda) {
@@ -16075,6 +16086,7 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       id: v.id,
       clase: "venta",
       fecha: v.fecha,
+      horaTexto: v.horaTexto || "",
       titulo: "Venta",
       detalle: (v.items || []).map((it) => it.cantidad + "x " + it.nombre).join(", "),
       monto: v.total,
@@ -16084,6 +16096,7 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       id: v.id,
       clase: "pagada",
       fecha: v.fecha,
+      horaTexto: v.horaTexto || "",
       titulo: "Compra pagada",
       detalle: (v.items || []).map((it) => it.cantidad + "x " + it.nombre).join(", "),
       monto: v.total,
@@ -16093,12 +16106,13 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       id: m.id,
       clase: m.tipo === "cargo" ? "venta" : "pago",
       fecha: m.fecha,
+      horaTexto: "",
       titulo: m.tipo === "cargo" ? (m.concepto || "Fiado") : "Pago recibido",
       detalle: m.tipo === "cargo" ? "" : "Método: " + (m.metodo || "Efectivo"),
       monto: m.monto,
       esMovimiento: true
     }))
-  ].sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+  ].sort((a, b) => String(b.fecha + " " + (b.horaTexto || "")).localeCompare(String(a.fecha + " " + (a.horaTexto || ""))));
 
   // El saldo que quedaba después de cada movimiento, contando desde el más viejo
   const enOrden = [...filas].reverse();
@@ -16291,7 +16305,7 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
                       React.createElement("span", { style: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: esVenta ? "var(--rose)" : esPagada ? "var(--muted)" : "var(--sage)" } }),
                       esVenta ? "Fiado" : esPagada ? "Contado" : "Pago"
                     )),
-                  React.createElement("td", { style: { color: "var(--muted)", whiteSpace: "nowrap", fontSize: 13 } }, fechaHoraLabel(f.fecha)),
+                  React.createElement("td", { style: { color: "var(--muted)", whiteSpace: "nowrap", fontSize: 13 } }, fechaNumerica(f.fecha) + (f.horaTexto ? ", " + f.horaTexto : "")),
                   React.createElement(
                     "td",
                     { style: { minWidth: 200 } },
