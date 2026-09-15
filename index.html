@@ -11608,6 +11608,23 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
   const saldoCliente = saldoDeCliente(data, clienteId);
   const deudaEnCarrito = cart.find((it) => it.esDeuda);
 
+  // Cuánto debe cada cliente, para verlo en la lista al elegirlo. Se arma en
+  // una sola pasada por ventas y movimientos: llamar a saldoDeCliente uno por
+  // uno recorría todo el historial una vez por cada cliente.
+  const saldosClientes = useMemo(() => {
+    const m = {};
+    (data.ventas || []).forEach((v) => {
+      if (!v.clienteId || v.metodoPago !== "cuenta_corriente" || esDevolucion(v)) return;
+      m[v.clienteId] = (m[v.clienteId] || 0) + (v.total || 0);
+    });
+    (data.movimientosCC || []).forEach((x) => {
+      if (!x.clienteId) return;
+      m[x.clienteId] = (m[x.clienteId] || 0) + (x.tipo === "cargo" ? (x.monto || 0) : -(x.monto || 0));
+    });
+    Object.keys(m).forEach((k) => { m[k] = Math.max(0, m[k]); });
+    return m;
+  }, [data.ventas, data.movimientosCC]);
+
   // Se puede cobrar todo el saldo o sólo una parte: el cliente queda debiendo
   // la diferencia. Sin monto, se toma la deuda completa.
   // Suma la deuda completa del cliente como una línea más del carrito
@@ -12427,6 +12444,8 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
         onElegirCliente: seleccionarCliente,
         // Para poder cobrar el saldo pendiente desde acá
         saldoCliente,
+        // Para ver cuánto debe cada uno en la misma lista al elegirlo
+        saldosClientes,
         deudaEnCarrito: !!deudaEnCarrito,
         onSumarDeuda: sumarDeuda,
         // Para recalcular precios según el medio de pago
@@ -13100,7 +13119,7 @@ function ExtrasModal({ inicial, subtotal, onGuardar, onClose }) {
     )
   );
 }
-function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, cliente, clientes, clienteId, onElegirCliente, saldoCliente, deudaEnCarrito, onSumarDeuda, onConfirmar, onClose, listasPrecio, productos, ventas }) {
+function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, cliente, clientes, clienteId, onElegirCliente, saldoCliente, saldosClientes, deudaEnCarrito, onSumarDeuda, onConfirmar, onClose, listasPrecio, productos, ventas }) {
   const disponibles = METODOS_COBRO.filter((m) => m.id !== "cuenta_corriente" || cliente);
   const [metodoPago, setMetodoPago] = useState("efectivo");
   // Si se saca el cliente con cuenta corriente ya elegida, el método deja de
@@ -13297,11 +13316,16 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
           placeholderBusqueda: "Buscar por nombre o DNI\u2026",
           opciones: [
             { id: "", label: "Consumidor Final" },
-            ...(clientes || []).map((c) => ({
-              id: c.id,
-              label: c.nombre + (c.dni ? " - " + c.dni : ""),
-              buscar: soloDigitos(c.dni) + " " + soloDigitos(c.telefono)
-            }))
+            // La deuda va en la misma línea: así se ve cuánto debe antes de
+            // elegirlo, sin tener que abrir la ficha para enterarse.
+            ...(clientes || []).map((c) => {
+              const debe = (saldosClientes || {})[c.id] || 0;
+              return {
+                id: c.id,
+                label: c.nombre + (c.dni ? " - " + c.dni : "") + (debe > 0 ? "  ·  debe " + money(debe) : ""),
+                buscar: soloDigitos(c.dni) + " " + soloDigitos(c.telefono)
+              };
+            })
           ]
         }),
         // Si el cliente debe plata, se suma la deuda completa de un toque
@@ -16103,7 +16127,12 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
 
   const botonTipo = (id, label) => React.createElement("button", {
     key: id,
-    onClick: () => setMovForm({ ...movForm, tipo: id }),
+    // Pago: vuelve a proponer el saldo completo. Fiado: se vacía, porque el
+    // monto de lo que se lleva no tiene nada que ver con lo que debe.
+    onClick: () => {
+      setMovError("");
+      setMovForm({ ...movForm, tipo: id, monto: id === "pago" && saldo > 0 ? String(saldo) : "" });
+    },
     style: {
       flex: 1, padding: "10px 8px", borderRadius: 9, cursor: "pointer", fontSize: 13, fontWeight: 600, fontFamily: "'Inter', sans-serif",
       border: "1px solid " + (movForm.tipo === id ? "var(--denim)" : "var(--line)"),
@@ -16148,9 +16177,18 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       "div",
       { style: { display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 18 } },
       React.createElement(Button, {
-        onClick: () => setRegistrando(!registrando),
+        // Al abrir ya viene el saldo completo escrito: lo normal es que pague
+        // todo, y así se guarda de un toque sin tipear el monto. Si paga una
+        // parte, se corrige el número y listo.
+        onClick: () => {
+          if (!registrando) {
+            setMovForm({ tipo: "pago", monto: saldo > 0 ? String(saldo) : "", concepto: "", metodo: "Efectivo" });
+            setMovError("");
+          }
+          setRegistrando(!registrando);
+        },
         style: { padding: "11px 20px" }
-      }, registrando ? "Cerrar" : "Registrar pago"),
+      }, registrando ? "Cerrar" : (saldo > 0 ? "Cobrar " + money(saldo) : "Registrar pago")),
       React.createElement(Button, {
         tone: "ghost",
         onClick: () => setVerCuenta(true),
@@ -16175,10 +16213,22 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
         "div",
         { style: { display: "grid", gridTemplateColumns: "150px minmax(0, 1fr) auto", gap: 10, alignItems: "end" } },
         React.createElement("div", { style: { minWidth: 0 } },
-          React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginBottom: 6 } }, "Monto"),
+          React.createElement(
+            "div",
+            { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 } },
+            React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)" } }, "Monto"),
+            // Si cobró una parte y quiere volver al total, un toque lo repone:
+            // no hay que acordarse del número ni volver a tipearlo.
+            movForm.tipo === "pago" && saldo > 0 && Number(movForm.monto) !== saldo && React.createElement("button", {
+              onClick: () => { setMovForm({ ...movForm, monto: String(saldo) }); setMovError(""); },
+              title: "Usar el saldo completo",
+              style: { background: "none", border: "none", cursor: "pointer", color: "var(--denim-light)", fontSize: 11.5, fontWeight: 650, fontFamily: "'Inter', sans-serif", padding: 0 }
+            }, "Todo el saldo")
+          ),
           React.createElement("input", {
             autoFocus: true, type: "number", style: { ...inputStyle, width: "100%" }, value: movForm.monto,
             onChange: (e) => { setMovForm({ ...movForm, monto: e.target.value }); setMovError(""); },
+            onFocus: (e) => e.target.select(),
             placeholder: "0"
           })),
         React.createElement("div", { style: { minWidth: 0 } },
@@ -19781,7 +19831,7 @@ const hayCamara = () => typeof navigator !== "undefined" &&
 
 const FORMATOS_ESCANER = ["ean_13", "ean_8", "code_128", "code_39", "upc_a", "upc_e", "itf", "codabar"];
 
-function EscanerModal({ titulo, onLeer, onClose, sinManual, continuo }) {
+function EscanerModal({ titulo, onLeer, onClose, sinManual }) {
   const videoRef = React.useRef(null);
   // El lector alterno se guarda para poder apagarlo al cerrar: si queda vivo,
   // la cámara sigue prendida.
@@ -19793,11 +19843,6 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual, continuo }) {
   const [detalle, setDetalle] = useState("");
   const [ultimo, setUltimo] = useState("");
   const [manual, setManual] = useState("");
-  // En modo continuo: track del último código leído y cuándo, para cooldown de
-  // 1.5s que evita duplicar la misma lectura pero permite volver a escanear el
-  // mismo artículo después de ese tiempo (por ejemplo, 2 unidades del mismo).
-  const continuoCodRef = React.useRef("");
-  const continuoTsRef = React.useRef(0);
   // Si la cámara de este equipo permite prender la luz, mostramos el botón
   const [hayLinterna, setHayLinterna] = useState(false);
   const [linternaOn, setLinternaOn] = useState(false);
@@ -19931,20 +19976,9 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual, continuo }) {
               if (!resultado) return;
               const valor = String(resultado.getText() || "").trim();
               if (!valor) return;
-              if (continuo) {
-                // Modo continuo: cooldown de 1.5s para el mismo código; la cámara
-                // sigue prendida y el operario puede escanear el siguiente producto.
-                const ahora = Date.now();
-                if (continuoCodRef.current === valor && ahora - continuoTsRef.current < 1500) return;
-                continuoCodRef.current = valor;
-                continuoTsRef.current = ahora;
-                setUltimo(valor);
-                onLeer(valor);
-              } else {
-                try { alterno.reset(); } catch (e2) {}
-                detener();
-                onLeer(valor);
-              }
+              try { alterno.reset(); } catch (e2) {}
+              detener();
+              onLeer(valor);
             }).catch(() => {});
             alternoRef.current = alterno;
             setDetalle("");
@@ -19969,23 +20003,11 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual, continuo }) {
             const encontrados = await lector.detect(videoRef.current);
             if (encontrados && encontrados.length) {
               const valor = String(encontrados[0].rawValue || "").trim();
-              if (valor) {
-                if (continuo) {
-                  // Modo continuo: cooldown de 1.5s para el mismo código; la
-                  // cámara sigue prendida para el próximo artículo.
-                  const ahora = Date.now();
-                  if (continuoCodRef.current !== valor || ahora - continuoTsRef.current >= 1500) {
-                    continuoCodRef.current = valor;
-                    continuoTsRef.current = ahora;
-                    setUltimo(valor);
-                    onLeer(valor);
-                  }
-                } else if (valor !== ultimo) {
-                  setUltimo(valor);
-                  detener();
-                  onLeer(valor);
-                  return;
-                }
+              if (valor && valor !== ultimo) {
+                setUltimo(valor);
+                detener();
+                onLeer(valor);
+                return;
               }
             }
           }
@@ -20074,15 +20096,8 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual, continuo }) {
             )
           ),
           React.createElement("div", { style: { fontSize: 13, color: "var(--muted)", textAlign: "center", marginTop: 12, lineHeight: 1.55 } },
-            continuo
-              ? "Escaneá uno tras otro — la cámara sigue abierta. Cerrá cuando terminés."
-              : ("Acercá el código y mantenelo derecho, llenando el ancho de la pantalla. Se lee solo." +
-                (hayLinterna ? " Si hay poca luz, tocá la luz." : ""))),
-          continuo && ultimo && React.createElement(
-            "div",
-            { style: { marginTop: 8, fontSize: 12, color: "var(--ok, #22c55e)", textAlign: "center", fontFamily: "'IBM Plex Mono', monospace" } },
-            "✓ " + ultimo
-          )
+            "Acercá el código y mantenelo derecho, llenando el ancho de la pantalla. Se lee solo." +
+            (hayLinterna ? " Si hay poca luz, tocá la luz." : ""))
         ),
 
     // El campo a mano se puede ocultar: en el mostrador estorba, porque lo que
@@ -22324,7 +22339,9 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
     const prod = data.productos.find((p) => p.id === id);
     // Y de "M|Rojo" se guarda talle y color por separado
     const partes = String(talle || "").split("|");
-    return { productoId: id, nombre: prod ? prod.nombre : "", talle: partes[0] || "", color: partes[1] || "", cantidad: sel[k] };
+    // La clave original se guarda tal cual: rearmarla desde talle y color
+    // perdía el color, y el botón de quitar no encontraba nada que borrar.
+    return { claveSel: k, productoId: id, nombre: prod ? prod.nombre : "", talle: partes[0] || "", color: partes[1] || "", cantidad: sel[k] };
   }).filter((x) => x.cantidad > 0);
   const totalUnidades = items.reduce((a, x) => a + x.cantidad, 0);
 
@@ -22509,7 +22526,6 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
       ),
       escaneando && React.createElement(EscanerModal, {
         titulo: "Escanear para transferir",
-        continuo: true,
         onLeer: (code) => { porCodigo(code); },
         onClose: () => setEscaneando(false)
       }),
@@ -22526,17 +22542,49 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
     items.length > 0 && React.createElement(
       "div",
       { style: { marginTop: 16, background: "var(--surface-2)", border: "none", borderRadius: 10, padding: "14px 16px" } },
-      React.createElement("div", { style: { fontSize: 13, fontWeight: 650, marginBottom: 10 } }, "Sale del origen · ", totalUnidades, " u"),
+      React.createElement(
+        "div",
+        { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 } },
+        React.createElement("div", { style: { fontSize: 13, fontWeight: 650 } }, "Sale del origen · ", totalUnidades, " u"),
+        // Si se cargó todo mal, se empieza de nuevo sin cerrar la ventana
+        React.createElement("button", {
+          onClick: () => { setSel({}); setError(""); },
+          title: "Quitar todos los productos de la lista",
+          style: { background: "none", border: "none", cursor: "pointer", color: "var(--rose)", fontSize: 12, fontWeight: 650, fontFamily: "'Inter', sans-serif", padding: 0 }
+        }, "Vaciar lista")
+      ),
       React.createElement(
         "div",
         { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
         items.map((x) => React.createElement(
           "span",
-          { key: x.productoId + x.talle, style: { display: "inline-flex", alignItems: "center", gap: 8, background: "var(--surface)", border: "none", borderRadius: 7, padding: "6px 11px", fontSize: 12.5 } },
-          x.nombre + (x.talle ? " · " + x.talle : "") + " ×" + x.cantidad,
+          {
+            // La clave completa incluye el color: con productoId + talle, dos
+            // colores del mismo talle compartían clave y se pisaban.
+            key: x.claveSel,
+            style: { display: "inline-flex", alignItems: "center", gap: 7, background: "var(--surface)", border: "none", borderRadius: 7, padding: "6px 8px 6px 11px", fontSize: 12.5 }
+          },
+          // El color en la etiqueta: sin él, dos filas iguales y no se sabía
+          // cuál quitar.
+          x.nombre + [x.talle && " · " + x.talle, x.color && " · " + x.color].filter(Boolean).join(""),
+          // Uno menos, por si se escaneó de más y no hace falta borrar todo
           React.createElement("button", {
-            onClick: () => { const c = { ...sel }; delete c[clave(x.productoId, x.talle)]; setSel(c); },
+            onClick: () => {
+              const c = { ...sel };
+              const n = (Number(c[x.claveSel]) || 0) - 1;
+              if (n <= 0) delete c[x.claveSel]; else c[x.claveSel] = n;
+              setSel(c); setError("");
+            },
+            title: "Quitar una unidad",
             style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", display: "flex", padding: 0 }
+          }, React.createElement(Minus, { size: 13 })),
+          React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 650, minWidth: 16, textAlign: "center" } }, x.cantidad),
+          // Fuera toda la línea: se borra con la clave original, que trae el
+          // color. Rearmarla a mano dejaba el producto en la lista.
+          React.createElement("button", {
+            onClick: () => { const c = { ...sel }; delete c[x.claveSel]; setSel(c); setError(""); },
+            title: "Quitar este producto de la lista",
+            style: { background: "none", border: "none", cursor: "pointer", color: "var(--rose)", display: "flex", padding: "0 0 0 3px" }
           }, React.createElement(X, { size: 13 }))
         ))
       )
@@ -22922,7 +22970,6 @@ function NuevoPedidoModal({ data, persist, negocioId, onClose }) {
     ),
     escaneando && React.createElement(EscanerModal, {
       titulo: "Escanear para el pedido",
-      continuo: true,
       onLeer: (code) => porCodigo(code),
       onClose: () => setEscaneando(false)
     }),
