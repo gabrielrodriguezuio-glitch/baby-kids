@@ -6568,6 +6568,7 @@ function InventarioStock({ data, persist }) {
 
   const toggleActivo = (prod) => persist({ ...data, productos: data.productos.map((p) => p.id === prod.id ? { ...p, activo: p.activo === false } : p) });
   const aplicarAjuste = (nuevoStock, motivo, talle, diferencia) => {
+    const anterior = data;
     const ajustado = ajustarEnNegocio(ajustando, negId, talle, diferencia);
     const productos2 = data.productos.map((p) => p.id === ajustando.id ? ajustado : p);
     const movs = diferencia === 0 ? [] : [nuevoMovimiento({
@@ -6578,8 +6579,18 @@ function InventarioStock({ data, persist }) {
       stockResultante: ajustado.stock,
       usuario: usuarioActivo(data),
     })];
+    const nombre = ajustando.nombre;
     persist(conMovimientos({ ...data, productos: productos2 }, movs));
     setAjustando(null);
+    // Un ajuste cambia el stock a mano: sin cartel no hay forma de saber si
+    // quedó guardado, ni de volver atrás si se cargó el número equivocado.
+    if (diferencia === 0) {
+      avisar("El stock de " + nombre + " quedó igual", { tono: "info" });
+    } else {
+      avisar(nombre + (talle ? " · " + textoDeClave(talle) : "") + " · " +
+        (diferencia > 0 ? "+" : "") + diferencia + " u · queda en " + nuevoStock,
+        { deshacer: () => persist(anterior) });
+    }
   };
 
   return React.createElement(
@@ -20223,7 +20234,7 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual, continuo }) {
       "div",
       { style: { display: "flex", justifyContent: "flex-end", marginTop: 18 } },
       React.createElement(Button, {
-        tone: continuo && leidos > 0 ? "primary" : "ghost",
+        tone: continuo && leidos > 0 ? "denim" : "ghost",
         onClick: onClose,
         style: { padding: "12px 24px" }
       }, continuo ? (leidos > 0 ? "Listo · " + leidos : "Listo") : "Cerrar")
@@ -21769,6 +21780,12 @@ function ReposicionCamionetaModal({ data, persist, fecha, negocioId, negocioNomb
       reposiciones: [registro, ...(data.reposiciones || [])]
     });
     setRemito(registro);
+    // El remito que se abre es el comprobante, pero no dice que la mercadería
+    // salió de otro local: eso pasaba en silencio y no se notaba hasta ver el
+    // stock del origen más tarde.
+    avisar(origen && origen !== negocioId
+      ? registro.remito + " · " + registro.unidades + " u salen de " + origenNombre
+      : registro.remito + " · " + registro.unidades + " u repuestas");
   };
 
   const fila = (it) => {
@@ -24444,14 +24461,20 @@ function TransferenciasView({ data, persist }) {
     avisar("Recepción confirmada por " + usuarioActivo(data) + " en " + nombreDe(t.destino));
   };
   const cancelar = (t) => {
+    const anterior = data;
     // Vuelve al origen lo que había salido; si ya llegó, sale del destino
     const productos = aplicar(data.productos, t.items, t.estado === "completada" ? t.destino : null, t.origen);
+    const unidades = (t.items || []).reduce((a, x) => a + x.cantidad, 0);
     persist({
       ...data,
       productos,
       transferencias: transferencias.map((x) => x.id === t.id ? { ...x, estado: "cancelada" } : x)
     });
     setMenu(null);
+    // Cancelar mueve stock de verdad: hay que decir adónde volvió, porque si
+    // se cancela la equivocada no queda rastro visible de lo que pasó.
+    avisar(t.remito + " cancelada · " + unidades + " u vuelven a " + nombreDe(t.origen),
+      { tono: "info", deshacer: () => persist(anterior) });
   };
 
   const selectFiltro = (valor, onChange, opciones, textoTodos) => React.createElement(
@@ -25441,6 +25464,7 @@ function ActividadView({ data, persist, senalMovimiento }) {
   useEffect(() => { if (senalMovimiento) setRegistrando(true); }, [senalMovimiento]);
 
   const registrarAjuste = (producto, cantidad, motivo, talle) => {
+    const anterior = data;
     const ajustado = ajustarEnNegocio(producto, negocioActivo(data).id, talle, cantidad);
     const productos = data.productos.map((p) => p.id === producto.id ? ajustado : p);
     const mov = nuevoMovimiento({
@@ -25453,6 +25477,11 @@ function ActividadView({ data, persist, senalMovimiento }) {
     });
     persist(conMovimientos({ ...data, productos }, [mov]));
     setRegistrando(false);
+    // Mismo criterio que el ajuste del inventario: se dice qué se movió y
+    // queda la posibilidad de deshacerlo.
+    avisar(producto.nombre + (talle ? " · " + textoDeClave(talle) : "") + " · " +
+      (cantidad > 0 ? "+" : "") + cantidad + " u registradas",
+      { deshacer: () => persist(anterior) });
   };
   // Recorre ventas, cajas, transferencias y movimientos: caro para rehacerlo
   // en cada render.
@@ -28810,9 +28839,17 @@ function VentasReportes({ data, rango, persist }) {
   const [seleccionadas, setSeleccionadas] = useState([]);
   const [ultimaTocada, setUltimaTocada] = useState(null);
   const confirmarDevolucion = (seleccion, motivo, reintegro) => {
+    const anterior = data;
+    const unidades = Object.keys(seleccion || {}).reduce((a, k) => a + (Number(seleccion[k]) || 0), 0);
     const next = registrarDevolucion(data, devolviendo, seleccion, motivo, reintegro);
     if (next) persist(next);
     setDevolviendo(null);
+    // La devolución repone stock y puede mover plata: sin cartel no se sabía
+    // si quedó registrada, y era la única de las anulaciones que no avisaba.
+    if (next) {
+      avisar("Devolución registrada · " + unidades + (unidades === 1 ? " unidad vuelve" : " unidades vuelven") + " al stock",
+        { deshacer: () => persist(anterior) });
+    }
   };
   // Se ordena acá y no sólo al traer de la nube: una venta que entra por la
   // sincronización se agrega al final, y sin esto quedaba abajo de todo.
