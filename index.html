@@ -129,7 +129,12 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.904";
+const VERSION_APP = "9.905";
+// v9.905 (2026-09-15)
+// - Eliminado el cartel amarillo de recordatorio de respaldo que aparecía
+//   automáticamente. El botón "Descargar respaldo" sigue disponible en
+//   Configuración para descargarlo cuando se quiera.
+//
 // v9.904 (2026-09-15)
 // - Transferencias: eliminados los switches "Pedir confirmación de recepción"
 //   y "Transferir aunque no figure stock". Ahora el stock pasa directo al
@@ -1870,22 +1875,7 @@ function ControlTienda() {
   }, []);
   const isMobile = useIsMobile();
   const [errorGuardado, setErrorGuardado] = useState("");
-  // MEJORA 1: se chequea una vez al abrir la app
-  const [avisoRespaldo, setAvisoRespaldo] = useState("");
-  useEffect(() => {
-    const t = setTimeout(() => {
-      // MEJORA 4: el espacio manda sobre el respaldo, es más urgente
-      const esp = espacioUsado();
-      if (esp && esp.pct >= 80) {
-        setAvisoRespaldo("El almacenamiento está al " + esp.pct + "%. Descargá un respaldo y borrá comprobantes viejos antes de que falle un guardado.");
-        return;
-      }
-      const dias = diasSinRespaldo();
-      if (dias === null) setAvisoRespaldo("Todavía no descargaste ningún respaldo. Si se borra este navegador, perdés todo.");
-      else if (dias >= 7) setAvisoRespaldo("Hace " + dias + " días que no descargás un respaldo.");
-    }, 1200);
-    return () => clearTimeout(t);
-  }, []);
+
   // ¿Hay una sesión abierta? Se revisa al arrancar, para no pedir el mail cada
   // vez que se abre la app. Si el servidor no contesta en 6 segundos se sigue
   // igual y se muestra el ingreso: quedarse esperando dejaba la pantalla de
@@ -2338,27 +2328,7 @@ function ControlTienda() {
         style: { background: "rgba(255,255,255,.2)", border: "none", color: "#fff", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 12.5 }
       }, "Entendido")),
 
-    // MEJORA 1: aviso de respaldo. Aparece cuando pasaron 7 días o nunca se hizo
-    !errorGuardado && avisoRespaldo && /* @__PURE__ */ React.createElement("div", {
-      style: {
-        position: "fixed", top: 0, left: 0, right: 0, zIndex: 9998,
-        background: "var(--mustard)", color: "#111", padding: "11px 18px",
-        fontSize: 13.5, lineHeight: 1.45, display: "flex", alignItems: "center", gap: 12,
-        boxShadow: "0 2px 12px rgba(0,0,0,.2)"
-      }
-    },
-      /* @__PURE__ */ React.createElement(ArrowDownCircle, { size: 18, style: { flexShrink: 0 } }),
-      /* @__PURE__ */ React.createElement("span", { style: { flex: 1, fontWeight: 600 } }, avisoRespaldo),
-      /* @__PURE__ */ React.createElement("button", {
-        onClick: () => { exportarRespaldo(data); setAvisoRespaldo(""); },
-        style: { background: "rgba(0,0,0,.75)", border: "none", color: "#fff", borderRadius: 7, padding: "6px 14px", cursor: "pointer", fontSize: 12.5, fontWeight: 600, flexShrink: 0 }
-      }, "Descargar ahora"),
-      /* @__PURE__ */ React.createElement("button", {
-        onClick: () => setAvisoRespaldo(""),
-        style: { background: "none", border: "none", color: "#111", cursor: "pointer", fontSize: 12.5, opacity: .7, flexShrink: 0 }
-      }, "Después")),
-
-    /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-start", paddingTop: (errorGuardado || avisoRespaldo) ? 46 : 0 } }, !isMobile && !railOculto && /* @__PURE__ */ React.createElement(Sidebar, { tab, setTab, lowStockCount, tareasHoy, paradasHoy, data, usuario, onAbrirCaja: () => setVerCaja(true), onBuscar: () => setBuscando(true), onOcultar: alternarRail, onCambiarUsuario: () => setCambiarUsuario(true) }),
+    /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-start", paddingTop: errorGuardado ? 46 : 0 } }, !isMobile && !railOculto && /* @__PURE__ */ React.createElement(Sidebar, { tab, setTab, lowStockCount, tareasHoy, paradasHoy, data, usuario, onAbrirCaja: () => setVerCaja(true), onBuscar: () => setBuscando(true), onOcultar: alternarRail, onCambiarUsuario: () => setCambiarUsuario(true) }),
     // El velo cierra el menú al tocar cualquier lugar fuera de él
     !isMobile && !railOculto && /* @__PURE__ */ React.createElement("div", {
       onClick: alternarRail,
