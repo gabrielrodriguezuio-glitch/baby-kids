@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.921";
+const VERSION_APP = "9.922";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -11662,6 +11662,12 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
   // Cobrar la deuda junto con la compra: entra como una línea más del carrito
   const clienteDelCarrito = (data.clientes || []).find((c) => c.id === clienteId) || null;
   const saldoCliente = saldoDeCliente(data, clienteId);
+  // El campo de cobro arranca con el saldo entero ya escrito: lo normal es
+  // cobrar todo, y si paga menos se corrige el número. Se recarga cuando
+  // cambia el cliente y cuando el saldo baja por un cobro.
+  useEffect(() => {
+    setCobroSaldoPos(saldoCliente > 0 ? String(saldoCliente) : "");
+  }, [clienteId, saldoCliente]);
   const deudaEnCarrito = cart.find((it) => it.esDeuda);
 
   // Cobrar el saldo directo, sin carrito ni venta de por medio: el cliente
@@ -12533,7 +12539,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
             { style: { display: "flex", alignItems: "center", gap: 7 } },
             React.createElement("input", {
               type: "number", min: 1, max: saldoCliente, step: 1,
-              placeholder: "Cu\xE1nto paga",
+              placeholder: String(saldoCliente),
               value: cobroSaldoPos,
               onChange: (e) => setCobroSaldoPos(e.target.value),
               style: { flex: 1, minWidth: 0, textAlign: "center", padding: "9px 8px", fontSize: 14, fontWeight: 600, borderRadius: 7, border: "1px solid " + posColors.inputBorder, background: posColors.inputBg, color: posColors.text, fontFamily: "'IBM Plex Mono', monospace" }
@@ -12546,14 +12552,14 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
               React.createElement("option", { value: "efectivo" }, "Efectivo"),
               React.createElement("option", { value: "transferencia" }, "Transferencia")),
             React.createElement("button", {
-              onClick: () => { cobrarSaldoDirecto(Number(cobroSaldoPos) || saldoCliente, medioSaldoPos); setCobroSaldoPos(""); },
+              onClick: () => cobrarSaldoDirecto(Number(cobroSaldoPos) || saldoCliente, medioSaldoPos),
               style: { padding: "9px 15px", borderRadius: 7, border: "none", background: posColors.accent, color: "var(--on-accent)", cursor: "pointer", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap", flexShrink: 0, fontFamily: "'Inter', sans-serif" }
             }, "Cobrar")
           ),
           React.createElement("div", { style: { fontSize: 11.5, color: posColors.muted, marginTop: 7 } },
-            cobroSaldoPos && Number(cobroSaldoPos) > 0 && Number(cobroSaldoPos) < saldoCliente
+            Number(cobroSaldoPos) > 0 && Number(cobroSaldoPos) < saldoCliente
               ? "Le quedar\xEDan " + money(saldoCliente - Math.round(Number(cobroSaldoPos)))
-              : "Si lo dej\xE1s vac\xEDo se cobra todo el saldo")
+              : "Cobra todo el saldo. Cambi\xE1 el n\xFAmero si paga menos.")
         ),
         React.createElement(
           PosButton,
@@ -13290,7 +13296,11 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
   const [montoEntregado, setMontoEntregado] = useState("");
   const [extras, setExtras] = useState({ ...EXTRAS_VACIOS });
   const [comprobantes, setComprobantes] = useState([]);
+  // Igual que en el mostrador: el saldo entero ya escrito, listo para cobrar
   const [montoDeuda, setMontoDeuda] = useState("");
+  useEffect(() => {
+    setMontoDeuda(saldoCliente > 0 ? String(saldoCliente) : "");
+  }, [clienteId, saldoCliente]);
   const [error, setError] = useState("");
 
   // El precio depende de cómo pague: efectivo va mayorista siempre, y
@@ -13526,8 +13536,8 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
           React.createElement("input", {
             type: "number",
             min: 1, max: saldoCliente, step: 1,
-            placeholder: "Todo",
-            title: "Deja\xE1lo vac\xEDo para pasar todo el saldo al carrito",
+            placeholder: String(saldoCliente),
+            title: "Baj\xE1 el n\xFAmero si paga s\xF3lo una parte",
             value: montoDeuda,
             onChange: (e) => setMontoDeuda(e.target.value),
             style: { ...inputStyle, width: 90, textAlign: "center", padding: "6px 8px", fontSize: 13, flexShrink: 0 }
