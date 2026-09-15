@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.910";
+const VERSION_APP = "9.912";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -11909,6 +11909,16 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     const saldoAntes = saldoDeCliente(data, clienteId);
     const lineaDeudaCobrada = cart.find((it) => it.esDeuda);
     const montoDeudaCobrada = lineaDeudaCobrada ? lineaDeudaCobrada.precioUnit * lineaDeudaCobrada.cantidad : 0;
+    // Excedente en pago dividido: lo que se cobró de más y va a bajar el saldo
+    // de la cuenta corriente. Es cero cuando no hay pago dividido o cuando la
+    // suma es exacta.
+    const sumaPagosDetalle = detallePagos.reduce((a, p) => a + (Number(p.monto) || 0), 0);
+    const excedenteACuenta = (variosPagos && clienteId) ? Math.max(0, Math.round(sumaPagosDetalle - total)) : 0;
+    // Lo que el cliente realmente entregó: en pago dividido es la suma de todos
+    // los pagos; en pago simple con efectivo, lo que puso en el input; si no,
+    // el total exacto.
+    const entregadoReal = variosPagos ? sumaPagosDetalle
+      : (metodoPago === "efectivo" ? (Number(montoEntregado) || total) : total);
 
     const venta = {
       id: uidUUID(),
@@ -11945,9 +11955,18 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
       listaPrecio: (listasPrecio.find((l) => l.id === listaAplicadaId) || listaActual).nombre,
       ...clienteId ? {
         saldoAnterior: saldoAntes,
-        saldoPosterior: Math.max(0, saldoAntes - montoDeudaCobrada + montoPorMetodo("cuenta_corriente"))
+        // El saldo baja por: la parte de la deuda vieja cobrada (lineaDeuda) y
+        // el excedente del pago dividido. Sube por: la parte de esta venta que
+        // se pone a cuenta corriente.
+        saldoPosterior: Math.max(0, saldoAntes - montoDeudaCobrada - excedenteACuenta + montoPorMetodo("cuenta_corriente"))
       } : {},
-      ...metodoPago === "efectivo" ? { montoEntregado: Number(montoEntregado) || total, vuelto: Math.max(0, (Number(montoEntregado) || total) - total) } : {}
+      // "Pagó con" y "Vuelto": ahora también se guardan en pago dividido, así
+      // el ticket refleja lo que el cliente entregó, no solo el total.
+      montoEntregado: entregadoReal,
+      // Cuando el excedente va a cuenta corriente, no hay vuelto físico: la
+      // plata queda como abono. Solo hay vuelto si es pago simple en efectivo
+      // sin cliente que la reciba.
+      vuelto: excedenteACuenta > 0 ? 0 : Math.max(0, entregadoReal - total)
     };
     // Un combo no tiene stock propio: lo que baja es el stock de sus partes
     const bajas = {};
@@ -13776,11 +13795,17 @@ function TicketVenta({ data, venta }) {
       venta.pagos && venta.pagos.length > 1
         ? venta.pagos.map((x, i) => fila(metodoPagoLabel[x.metodo] || x.metodo, money(x.monto), { arriba: i ? 4 : 0 }))
         : fila(metodoPagoLabel[venta.metodoPago] || venta.metodoPago || "\u2014", money(venta.total)),
-      venta.metodoPago === "efectivo" && venta.montoEntregado != null && React.createElement(
+      // "Pagó con" y "Vuelto" aparecen cuando lo entregado difiere del total:
+      // efectivo con vuelto, o pago dividido con excedente que va a cuenta.
+      venta.montoEntregado != null && venta.montoEntregado > (venta.total || 0) && React.createElement(
         "div",
         { style: { marginTop: 7, paddingTop: 7, borderTop: "1px dotted " + linea } },
         fila("Pagó con", money(venta.montoEntregado), { tenue: true }),
-        fila("Vuelto", money(venta.vuelto || 0), { tenue: true, arriba: 4 })
+        fila("Vuelto", money(venta.vuelto || 0), { tenue: true, arriba: 4 }),
+        // Si el excedente fue a cuenta, se aclara para que quede documentado
+        (venta.montoEntregado - (venta.total || 0) > 0 && (venta.vuelto || 0) === 0) && fila(
+          "A cuenta", money(venta.montoEntregado - (venta.total || 0)), { tenue: true, arriba: 4 }
+        )
       )
     ),
 
@@ -14069,9 +14094,15 @@ function construirTicketTexto(data, venta) {
   } else {
     out.push(linea("  " + (metodoPagoLabel[venta.metodoPago] || venta.metodoPago || "-"), money(venta.total)));
   }
-  if (venta.metodoPago === "efectivo" && venta.montoEntregado != null) {
+  // "Pagó con" y "Vuelto" también aparecen en pago dividido cuando el
+  // cliente entregó de más y el excedente fue a cuenta corriente.
+  if (venta.montoEntregado != null && venta.montoEntregado > (venta.total || 0)) {
     out.push(linea("  Pago con", money(venta.montoEntregado)));
     out.push(linea("  Vuelto", money(venta.vuelto || 0)));
+    const exc = venta.montoEntregado - (venta.total || 0);
+    if (exc > 0 && (venta.vuelto || 0) === 0) {
+      out.push(linea("  A cuenta", money(exc)));
+    }
   }
 
   // El saldo con el que se va, destacado
@@ -14218,9 +14249,13 @@ function dibujarTicket(data, venta, fuente) {
   } else {
     renglon("  " + (metodoPagoLabel[venta.metodoPago] || venta.metodoPago || "\u2014"), money(venta.total), { tam: 18 });
   }
-  if (venta.metodoPago === "efectivo" && venta.montoEntregado != null) {
+  if (venta.montoEntregado != null && venta.montoEntregado > (venta.total || 0)) {
     renglon("  Pag\u00F3 con", money(venta.montoEntregado), { tam: 18 });
     renglon("  Vuelto", money(venta.vuelto || 0), { tam: 18 });
+    const exc = venta.montoEntregado - (venta.total || 0);
+    if (exc > 0 && (venta.vuelto || 0) === 0) {
+      renglon("  A cuenta", money(exc), { tam: 18 });
+    }
   }
 
   // --- Saldo con el que se va ---
