@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.914";
+const VERSION_APP = "9.920";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -520,16 +520,33 @@ const mesCorto = (iso) => {
 
 // Lo que un cliente debe: las ventas fiadas y los cargos, menos los pagos.
 // Vive acá porque lo usan la ficha del cliente y el punto de venta.
-// El saldo sale SÓLO de movimientosCC: cada venta fiada deja su "cargo" y
-// cada cobro deja su "pago". Es el libro mayor y se carga completo desde la
-// nube. Las ventas se traen sólo de los últimos 6 meses, así que sumarlas
-// acá contaba doble lo reciente y perdía lo viejo.
+// ¿Este cargo es el asiento de esta venta? Mismo día y mismo importe. Se usa
+// para no contar dos veces la venta y su cargo, y para darse cuenta de cuándo
+// a una venta le falta el asiento.
+const cargoDeVenta = (mov, venta) => mov.fecha === venta.fecha
+  && Math.round(mov.monto || 0) === Math.round(venta.total || 0);
+
+// El saldo sale del libro mayor (movimientosCC), que se carga completo desde
+// la nube: cada venta fiada deja su "cargo" y cada cobro su "pago". Las
+// ventas sólo se traen de los últimos 6 meses, así que sumarlas sin más
+// contaría doble lo reciente. Pero si a una venta le falta su cargo hay que
+// contarla igual, o el saldo se vería distinto acá que en la ficha.
 const saldoDeCliente = (data, clienteId) => {
   if (!clienteId) return 0;
   const movs = (data.movimientosCC || []).filter((m) => m.clienteId === clienteId);
-  const cargos = movs.filter((m) => m.tipo === "cargo").reduce((a, m) => a + (m.monto || 0), 0);
+  const cargos = movs.filter((m) => m.tipo === "cargo");
+  const totalCargos = cargos.reduce((a, m) => a + (m.monto || 0), 0);
   const pagos = movs.filter((m) => m.tipo !== "cargo").reduce((a, m) => a + (m.monto || 0), 0);
-  return Math.max(0, cargos - pagos);
+  // Ventas fiadas sin asiento: cada cargo se aparea con una sola venta
+  const tomados = new Set();
+  const sinAsiento = (data.ventas || [])
+    .filter((v) => v.clienteId === clienteId && !esDevolucion(v) && v.metodoPago === "cuenta_corriente")
+    .reduce((a, v) => {
+      const i = cargos.findIndex((m, k) => !tomados.has(k) && cargoDeVenta(m, v));
+      if (i >= 0) { tomados.add(i); return a; }
+      return a + (v.total || 0);
+    }, 0);
+  return Math.max(0, totalCargos + sinAsiento - pagos);
 };
 
 const claveVariante = (v) => String(v.talle || "") + "|" + String(v.color || "");
@@ -11540,6 +11557,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
   // Aviso naranja: se vendió algo que figura sin stock
   const [avisoStock, setAvisoStock] = useState("");
   const [showConsulta, setShowConsulta] = useState(false);
+  const [cobroSaldoPos, setCobroSaldoPos] = useState("");
   const [showAgregarMonto, setShowAgregarMonto] = useState(false);
   const [showCheckout, setShowCheckout] = useState(false);
   const [eligiendoTalle, setEligiendoTalle] = useState(null);
@@ -12286,10 +12304,11 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
           : cart.length === 0
           ? React.createElement(
               "div",
-              { style: { border: "1px solid " + posColors.inputBorder, borderRadius: 6, padding: "56px 20px", textAlign: "center" } },
+              { style: { border: "1px solid " + posColors.inputBorder, borderRadius: 6, padding: "40px 20px", textAlign: "center" } },
               React.createElement(ShoppingCart, { size: 40, color: posColors.muted, strokeWidth: 1.5 }),
               React.createElement("div", { style: { fontSize: 15, fontWeight: 600, color: posColors.text, marginTop: 14 } }, "Carrito vac\xEDo"),
-              React.createElement("div", { style: { fontSize: 12.5, color: posColors.muted, marginTop: 4 } }, "Busca productos para agregar al carrito")
+              React.createElement("div", { style: { fontSize: 12.5, color: posColors.muted, marginTop: 4 } },
+                saldoCliente > 0 ? "Pod\xE9s cobrarle el saldo sin cargar productos" : "Busca productos para agregar al carrito")
             )
           : React.createElement(
               "div",
@@ -12458,6 +12477,29 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
                 React.createElement("div", { style: { marginTop: 5 } },
                   "Revis\u00E1 el campo Mayorista de cada producto, o pon\u00E9 un % de ajuste a la lista en Configuraci\u00F3n.")
               )
+        ),
+        // Cobrar la deuda del cliente desde acá mismo: se escribe cuánto paga
+        // y entra al carrito como una línea más. No hace falta ir a Clientes
+        // ni abrir el cobro para encontrarlo.
+        clienteDelCarrito && saldoCliente > 0 && !deudaEnCarrito && React.createElement(
+          "div",
+          { style: { display: "flex", alignItems: "center", gap: 9, marginBottom: 10, padding: "12px 13px", borderRadius: 9, border: "1px solid color-mix(in srgb, var(--rose) 35%, transparent)", background: "color-mix(in srgb, var(--rose) 9%, transparent)" } },
+          React.createElement(Wallet, { size: 16, color: "var(--rose)", style: { flexShrink: 0 } }),
+          React.createElement("span", { style: { flex: 1, minWidth: 0, fontSize: 13 } },
+            clienteDelCarrito.nombre, " debe ",
+            React.createElement("strong", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(saldoCliente))),
+          React.createElement("input", {
+            type: "number", min: 1, max: saldoCliente, step: 1,
+            placeholder: "Todo",
+            title: "Deja\xE1lo vac\xEDo para pasar todo el saldo al carrito",
+            value: cobroSaldoPos,
+            onChange: (e) => setCobroSaldoPos(e.target.value),
+            style: { width: 96, textAlign: "center", padding: "7px 8px", fontSize: 13, fontWeight: 600, borderRadius: 7, border: "1px solid " + posColors.inputBorder, background: posColors.inputBg, color: posColors.text, fontFamily: "'IBM Plex Mono', monospace" }
+          }),
+          React.createElement("button", {
+            onClick: () => { sumarDeuda(Number(cobroSaldoPos) || saldoCliente); setCobroSaldoPos(""); },
+            style: { background: "none", border: "none", cursor: "pointer", color: posColors.accent, fontWeight: 700, fontSize: 13, whiteSpace: "nowrap", flexShrink: 0, fontFamily: "'Inter', sans-serif" }
+          }, "Cobrar")
         ),
         React.createElement(
           PosButton,
@@ -13251,8 +13293,9 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
         : "Agregá al menos un producto al carrito.");
     }
     if (variosPagos) {
-      // "Falta asignar" (faltante > 0): sigue bloqueado. La venta no está cubierta.
-      if (faltante > 0.5) {
+      // Lo que no se asignó a ningún medio queda fiado a la cuenta del
+      // cliente. Sin cliente no hay dónde anotarlo, así que ahí sí se frena.
+      if (faltante > 0.5 && !cliente) {
         return setError("Faltan " + money(faltante) + " por asignar.");
       }
       // "Los pagos superan el total" (faltante < 0): solo se bloquea si NO hay
@@ -13264,18 +13307,30 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
       if (pagos.cuenta_corriente && !cliente) return setError("Elegí un cliente para usar cuenta corriente.");
     } else {
       if (metodoPago === "cuenta_corriente" && !cliente) return setError("Elegí un cliente para cargar la venta a su cuenta corriente.");
-      if (metodoPago === "efectivo" && montoEntregado !== "" && Number(montoEntregado) < total) {
-        // Si el carrito tiene solo la deuda del cliente (sin productos), se
-        // permite pagar menos: el saldo se reduce por lo que pague. Si hay
-        // productos mezclados, esos sí tienen que estar cubiertos.
-        const soloDeuda = lineas.every((it) => it.esDeuda);
-        if (!soloDeuda) return setError("El monto recibido es menor al total.");
+      // Pagar menos que el total está bien si hay un cliente: la diferencia
+      // queda a su cuenta. Sin cliente no hay dónde anotarla, así que se frena.
+      if (montoEntregado !== "" && Number(montoEntregado) < total && !cliente) {
+        return setError("El monto recibido es menor al total.");
       }
     }
     setError("");
+    // Lo que quedó sin asignar se carga a la cuenta corriente del cliente
+    // automáticamente, sumándose a lo que ya hubiera puesto ahí a mano.
+    const pagosFinal = (variosPagos && cliente && faltante > 0.5)
+      ? { ...pagos, cuenta_corriente: Math.round((Number(pagos.cuenta_corriente) || 0) + faltante) }
+      : pagos;
+    // En pago simple, si entregó menos que el total, se parte en dos: lo que
+    // pagó por su medio y el resto a cuenta. Así el saldo baja sólo por lo
+    // que realmente entró.
+    const entregadoSimple = montoEntregado !== "" ? Number(montoEntregado) : total;
+    const restoACuenta = (!variosPagos && cliente && metodoPago !== "cuenta_corriente" && entregadoSimple < total)
+      ? Math.round(total - entregadoSimple) : 0;
     const detallePagos = variosPagos
-      ? Object.keys(pagos).filter((k) => Number(pagos[k]) > 0).map((k) => ({ metodo: k, monto: Number(pagos[k]) }))
-      : [{ metodo: metodoPago, monto: total }];
+      ? Object.keys(pagosFinal).filter((k) => Number(pagosFinal[k]) > 0).map((k) => ({ metodo: k, monto: Number(pagosFinal[k]) }))
+      : restoACuenta > 0
+        ? [{ metodo: metodoPago, monto: Math.round(entregadoSimple) },
+           { metodo: "cuenta_corriente", monto: restoACuenta }]
+        : [{ metodo: metodoPago, monto: total }];
     onConfirmar({
       metodoPago: variosPagos ? (detallePagos[0] ? detallePagos[0].metodo : "efectivo") : metodoPago,
       pagos: detallePagos,
@@ -13417,7 +13472,8 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
           React.createElement("input", {
             type: "number",
             min: 1, max: saldoCliente, step: 1,
-            placeholder: String(saldoCliente),
+            placeholder: "Todo",
+            title: "Deja\xE1lo vac\xEDo para pasar todo el saldo al carrito",
             value: montoDeuda,
             onChange: (e) => setMontoDeuda(e.target.value),
             style: { ...inputStyle, width: 90, textAlign: "center", padding: "6px 8px", fontSize: 13, flexShrink: 0 }
@@ -13462,32 +13518,19 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
               "div",
               { style: { display: "flex", flexDirection: "column", gap: 12, marginTop: 18 } },
               disponibles.map(filaPago),
-              // Cliente con cuenta: la diferencia que falta se puede mandar a
-              // su cuenta corriente de un toque, sin escribir el número a mano.
-              cliente && faltante > 0.5 && React.createElement("button", {
-                onClick: () => setPagos({ ...pagos, cuenta_corriente: String(Math.round((Number(pagos.cuenta_corriente) || 0) + faltante)) }),
-                style: {
-                  display: "flex", alignItems: "center", gap: 9, width: "100%", marginTop: 4,
-                  padding: "11px 12px", borderRadius: 9, cursor: "pointer",
-                  border: "1px solid color-mix(in srgb, var(--denim) 35%, transparent)",
-                  background: "color-mix(in srgb, var(--denim) 8%, transparent)",
-                  color: "var(--ink)", fontSize: 13, fontFamily: "'Inter', sans-serif", textAlign: "left"
-                }
-              },
-                React.createElement(Wallet, { size: 15, color: "var(--denim)", style: { flexShrink: 0 } }),
-                React.createElement("span", { style: { flex: 1 } }, "Poner ", money(faltante), " a cuenta de ", cliente.nombre),
-                React.createElement("span", { style: { color: "var(--denim)", fontWeight: 600, whiteSpace: "nowrap" } }, "A cuenta")
-              ),
               (() => {
-                // Excedente que se puede abonar a la cuenta del cliente: NO es
-                // un error, es un abono. Se muestra en verde con la etiqueta clara.
+                // Con cliente de cuenta corriente, ni el faltante ni el excedente
+                // son errores: lo que falta queda fiado y lo que sobra se abona.
+                // Se avisa en verde, y al procesar se aplica solo.
                 const excedente = -faltante;
+                const quedaFiado = cliente && faltante > 0.5;
                 const abonaraCuenta = cliente && saldoCliente > 0 && excedente > 0.5;
-                const etiqueta = faltante > 0.5 ? "Falta asignar"
+                const etiqueta = quedaFiado ? ("Queda a cuenta de " + cliente.nombre)
                   : abonaraCuenta ? ("Se abona a cuenta de " + cliente.nombre)
+                  : faltante > 0.5 ? "Falta asignar"
                   : faltante < -0.5 ? "Te pasaste por"
                   : "Asignado completo";
-                const color = Math.abs(faltante) < 0.5 || abonaraCuenta ? "var(--sage)" : "var(--rose)";
+                const color = Math.abs(faltante) < 0.5 || abonaraCuenta || quedaFiado ? "var(--sage)" : "var(--rose)";
                 return React.createElement(
                   "div",
                   { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6, paddingTop: 14, borderTop: "1px solid var(--line)", fontSize: 13.5 } },
@@ -13506,22 +13549,31 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
         React.createElement(
           "div",
           { style: { marginTop: 12 } },
-          !variosPagos && metodoPago === "efectivo" && React.createElement(
+          !variosPagos && metodoPago !== "cuenta_corriente" && React.createElement(
             "div",
             null,
             React.createElement("input", {
               type: "number",
               value: montoEntregado,
               onChange: (e) => setMontoEntregado(e.target.value),
-              placeholder: "Mínimo: " + money(total),
+              placeholder: cliente ? ("Cu\xE1nto paga (total: " + money(total) + ")") : ("M\xEDnimo: " + money(total)),
               style: { ...inputStyle, width: "100%", textAlign: "center", padding: "14px 12px", fontSize: 15, background: "var(--surface-2)" }
             }),
-            (Number(montoEntregado) || 0) > 0 && React.createElement(
-              "div",
-              { style: { display: "flex", justifyContent: "space-between", marginTop: 11, fontSize: 14 } },
-              React.createElement("span", { style: { color: "var(--muted)" } }, "Vuelto"),
-              React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, color: vuelto < 0 ? "var(--rose)" : "var(--sage)" } }, money(Math.max(0, vuelto)))
-            )
+            (Number(montoEntregado) || 0) > 0 && (() => {
+              // Si paga de menos y hay cliente, no es un error ni un vuelto:
+              // la diferencia queda anotada a su cuenta.
+              const falta = total - (Number(montoEntregado) || 0);
+              const quedaACuenta = cliente && falta > 0.5;
+              return React.createElement(
+                "div",
+                { style: { display: "flex", justifyContent: "space-between", marginTop: 11, fontSize: 14 } },
+                React.createElement("span", { style: { color: "var(--muted)" } },
+                  quedaACuenta ? ("Queda a cuenta de " + cliente.nombre) : "Vuelto"),
+                React.createElement("span", {
+                  style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, color: (vuelto < 0 && !quedaACuenta) ? "var(--rose)" : "var(--sage)" }
+                }, money(quedaACuenta ? falta : Math.max(0, vuelto)))
+              );
+            })()
           ),
           !variosPagos && metodoPago === "cuenta_corriente" && cliente && React.createElement("p", { style: { fontSize: 12.5, color: "var(--muted)" } },
             "Se sumarán ", money(total), " al saldo pendiente de ", cliente.nombre, ".")
@@ -14220,6 +14272,21 @@ function dibujarTicket(data, venta, fuente) {
     y += (o.tam || 20) + (o.aire != null ? o.aire : 6);
   };
 
+  // Parte un nombre largo en varias líneas, midiendo con la fuente real
+  const partir = (texto, tam, ancho) => {
+    g.font = tam + "px " + F;
+    const palabras = String(texto || "").split(" ");
+    const lineas = [];
+    let actual = "";
+    palabras.forEach((pal) => {
+      const prueba = actual ? actual + " " + pal : pal;
+      if (g.measureText(prueba).width <= ancho || !actual) actual = prueba;
+      else { lineas.push(actual); actual = pal; }
+    });
+    if (actual) lineas.push(actual);
+    return lineas;
+  };
+
   // Una etiqueta a la izquierda y un importe a la derecha, en el mismo renglón
   const renglon = (izq, der, opciones) => {
     const o = opciones || {};
@@ -14242,77 +14309,161 @@ function dibujarTicket(data, venta, fuente) {
     y += (grosor || 1) + 10;
   };
 
-  // Parte un nombre largo en varias líneas, midiendo con la fuente real
-  const partir = (texto, tam, ancho) => {
-    g.font = tam + "px " + F;
-    const palabras = String(texto || "").split(" ");
-    const lineas = [];
-    let actual = "";
-    palabras.forEach((pal) => {
-      const prueba = actual ? actual + " " + pal : pal;
-      if (g.measureText(prueba).width <= ancho || !actual) actual = prueba;
-      else { lineas.push(actual); actual = pal; }
-    });
-    if (actual) lineas.push(actual);
-    return lineas;
+  // Raya de puntos: separa sin pesar tanto como una línea llena
+  const puntos = () => {
+    for (let x = M; x < ANCHO - M; x += 6) g.fillRect(x, y, 3, 1);
+    y += 11;
+  };
+
+  // Rótulo de sección: texto chico en versales con una raya que lo acompaña
+  const seccion = (texto) => {
+    const tam = 15;
+    g.font = "bold " + tam + "px " + F;
+    g.textAlign = "left";
+    const t = texto.toUpperCase();
+    g.fillText(t, M, y);
+    const anchoT = g.measureText(t).width;
+    g.fillRect(M + anchoT + 8, y + tam / 2, util - anchoT - 8, 1);
+    y += tam + 9;
+  };
+
+  // Banda negra con el texto calado: para el TOTAL, que tiene que saltar
+  // a la vista apenas se mira el papel.
+  const banda = (izq, der, opciones) => {
+    const o = opciones || {};
+    const tamDer = o.tamDer || 32;
+    const tamIzq = o.tamIzq || 17;
+    const alto = tamDer + 20;
+    g.fillStyle = "#000";
+    g.fillRect(M, y, util, alto);
+    g.fillStyle = "#fff";
+    g.font = "bold " + tamIzq + "px " + F;
+    g.textAlign = "left";
+    g.fillText(izq, M + 11, y + (alto - tamDer) / 2 + (tamDer - tamIzq) - 1);
+    g.font = "bold " + tamDer + "px " + F;
+    g.textAlign = "right";
+    g.fillText(der, ANCHO - M - 11, y + (alto - tamDer) / 2);
+    g.fillStyle = "#000";
+    y += alto + 10;
+  };
+
+  // Recuadro con marco: para saldo anterior y saldo pendiente
+  const marco = (izq, der, opciones) => {
+    const o = opciones || {};
+    const tamDer = o.tamDer || 26;
+    const tamIzq = o.tamIzq || 16;
+    const grosor = o.grosor || 2;
+    const alto = tamDer + 22;
+    g.fillRect(M, y, util, grosor);
+    g.fillRect(M, y + alto - grosor, util, grosor);
+    g.fillRect(M, y, grosor, alto);
+    g.fillRect(ANCHO - M - grosor, y, grosor, alto);
+    g.font = "bold " + tamIzq + "px " + F;
+    g.textAlign = "left";
+    g.fillText(izq.toUpperCase(), M + 11, y + (alto - tamDer) / 2 + (tamDer - tamIzq) - 1);
+    g.font = "bold " + tamDer + "px " + F;
+    g.textAlign = "right";
+    g.fillText(der, ANCHO - M - 11, y + (alto - tamDer) / 2);
+    y += alto + 10;
+  };
+
+  // Chip de cantidad: número en negativo dentro de un cuadradito negro
+  const chipCantidad = (n, alturaTexto) => {
+    const t = String(n) + "x";
+    g.font = "bold 16px " + F;
+    const w = Math.max(26, g.measureText(t).width + 10);
+    g.fillStyle = "#000";
+    g.fillRect(M, y - 1, w, alturaTexto + 4);
+    g.fillStyle = "#fff";
+    g.textAlign = "center";
+    g.fillText(t, M + w / 2, y + 2);
+    g.fillStyle = "#000";
+    return w;
   };
 
   // --- Encabezado ---
-  escribir((negocio.nombre || "Mi negocio").toUpperCase(), { tam: 30, negrita: true, alinear: "center", aire: 4 });
-  if (negocio.direccion) escribir(negocio.direccion, { tam: 17, alinear: "center", aire: 2 });
-  if (negocio.telefono) escribir("Tel " + negocio.telefono, { tam: 17, alinear: "center" });
-  y += 6;
-  raya();
+  escribir((negocio.nombre || "Mi negocio").toUpperCase(), { tam: 31, negrita: true, alinear: "center", aire: 5 });
+  if (negocio.direccion) partir(negocio.direccion, 16, util).forEach((l) =>
+    escribir(l, { tam: 16, alinear: "center", aire: 2 }));
+  if (negocio.telefono) escribir("Tel " + negocio.telefono, { tam: 16, alinear: "center" });
+  y += 7;
+  raya(3);
 
-  renglon("N\u00BA " + numero, fechaHora, { tam: 17 });
-  escribir(venta.clienteNombre || "Consumidor final", { tam: 19, negrita: true, aire: 3 });
-  if (venta.listaPrecio) escribir("Precio " + venta.listaPrecio.toLowerCase(), { tam: 17 });
-  y += 4;
-  raya();
+  // Número de ticket destacado, fecha al lado
+  renglon("N\u00BA " + numero, fechaHora, { tam: 16, tamIzq: 24, negrita: true, aire: 9 });
+  puntos();
+
+  escribir("CLIENTE", { tam: 14, negrita: true, aire: 4 });
+  partir(venta.clienteNombre || "Consumidor final", 21, util).forEach((l) =>
+    escribir(l, { tam: 21, negrita: true, aire: 4 }));
+  if (venta.listaPrecio) escribir("Lista: " + venta.listaPrecio, { tam: 16, aire: 3 });
+  if (venta.usuarioNombre) escribir("Vendedor: " + venta.usuarioNombre, { tam: 16, aire: 3 });
+  y += 6;
 
   if (venta.saldoAnterior > 0) {
-    renglon("SALDO ANTERIOR", money(venta.saldoAnterior), { tam: 26, tamIzq: 19, negrita: true });
-    raya();
+    marco("Saldo anterior", money(venta.saldoAnterior), { tamDer: 24, grosor: 1 });
   }
 
   // --- Productos ---
-  (venta.items || []).forEach((it) => {
+  seccion("Detalle de compra");
+  (venta.items || []).forEach((it, idx) => {
     const detalle = detalleItem(it);
     const importe = money(it.cantidad * it.precioUnit);
-    g.font = "bold 19px " + F;
+    const TAM = 19;
+    // El chip con la cantidad va pegado al primer renglón del nombre
+    const anchoChip = chipCantidad(it.cantidad || 0, TAM);
+    const sangria = anchoChip + 9;
+    g.font = "bold " + TAM + "px " + F;
     const anchoImporte = g.measureText(importe).width;
-    const lineas = partir(it.nombre, 19, util - anchoImporte - 14);
+    const lineas = partir(it.nombre, TAM, util - sangria - anchoImporte - 12);
     lineas.forEach((l, k) => {
-      if (k === 0) renglon(l, importe, { tam: 19, negrita: true, aire: 2 });
-      else escribir(l, { tam: 19, negrita: true, aire: 2 });
+      g.font = "bold " + TAM + "px " + F;
+      g.textAlign = "left";
+      g.fillText(l, M + sangria, y);
+      if (k === 0) {
+        g.textAlign = "right";
+        g.fillText(importe, ANCHO - M, y);
+      }
+      y += TAM + 3;
     });
-    escribir("  " + it.cantidad + " \u00D7 " + money(it.precioUnit), { tam: 16, aire: detalle ? 3 : 10 });
-    // El detalle va en su propio renglón: junto a la cantidad y el precio, con
-    // los rótulos "Talle" y "Color" se pasaba del ancho del papel y se cortaba.
-    if (detalle) escribir("  " + detalle, { tam: 16, aire: 10 });
+    // Precio unitario y talle/color debajo, con la misma sangría
+    g.font = "16px " + F;
+    g.textAlign = "left";
+    g.fillText(money(it.precioUnit) + " c/u", M + sangria, y);
+    y += 19;
+    if (detalle) {
+      partir(detalle, 16, util - sangria).forEach((l) => {
+        g.font = "16px " + F;
+        g.textAlign = "left";
+        g.fillText(l, M + sangria, y);
+        y += 19;
+      });
+    }
+    if (idx < (venta.items || []).length - 1) { y += 2; puntos(); } else { y += 8; }
   });
-  raya();
 
   // --- Totales ---
+  raya(1);
   if (venta.descuento > 0 || venta.recargo > 0 || venta.envio > 0)
     renglon("Subtotal", money(venta.subtotal != null ? venta.subtotal : venta.total), { tam: 18 });
-  if (venta.descuento > 0) renglon("Descuento", "\u2212" + money(venta.descuento), { tam: 18 });
-  if (venta.recargo > 0) renglon("Recargo", money(venta.recargo), { tam: 18 });
-  if (venta.envio > 0) renglon("Env\u00EDo", money(venta.envio), { tam: 18 });
-  y += 4;
-  raya(2);
-  renglon("TOTAL", money(venta.total), { tam: 26, tamIzq: 19, negrita: true, aire: 2 });
-  escribir(unidades + (unidades === 1 ? " unidad" : " unidades"), { tam: 16 });
-  raya();
+  if (venta.descuento > 0) renglon("Descuento", "\u2212 " + money(venta.descuento), { tam: 18 });
+  if (venta.recargo > 0) renglon("Recargo", "+ " + money(venta.recargo), { tam: 18 });
+  if (venta.envio > 0) renglon("Env\u00EDo", "+ " + money(venta.envio), { tam: 18 });
+  y += 2;
+  // El total en negativo: es lo primero que se busca al mirar el ticket
+  banda("TOTAL", money(venta.total), { tamDer: 32, tamIzq: 17 });
+  escribir(unidades + (unidades === 1 ? " unidad" : " unidades"), { tam: 16, alinear: "right", aire: 12 });
 
   // --- Pago ---
-  escribir("PAGO", { tam: 16, negrita: true, aire: 7 });
+  seccion("Pago");
   if (venta.pagos && venta.pagos.length > 1) {
-    venta.pagos.forEach((x) => renglon("  " + (metodoPagoLabel[x.metodo] || x.metodo), money(x.monto), { tam: 18 }));
+    venta.pagos.forEach((x) => renglon("  " + (metodoPagoLabel[x.metodo] || x.metodo), money(x.monto), { tam: 19, negrita: true, aire: 7 }));
   } else {
-    renglon("  " + (metodoPagoLabel[venta.metodoPago] || venta.metodoPago || "\u2014"), money(venta.total), { tam: 18 });
+    renglon("  " + (metodoPagoLabel[venta.metodoPago] || venta.metodoPago || "\u2014"), money(venta.total), { tam: 19, negrita: true, aire: 7 });
   }
   if (venta.montoEntregado != null && venta.montoEntregado > (venta.total || 0)) {
+    y += 3;
+    puntos();
     renglon("  Pag\u00F3 con", money(venta.montoEntregado), { tam: 18 });
     renglon("  Vuelto", money(venta.vuelto || 0), { tam: 18 });
     const exc = venta.montoEntregado - (venta.total || 0);
@@ -14323,17 +14474,22 @@ function dibujarTicket(data, venta, fuente) {
 
   // --- Saldo con el que se va ---
   if (venta.saldoPosterior != null && (venta.saldoPosterior > 0 || venta.saldoAnterior > 0)) {
-    y += 6;
-    raya(2);
-    renglon(venta.saldoPosterior > 0 ? "SALDO PENDIENTE" : "SALDO",
-      venta.saldoPosterior > 0 ? money(venta.saldoPosterior) : "Sin deuda",
-      { tam: 26, tamIzq: 19, negrita: true, aire: 2 });
+    y += 8;
+    // Marco grueso: el saldo que queda es lo que el cliente se lleva anotado
+    marco(venta.saldoPosterior > 0 ? "Saldo pendiente" : "Saldo",
+      venta.saldoPosterior > 0 ? money(venta.saldoPosterior) : "Al d\u00EDa",
+      { tamDer: 28, grosor: 3 });
+    if (venta.saldoPosterior > 0) escribir("Queda por pagar", { tam: 15, alinear: "right", aire: 10 });
   }
 
-  y += 10;
-  raya();
-  escribir(negocio.mensaje || "\u00A1Gracias por su compra!", { tam: 17, alinear: "center" });
-  y += 20;
+  y += 12;
+  raya(2);
+  partir(negocio.mensaje || "\u00A1Gracias por su compra!", 19, util).forEach((l) =>
+    escribir(l, { tam: 19, negrita: true, alinear: "center", aire: 4 }));
+  y += 4;
+  partir("CONSERVE ESTE TICKET PARA CUALQUIER CAMBIO", 13, util).forEach((l) =>
+    escribir(l, { tam: 13, alinear: "center", aire: 3 }));
+  y += 24;
 
   // Se recorta a lo que se usó de verdad
   const alto = Math.ceil(y / 8) * 8;
@@ -16235,7 +16391,7 @@ function EstadoCuentaModal({ data, cliente, onClose }) {
 // Detalle expandido de una venta dentro de la ficha del cliente: cada
 // producto con su talle, color y precio, el resumen de pago y un botón
 // para ver o imprimir el ticket.
-function DetalleVentaFicha({ venta, onVerTicket }) {
+function DetalleVentaFicha({ venta, onVerTicket, onEditar }) {
   const items = venta.items || [];
   const unidades = items.reduce((a, it) => a + (it.cantidad || 0), 0);
   const gris = "var(--muted)";
@@ -16249,10 +16405,19 @@ function DetalleVentaFicha({ venta, onVerTicket }) {
       React.createElement("span", {
         style: { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.07, color: gris, fontWeight: 700 }
       }, "Ticket #" + venta.id.slice(-8).toUpperCase() + " \u00B7 " + unidades + (unidades === 1 ? " unidad" : " unidades")),
-      React.createElement("button", {
-        onClick: (e) => { e.stopPropagation(); onVerTicket(); },
-        style: { display: "inline-flex", alignItems: "center", gap: 6, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, color: "var(--denim)", cursor: "pointer", fontWeight: 600, fontFamily: "'Inter', sans-serif" }
-      }, React.createElement(Receipt, { size: 13 }), " Ver ticket")
+      React.createElement(
+        "div", { style: { display: "flex", gap: 7 } },
+        React.createElement("button", {
+          onClick: (e) => { e.stopPropagation(); onVerTicket(); },
+          style: { display: "inline-flex", alignItems: "center", gap: 6, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, color: "var(--denim)", cursor: "pointer", fontWeight: 600, fontFamily: "'Inter', sans-serif" }
+        }, React.createElement(Receipt, { size: 13 }), " Ver ticket"),
+        // Sacar prendas del remito sin emitir nota de crédito: repone el
+        // stock y descuenta del saldo del cliente, nada más.
+        onEditar && React.createElement("button", {
+          onClick: (e) => { e.stopPropagation(); onEditar(); },
+          style: { display: "inline-flex", alignItems: "center", gap: 6, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, color: "var(--ink)", cursor: "pointer", fontWeight: 600, fontFamily: "'Inter', sans-serif" }
+        }, React.createElement(Pencil, { size: 13 }), " Editar remito")
+      )
     ),
     // Lista de productos
     React.createElement(
@@ -16323,6 +16488,7 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
   const [movError, setMovError] = useState("");
   const [expandida, setExpandida] = useState(null);
   const [ticketVenta, setTicketVenta] = useState(null);
+  const [editandoVenta, setEditandoVenta] = useState(null);
 
   const movimientos = (data.movimientosCC || []).filter((m) => m.clienteId === cliente.id);
   // Solo las ventas en cuenta corriente son deuda. Una venta pagada al contado
@@ -16364,9 +16530,7 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       const deVenta = m.concepto === "Venta en cuenta corriente"
         || m.concepto === "Parte de venta a cuenta corriente";
       if (!deVenta) return true;
-      const tieneVenta = ventasFiadas.some((v) => v.fecha === m.fecha
-        && Math.round(v.total || 0) === Math.round(m.monto || 0));
-      return !tieneVenta;
+      return !ventasFiadas.some((v) => cargoDeVenta(m, v));
     }).map((m) => ({
       id: m.id,
       clase: m.tipo === "cargo" ? "venta" : "pago",
@@ -16624,7 +16788,8 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
                   React.createElement("td", { colSpan: 6, style: { padding: 0, background: "var(--surface-2)" } },
                     React.createElement(DetalleVentaFicha, {
                       venta: f.venta,
-                      onVerTicket: () => setTicketVenta(f.venta)
+                      onVerTicket: () => setTicketVenta(f.venta),
+                      onEditar: () => setEditandoVenta(f.venta)
                     }))
                 );
                 return filaDetalle ? [filaPrincipal, filaDetalle] : filaPrincipal;
@@ -16633,6 +16798,10 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
           )
         ),
     ticketVenta && React.createElement(TicketModal, { data, venta: ticketVenta, onClose: () => setTicketVenta(null) }),
+    editandoVenta && React.createElement(EditarVentaModal, {
+      data, venta: editandoVenta, persist,
+      onClose: () => { setEditandoVenta(null); setExpandida(null); }
+    }),
     verCuenta && React.createElement(EstadoCuentaModal, {
       data, cliente, onClose: () => setVerCuenta(false)
     }),
@@ -29674,11 +29843,13 @@ function EditarVentaModal({ data, venta, persist, onClose }) {
   const brutoQuitado = quitadas.reduce((s, l) => s + (l.restante - cantDe(l)) * l.precioUnit, 0);
   const aDevolver = Math.round(brutoQuitado * (isFinite(proporcion) ? proporcion : 1));
 
-  const opciones = [
-    { id: "efectivo", label: "Efectivo" },
-    { id: "transferencia", label: "Transferencia" },
-    { id: "cuenta_corriente", label: "A cuenta del cliente" }
-  ].filter((o) => o.id !== "cuenta_corriente" || venta.clienteId);
+  // Con cliente de cuenta, descontar del saldo es lo habitual: va primero.
+  const opciones = (venta.clienteId
+    ? [{ id: "cuenta_corriente", label: "Descontar de su saldo" },
+       { id: "efectivo", label: "Efectivo" },
+       { id: "transferencia", label: "Transferencia" }]
+    : [{ id: "efectivo", label: "Efectivo" },
+       { id: "transferencia", label: "Transferencia" }]);
 
   const confirmar = () => {
     if (unidadesQuitadas === 0) return setError("No quitaste ningún producto. Modificá las cantidades o cerrá el editor.");
@@ -29745,7 +29916,10 @@ function EditarVentaModal({ data, venta, persist, onClose }) {
       "div", { style: { marginTop: 16, display: "flex", flexDirection: "column", gap: 13 } },
       React.createElement(Field, { label: "Cómo se le devuelve" },
         React.createElement("select", { style: inputStyle, value: reintegro, onChange: (e) => setReintegro(e.target.value) },
-          opciones.map((o) => React.createElement("option", { key: o.id, value: o.id }, o.label)))),
+          opciones.map((o) => React.createElement("option", { key: o.id, value: o.id }, o.label))),
+        reintegro === "cuenta_corriente" && React.createElement("div", {
+          style: { fontSize: 11.5, color: "var(--muted)", marginTop: 5 }
+        }, "Se le resta del saldo pendiente. No se emite nota de cr\u00E9dito.")),
       React.createElement(Field, { label: "Motivo (opcional)" },
         React.createElement("input", { style: inputStyle, value: motivo, onChange: (e) => setMotivo(e.target.value), placeholder: "Cliente se arrepintió, talle equivocado\u2026" })),
       React.createElement("div", {
