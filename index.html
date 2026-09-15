@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.920";
+const VERSION_APP = "9.921";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -11558,6 +11558,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
   const [avisoStock, setAvisoStock] = useState("");
   const [showConsulta, setShowConsulta] = useState(false);
   const [cobroSaldoPos, setCobroSaldoPos] = useState("");
+  const [medioSaldoPos, setMedioSaldoPos] = useState("efectivo");
   const [showAgregarMonto, setShowAgregarMonto] = useState(false);
   const [showCheckout, setShowCheckout] = useState(false);
   const [eligiendoTalle, setEligiendoTalle] = useState(null);
@@ -11662,6 +11663,41 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
   const clienteDelCarrito = (data.clientes || []).find((c) => c.id === clienteId) || null;
   const saldoCliente = saldoDeCliente(data, clienteId);
   const deudaEnCarrito = cart.find((it) => it.esDeuda);
+
+  // Cobrar el saldo directo, sin carrito ni venta de por medio: el cliente
+  // pasa a pagar parte de lo que debe y se va. Deja el pago anotado en su
+  // cuenta y, si fue en efectivo, la plata asentada en la caja.
+  const cobrarSaldoDirecto = (monto, metodo) => {
+    if (!clienteDelCarrito || saldoCliente <= 0) return;
+    const cobrado = Math.min(Math.max(1, Math.round(Number(monto) || saldoCliente)), saldoCliente);
+    const anterior = data;
+    const mov = {
+      id: uid(), clienteId: clienteId, fecha: todayISO(), tipo: "pago", monto: cobrado,
+      metodo: METODO_LABELS[metodo] || "Efectivo",
+      concepto: "Cobro de saldo en el mostrador"
+    };
+    let siguiente = { ...data, movimientosCC: [mov, ...(data.movimientosCC || [])] };
+    // La plata entra al cajón: se asienta aunque la caja esté cerrada, o el
+    // arqueo siguiente no cierra.
+    if (metodo === "efectivo") {
+      const miId = usuarioActualId(data);
+      const cajaPropia = cajaDe(data, miId, negocioId);
+      const cajaActualizada = {
+        ...cajaPropia,
+        movimientos: [
+          { id: uid(), tipo: "venta", monto: cobrado,
+            concepto: "Cobro de saldo \xB7 " + clienteDelCarrito.nombre + (cajaPropia.abierta ? "" : " (caja cerrada)"),
+            fecha: (/* @__PURE__ */ new Date()).toISOString(), usuario: usuarioActivo(data), fueraDeCaja: !cajaPropia.abierta },
+          ...(cajaPropia.movimientos || [])
+        ]
+      };
+      siguiente = guardarCaja(siguiente, miId, cajaActualizada, negocioId);
+    }
+    persist(siguiente);
+    const queda = saldoCliente - cobrado;
+    avisar("Cobrado " + money(cobrado) + " \xB7 " + (queda > 0 ? "queda " + money(queda) : "queda al d\xEDa"),
+      { tono: "ok", deshacer: () => persist(anterior) });
+  };
 
   // Se puede cobrar todo el saldo o sólo una parte: el cliente queda debiendo
   // la diferencia. El monto viene del input del CheckoutModal; si no se pone
@@ -12478,28 +12514,46 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
                   "Revis\u00E1 el campo Mayorista de cada producto, o pon\u00E9 un % de ajuste a la lista en Configuraci\u00F3n.")
               )
         ),
-        // Cobrar la deuda del cliente desde acá mismo: se escribe cuánto paga
-        // y entra al carrito como una línea más. No hace falta ir a Clientes
-        // ni abrir el cobro para encontrarlo.
-        clienteDelCarrito && saldoCliente > 0 && !deudaEnCarrito && React.createElement(
+        // Cobrar el saldo del cliente acá mismo, sin pasar por el carrito:
+        // se escribe cuánto paga, se elige el medio y listo. El saldo baja al
+        // instante y la venta del carrito, si la hay, sigue su camino aparte.
+        clienteDelCarrito && saldoCliente > 0 && React.createElement(
           "div",
-          { style: { display: "flex", alignItems: "center", gap: 9, marginBottom: 10, padding: "12px 13px", borderRadius: 9, border: "1px solid color-mix(in srgb, var(--rose) 35%, transparent)", background: "color-mix(in srgb, var(--rose) 9%, transparent)" } },
-          React.createElement(Wallet, { size: 16, color: "var(--rose)", style: { flexShrink: 0 } }),
-          React.createElement("span", { style: { flex: 1, minWidth: 0, fontSize: 13 } },
-            clienteDelCarrito.nombre, " debe ",
-            React.createElement("strong", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(saldoCliente))),
-          React.createElement("input", {
-            type: "number", min: 1, max: saldoCliente, step: 1,
-            placeholder: "Todo",
-            title: "Deja\xE1lo vac\xEDo para pasar todo el saldo al carrito",
-            value: cobroSaldoPos,
-            onChange: (e) => setCobroSaldoPos(e.target.value),
-            style: { width: 96, textAlign: "center", padding: "7px 8px", fontSize: 13, fontWeight: 600, borderRadius: 7, border: "1px solid " + posColors.inputBorder, background: posColors.inputBg, color: posColors.text, fontFamily: "'IBM Plex Mono', monospace" }
-          }),
-          React.createElement("button", {
-            onClick: () => { sumarDeuda(Number(cobroSaldoPos) || saldoCliente); setCobroSaldoPos(""); },
-            style: { background: "none", border: "none", cursor: "pointer", color: posColors.accent, fontWeight: 700, fontSize: 13, whiteSpace: "nowrap", flexShrink: 0, fontFamily: "'Inter', sans-serif" }
-          }, "Cobrar")
+          { style: { marginBottom: 10, padding: "12px 13px", borderRadius: 9, border: "1px solid color-mix(in srgb, var(--rose) 35%, transparent)", background: "color-mix(in srgb, var(--rose) 9%, transparent)" } },
+          React.createElement(
+            "div",
+            { style: { display: "flex", alignItems: "center", gap: 9, marginBottom: 9 } },
+            React.createElement(Wallet, { size: 16, color: "var(--rose)", style: { flexShrink: 0 } }),
+            React.createElement("span", { style: { flex: 1, minWidth: 0, fontSize: 13 } },
+              clienteDelCarrito.nombre, " debe ",
+              React.createElement("strong", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(saldoCliente)))
+          ),
+          React.createElement(
+            "div",
+            { style: { display: "flex", alignItems: "center", gap: 7 } },
+            React.createElement("input", {
+              type: "number", min: 1, max: saldoCliente, step: 1,
+              placeholder: "Cu\xE1nto paga",
+              value: cobroSaldoPos,
+              onChange: (e) => setCobroSaldoPos(e.target.value),
+              style: { flex: 1, minWidth: 0, textAlign: "center", padding: "9px 8px", fontSize: 14, fontWeight: 600, borderRadius: 7, border: "1px solid " + posColors.inputBorder, background: posColors.inputBg, color: posColors.text, fontFamily: "'IBM Plex Mono', monospace" }
+            }),
+            React.createElement("select", {
+              value: medioSaldoPos,
+              onChange: (e) => setMedioSaldoPos(e.target.value),
+              style: { padding: "9px 8px", fontSize: 13, borderRadius: 7, border: "1px solid " + posColors.inputBorder, background: posColors.inputBg, color: posColors.text, fontFamily: "'Inter', sans-serif", flexShrink: 0 }
+            },
+              React.createElement("option", { value: "efectivo" }, "Efectivo"),
+              React.createElement("option", { value: "transferencia" }, "Transferencia")),
+            React.createElement("button", {
+              onClick: () => { cobrarSaldoDirecto(Number(cobroSaldoPos) || saldoCliente, medioSaldoPos); setCobroSaldoPos(""); },
+              style: { padding: "9px 15px", borderRadius: 7, border: "none", background: posColors.accent, color: "var(--on-accent)", cursor: "pointer", fontWeight: 700, fontSize: 13, whiteSpace: "nowrap", flexShrink: 0, fontFamily: "'Inter', sans-serif" }
+            }, "Cobrar")
+          ),
+          React.createElement("div", { style: { fontSize: 11.5, color: posColors.muted, marginTop: 7 } },
+            cobroSaldoPos && Number(cobroSaldoPos) > 0 && Number(cobroSaldoPos) < saldoCliente
+              ? "Le quedar\xEDan " + money(saldoCliente - Math.round(Number(cobroSaldoPos)))
+              : "Si lo dej\xE1s vac\xEDo se cobra todo el saldo")
         ),
         React.createElement(
           PosButton,
