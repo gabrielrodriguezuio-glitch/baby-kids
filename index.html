@@ -129,7 +129,36 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.905";
+const VERSION_APP = "9.910";
+// v9.910 (2026-09-15) — CATÁLOGO ONLINE
+// - Ancho: de 1100 a 860 px, centrado. En pantalla grande el fondo queda
+//   más oscuro alrededor para que se lea como una página, no como una hoja
+//   estirada de lado a lado.
+// - Tarjetas con esquinas redondeadas (18 px), fondo propio y borde que se
+//   enciende con el color de acento al pasar por encima.
+// - WhatsApp: botón rectangular con el verde oficial (#25D366).
+// - Instagram (degradado oficial) y TikTok (negro) como botones con logo y
+//   nombre. Los cuatro salieron del encabezado a su propia fila: apilados
+//   con el nombre del negocio rompían la vista en el celular.
+// - TikTok es configurable desde Pedidos › Datos de contacto, igual que
+//   Instagram y Facebook. Sólo se guarda el usuario, el link se arma solo.
+// - Interruptor "Mostrar sólo productos con foto": deja fuera del catálogo
+//   los que no tienen imagen. Muestra cuántos quedan dentro y cuántos fuera.
+// - Cada tarjeta muestra los DOS precios etiquetados (minorista y mayorista).
+//   Antes salía uno solo, el de la lista elegida.
+// - Ficha ampliada al tocar un producto: variantes con talle, color y stock
+//   real de cada una, los dos precios, selector de cantidad y botón para
+//   agregar al pedido. Se cierra con Escape o tocando afuera.
+// - Zoom de foto: tocar la imagen (en la tarjeta o en la ficha) la abre a
+//   tamaño real sobre fondo negro.
+// - ARREGLO de sincronización stock → catálogo: una categoría nueva cargada
+//   desde Stock no aparecía hasta abrir el módulo de Catálogo y guardarlo a
+//   mano, porque el filtro usaba una lista blanca de categorías visibles.
+//   Ahora se oculta sólo lo que está marcado como oculto a propósito, y las
+//   categorías nuevas entran solas al final.
+// - Las imágenes siguen con carga diferida (loading=lazy, decoding=async).
+//   No se agregó ninguna librería: todo es CSS y JS propio.
+//
 // v9.905 (2026-09-15)
 // - Eliminado el cartel amarillo de recordatorio de respaldo que aparecía
 //   automáticamente. El botón "Descargar respaldo" sigue disponible en
@@ -535,7 +564,7 @@ const nube = createClient(NUBE_URL, NUBE_KEY, {
 });
 import { createPortal } from "react-dom";
 import { Tag, Package, ShoppingBag, Users, Wallet, Plus, Trash2, X, AlertTriangle, Search, Pencil, TrendingUp, TrendingDown, Minus, CreditCard, Banknote, ArrowRightLeft, Check, ShoppingCart, Share2, UserCog, BarChart3, MessageCircle, ArrowDownCircle, ArrowUpCircle, Truck, QrCode, ScanBarcode, Receipt, DollarSign, ChevronDown, ChevronLeft, ChevronRight, Lock, Unlock, Calculator, SlidersHorizontal, LayoutGrid, Archive, MoreHorizontal, Sparkles, Clock3, Boxes, Tags, Sun, Moon, Crown, UserPlus, Mail,
-  Menu
+  Menu, Image as ImageIcon
 } from "lucide-react";
 const STORAGE_KEY = "control-tienda-ropa-v1";
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -18035,13 +18064,22 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
   const esc = (t) => String(t == null ? "" : t)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-  const visibles = (cfg.categorias || []).filter((c) => c.visible !== false).map((c) => c.nombre);
+  // Una categoría se oculta sólo si está marcada como oculta a propósito.
+  // Antes se usaba la lista blanca de visibles: un producto cargado en Stock
+  // con una categoría nueva (todavía no guardada en la config del catálogo)
+  // no aparecía nunca hasta abrir y guardar el módulo a mano.
+  const ocultas = (cfg.categorias || []).filter((c) => c.visible === false).map((c) => c.nombre);
+  const listasTodas = (data.listasPrecio && data.listasPrecio.length) ? data.listasPrecio : [];
+  const listaMin = listasTodas.find((l) => /minor|general/i.test(l.nombre)) || listasTodas[0] || null;
+  const listaMay = listasTodas.find((l) => /mayor/i.test(l.nombre)) || null;
   // El stock tiene que ser el del negocio que publica, no la suma de todos:
   // antes un producto agotado acá se mostraba disponible porque quedaba
   // mercadería en otra sucursal.
   const negId = (cfg.negocioId) || (listaNegocios(data)[0] || {}).id;
+  const soloConFoto = cfg.soloConFoto === true;
   const items = data.productos
-    .filter((p) => p.activo !== false && publicadoEn(p, negId, negId) !== false && (visibles.length === 0 || visibles.includes(p.categoria)))
+    .filter((p) => p.activo !== false && publicadoEn(p, negId, negId) !== false && !ocultas.includes(p.categoria || "Sin categoría"))
+    .filter((p) => !soloConFoto || !!(p.imagen || (imagenesDe(p) || [])[0]))
     .map((p) => {
       const vs = variantesNegocio(p, negId);
       return {
@@ -18051,6 +18089,10 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
         talla: p.talla || "",
         descripcion: p.descripcion || "",
         precio: precioCatalogo(p, lista),
+        // Los dos precios a la vista: el cliente mayorista deja de preguntar
+        // "¿cuánto por cantidad?" por WhatsApp.
+        precioMin: listaMin ? precioCatalogo(p, listaMin) : p.precioVenta,
+        precioMay: listaMay ? precioCatalogo(p, listaMay) : null,
         stock: stockNegocio(p, negId),
         // Talles y colores con stock, sin repetir. El cliente elige la
         // combinación exacta en vez de aclararla después por chat.
@@ -18059,12 +18101,21 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
         // Qué combinaciones existen realmente, para no ofrecer un talle que
         // en ese color no hay
         combos: vs.filter((v) => (Number(v.stock) || 0) > 0).map((v) => (v.talle || "") + "|" + (v.color || "")),
+        // Detalle por variante: talle, color y cuántas unidades hay. Es lo que
+        // muestra la ficha ampliada al tocar el producto.
+        variantes: vs.filter((v) => (Number(v.stock) || 0) > 0).map((v) => ({
+          talle: v.talle || "", color: v.color || "", stock: Number(v.stock) || 0
+        })),
         imagen: p.imagen || "",
         imagenes: (imagenesDe(p) || []).slice(0, 4)
       };
     });
 
-  const orden = visibles.length ? visibles : [...new Set(items.map((i) => i.categoria))];
+  const visibles = (cfg.categorias || []).filter((c) => c.visible !== false).map((c) => c.nombre);
+  const orden = visibles.length ? visibles : [];
+  // Las categorías nuevas van al final, sin necesidad de tocar la config
+  const todasCats = [...new Set(items.map((i) => i.categoria))];
+  const ordenFinal = [...orden.filter((c) => todasCats.includes(c)), ...todasCats.filter((c) => !orden.includes(c))];
   const payload = {
     negocio: negocioNombre,
     logo: cfg.logo || "",
@@ -18076,9 +18127,12 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
     horario: (cfg.contacto && cfg.contacto.horario) || "",
     instagram: (cfg.contacto && cfg.contacto.instagram) || "",
     facebook: (cfg.contacto && cfg.contacto.facebook) || "",
+    tiktok: (cfg.contacto && cfg.contacto.tiktok) || "",
+    nombreMin: listaMin ? listaMin.nombre : "Minorista",
+    nombreMay: listaMay ? listaMay.nombre : "Mayorista",
     promos: cfg.promos || [],
     mensaje: cfg.mensaje || PLANTILLAS_MENSAJE[0][1],
-    categorias: orden.filter((c) => items.some((i) => i.categoria === c)),
+    categorias: ordenFinal,
     productos: items
   };
 
@@ -18092,22 +18146,30 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
     ":root{--acento:" + esc(payload.acento) + ";--bg:#0D0F14;--card:#161A21;--card2:#1B1F27;--line:#232833;--ink:#EDEFF3;--muted:#8A93A5}",
     "*{box-sizing:border-box}",
     "body{margin:0;background:var(--bg);color:var(--ink);font-family:'Inter',sans-serif;padding-bottom:104px;-webkit-font-smoothing:antialiased}",
-    ".wrap{max-width:1100px;margin:0 auto}",
+    ".wrap{max-width:860px;margin:0 auto;background:var(--bg)}",
+    "@media(min-width:900px){body{background:#080A0E}.wrap{box-shadow:0 0 0 1px var(--line);border-radius:0}}",
     "::-webkit-scrollbar{height:8px;width:8px}::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px}",
 
     /* Portada e identidad */
     ".portada{width:100%;aspect-ratio:16/6;min-height:150px;max-height:340px;object-fit:cover;display:block}",
     ".portada-vacia{width:100%;height:150px;background:var(--card)}",
-    ".ident{display:flex;align-items:center;gap:16px;padding:18px 20px 14px;flex-wrap:wrap}",
+    ".ident{display:flex;align-items:center;gap:12px;padding:18px 20px 14px;flex-wrap:wrap}",
     ".logo{width:74px;height:74px;border-radius:50%;object-fit:cover;border:2px solid var(--line);background:var(--card);flex:0 0 auto}",
     ".logo-vacio{display:flex;align-items:center;justify-content:center;font:700 26px 'Inter Tight',sans-serif;color:var(--muted)}",
     ".nombre{font-family:'Inter Tight',sans-serif;font-size:26px;font-weight:700;letter-spacing:-.03em;margin:0;display:flex;align-items:center;gap:10px;flex:1;min-width:180px}",
     ".verif{width:18px;height:18px;border-radius:50%;background:var(--acento);display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;flex:0 0 auto}",
-    ".wa{display:inline-flex;align-items:center;gap:10px;background:#16A34A;color:#fff;text-decoration:none;padding:14px 22px;border-radius:12px;font-weight:650;font-size:15px;flex:0 0 auto}",
-    ".red{display:inline-flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:12px;background:rgba(0,0,0,.06);color:inherit;text-decoration:none;flex:0 0 auto}",
-    ".red svg{width:22px;height:22px;fill:currentColor}",
-    ".red:hover{background:rgba(0,0,0,.12)}",
+    /* Redes con sus colores oficiales. El de WhatsApp es rectangular y lleva
+       el texto: es la vía de pedido, tiene que destacarse sobre las otras. */
+    ".redes{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:0 20px 16px}",
+    ".wa{display:inline-flex;align-items:center;gap:9px;background:#25D366;color:#fff;text-decoration:none;padding:12px 20px;border-radius:10px;font-weight:650;font-size:14.5px;flex:0 0 auto}",
+    ".wa:hover{background:#1FB855}",
     ".wa svg{width:20px;height:20px;fill:currentColor}",
+    ".red{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 18px;border-radius:10px;color:#fff;text-decoration:none;flex:0 0 auto;font-weight:650;font-size:14.5px;border:none}",
+    ".red svg{width:20px;height:20px;fill:currentColor}",
+    ".red.ig{background:linear-gradient(45deg,#F09433 0%,#E6683C 25%,#DC2743 50%,#CC2366 75%,#BC1888 100%)}",
+    ".red.tt{background:#000;border:1px solid #2A2A2A}",
+    ".red.fb{background:#1877F2}",
+    ".red:hover{filter:brightness(1.1)}",
 
     /* Buscador */
     ".buscar{margin:0 20px 18px;display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px}",
@@ -18134,16 +18196,24 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
     ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:16px;padding:0 20px 8px}",
 
     /* Producto */
-    ".prod{position:relative}",
-    ".foto{position:relative;aspect-ratio:1/1;border-radius:14px;overflow:hidden;background:var(--card);border:1px solid var(--line);display:flex;align-items:center;justify-content:center}",
+    ".prod{position:relative;background:var(--card);border:1px solid var(--line);border-radius:18px;overflow:hidden;padding-bottom:12px;transition:border-color .15s ease,transform .15s ease}",
+    ".prod:hover{border-color:var(--acento)}",
+    ".foto{position:relative;aspect-ratio:1/1;overflow:hidden;background:var(--card2);display:flex;align-items:center;justify-content:center;cursor:zoom-in}",
     ".foto img{width:100%;height:100%;object-fit:cover;display:block}",
     ".foto span.ph{font-size:11px;color:var(--muted);text-align:center;padding:12px;text-transform:uppercase;line-height:1.4}",
     ".add{position:absolute;right:9px;bottom:9px;width:36px;height:36px;border-radius:50%;background:var(--acento);color:#fff;border:none;font-size:22px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,.35)}",
     ".qty{position:absolute;left:9px;bottom:9px;background:rgba(0,0,0,.72);color:#fff;border-radius:999px;padding:3px 11px;font-size:13px;font-weight:700;cursor:pointer;user-select:none}",
-    ".pn{font-size:13.5px;font-weight:600;margin-top:10px;text-transform:uppercase;line-height:1.35}",
+    ".pinfo{padding:0 12px}",
+    ".pn{font-size:13.5px;font-weight:600;margin-top:10px;text-transform:uppercase;line-height:1.35;cursor:pointer}",
+    /* Los dos precios, etiquetados: el cliente ve de una cuál es cuál */
+    ".precios{display:flex;flex-direction:column;gap:3px;margin-top:7px}",
+    ".pfila{display:flex;align-items:baseline;justify-content:space-between;gap:8px}",
+    ".pet{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:600}",
+    ".pval{font-size:14.5px;font-weight:700;font-variant-numeric:tabular-nums}",
+    ".pfila.may .pval{color:var(--acento)}",
     ".pp{font-size:14.5px;color:var(--muted);margin-top:3px}",
     ".agotado{opacity:.4}",
-    ".talles{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}",
+    ".talles{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;padding:0 12px}",
     ".tsel{font-size:11px;color:var(--muted);border:1px solid var(--line);background:none;border-radius:5px;padding:4px 8px;cursor:pointer;font-family:inherit;transition:all .12s ease}",
     ".tsel:hover{border-color:var(--acento);color:var(--ink)}",
     ".tsel.on{background:var(--acento);border-color:var(--acento);color:#fff;font-weight:700}",
@@ -18186,13 +18256,54 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
     ".bar button{background:none;border:1px solid var(--line);color:var(--muted);border-radius:12px;padding:14px 16px;cursor:pointer;font-family:inherit;font-size:14px}",
     ".pie{padding:22px 20px 30px;color:var(--muted);font-size:14px;line-height:1.8;border-top:1px solid var(--line);margin-top:24px}",
     ".vacio{padding:50px 20px;text-align:center;color:var(--muted)}",
-    "@media(max-width:520px){.nombre{font-size:22px}.logo{width:60px;height:60px}.wa{padding:12px 18px;font-size:14px}}",
+
+    /* Ficha ampliada del producto: variantes, stock y cantidad */
+    ".velo{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:40;display:none;align-items:flex-end;justify-content:center;backdrop-filter:blur(3px)}",
+    ".velo.on{display:flex}",
+    ".ficha{background:var(--card);border-radius:20px 20px 0 0;width:100%;max-width:560px;max-height:88vh;overflow-y:auto;border:1px solid var(--line);border-bottom:none}",
+    "@media(min-width:620px){.velo{align-items:center}.ficha{border-radius:20px;border-bottom:1px solid var(--line)}}",
+    ".ffoto{position:relative;width:100%;aspect-ratio:4/3;background:var(--card2);overflow:hidden;cursor:zoom-in}",
+    ".ffoto img{width:100%;height:100%;object-fit:contain;display:block}",
+    ".fcerrar{position:absolute;top:12px;right:12px;width:34px;height:34px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;border:none;font-size:20px;cursor:pointer;line-height:1;z-index:2}",
+    ".fcuerpo{padding:18px 20px 22px}",
+    ".ftit{font-family:'Inter Tight',sans-serif;font-size:21px;font-weight:700;letter-spacing:-.02em;text-transform:uppercase;line-height:1.25;margin:0 0 4px}",
+    ".fdesc{font-size:13.5px;color:var(--muted);line-height:1.55;margin:8px 0 0}",
+    ".fprecios{display:flex;gap:10px;margin:16px 0;flex-wrap:wrap}",
+    ".fp{flex:1;min-width:120px;background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:12px 14px}",
+    ".fp.may{border-color:var(--acento)}",
+    ".fp .pet{display:block;margin-bottom:4px}",
+    ".fp .pval{font-size:19px}",
+    ".fsub{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:700;margin:16px 0 8px}",
+    ".fvars{display:flex;flex-direction:column;gap:6px}",
+    ".fvar{display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--card2);border:1px solid var(--line);border-radius:10px;padding:11px 14px;cursor:pointer;font-family:inherit;color:inherit;width:100%;text-align:left;font-size:14px}",
+    ".fvar.on{border-color:var(--acento);background:rgba(225,30,200,.08)}",
+    ".fvar em{font-style:normal;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}",
+    ".fcant{display:flex;align-items:center;gap:14px;margin:18px 0 0}",
+    ".fcant .ctrl{display:flex;align-items:center;gap:0;border:1px solid var(--line);border-radius:10px;overflow:hidden}",
+    ".fcant button{width:42px;height:44px;background:var(--card2);border:none;color:var(--ink);font-size:20px;cursor:pointer;font-family:inherit;line-height:1}",
+    ".fcant button:hover{background:var(--line)}",
+    ".fcant .n{min-width:52px;text-align:center;font-size:17px;font-weight:700;font-variant-numeric:tabular-nums}",
+    ".fagregar{flex:1;background:var(--acento);color:#fff;border:none;border-radius:10px;padding:14px 20px;font-size:15px;font-weight:650;cursor:pointer;font-family:inherit}",
+    ".fagregar:disabled{opacity:.4;cursor:not-allowed}",
+    ".fnota{font-size:12.5px;color:var(--acento);margin-top:10px;min-height:16px}",
+
+    /* Foto a tamaño real */
+    ".lupa{position:fixed;inset:0;background:rgba(0,0,0,.94);z-index:60;display:none;align-items:center;justify-content:center;cursor:zoom-out}",
+    ".lupa.on{display:flex}",
+    ".lupa img{max-width:96vw;max-height:94vh;object-fit:contain;display:block}",
+    ".lupa button{position:absolute;top:16px;right:16px;width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,.14);color:#fff;border:none;font-size:23px;cursor:pointer;line-height:1}",
+    "@media(max-width:520px){.nombre{font-size:22px}.logo{width:60px;height:60px}.wa{padding:11px 16px;font-size:13.5px}.red{padding:11px 14px;font-size:13.5px}}",
     "</style></head><body><div class='wrap'>",
     "<div id='app'></div>",
     // El detalle del pedido se puede desplegar: antes sólo se veía el total y
     // no había forma de revisar qué se había agregado.
     "<div class='bar' id='bar'><div class='det' id='det'></div><div class='barfila'><span class='tot' id='tot'></span><button id='verdet' class='verdet'>Ver pedido</button><button id='vaciar'>Vaciar</button><a id='enviar' target='_blank' rel='noopener'>Pedir por WhatsApp</a></div></div>",
-    "</div><script>",
+    "</div>",
+    // Ficha ampliada y foto a tamaño real: viven fuera de .wrap para poder
+    // tapar toda la pantalla sin quedar limitadas por el ancho del catálogo.
+    "<div class='velo' id='velo'><div class='ficha' id='ficha'></div></div>",
+    "<div class='lupa' id='lupa'><img id='lupaimg' alt=''><button id='lupax' aria-label='Cerrar'>&times;</button></div>",
+    "<script>",
     "const D=" + JSON.stringify(payload) + ";",
     "const money=n=>new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',maximumFractionDigits:0}).format(n||0);",
     "const esc=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');",
@@ -18207,6 +18318,7 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
     "const ICONO_WA=\"<svg viewBox='0 0 24 24'><path d='M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38a9.9 9.9 0 0 0 4.79 1.22h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.82 9.82 0 0 0 12.04 2zm5.8 14.13c-.24.68-1.42 1.31-1.96 1.36-.5.05-1.13.07-1.82-.11-.42-.11-.96-.29-1.65-.59-2.9-1.25-4.8-4.17-4.94-4.36-.15-.19-1.19-1.58-1.19-3.01 0-1.43.75-2.14 1.02-2.43.27-.29.58-.36.78-.36.19 0 .39 0 .56.01.18.01.42-.7.8.61.39.94 1.32 3.24 1.44 3.48.12.24.2.51.04.8-.16.29-.24.47-.47.72-.24.24-.5.55-.71.73-.24.19-.48.4-.21.87.27.47 1.2 1.98 2.58 3.21 1.77 1.58 3.27 2.07 3.74 2.3.47.24.74.2 1.01-.12.27-.32 1.16-1.36 1.47-1.83.31-.47.62-.39 1.04-.24.42.16 2.68 1.27 3.14 1.5.46.24.77.36.88.55.12.19.12 1.11-.12 1.79z'/></svg>\";",
     "const ICONO_IG=\"<svg viewBox='0 0 24 24'><path d='M12 2.16c3.2 0 3.58.01 4.85.07 1.17.05 1.8.25 2.23.41.56.22.96.48 1.38.9.42.42.68.82.9 1.38.16.42.36 1.06.41 2.23.06 1.27.07 1.65.07 4.85s-.01 3.58-.07 4.85c-.05 1.17-.25 1.8-.41 2.23-.22.56-.48.96-.9 1.38-.42.42-.82.68-1.38.9-.42.16-1.06.36-2.23.41-1.27.06-1.65.07-4.85.07s-3.58-.01-4.85-.07c-1.17-.05-1.8-.25-2.23-.41-.56-.22-.96-.48-1.38-.9-.42-.42-.68-.82-.9-1.38-.16-.42-.36-1.06-.41-2.23C2.17 15.58 2.16 15.2 2.16 12s.01-3.58.07-4.85c.05-1.17.25-1.8.41-2.23.22-.56.48-.96.9-1.38.42-.42.82-.68 1.38-.9.42-.16 1.06-.36 2.23-.41C8.42 2.17 8.8 2.16 12 2.16zM12 0C8.74 0 8.33.01 7.05.07 5.78.13 4.9.33 4.14.63c-.79.3-1.46.72-2.12 1.38C1.35 2.68.94 3.35.63 4.14.33 4.9.13 5.78.07 7.05.01 8.33 0 8.74 0 12s.01 3.67.07 4.95c.06 1.27.26 2.15.56 2.91.3.79.72 1.46 1.38 2.12.66.66 1.33 1.07 2.12 1.38.76.3 1.64.5 2.91.56C8.33 23.99 8.74 24 12 24s3.67-.01 4.95-.07c1.27-.06 2.15-.26 2.91-.56.79-.3 1.46-.72 2.12-1.38.66-.66 1.07-1.33 1.38-2.12.3-.76.5-1.64.56-2.91.06-1.28.07-1.69.07-4.95s-.01-3.67-.07-4.95c-.06-1.27-.26-2.15-.56-2.91-.3-.79-.72-1.46-1.38-2.12C21.32 1.35 20.65.94 19.86.63 19.1.33 18.22.13 16.95.07 15.67.01 15.26 0 12 0zm0 5.84a6.16 6.16 0 1 0 0 12.32 6.16 6.16 0 0 0 0-12.32zM12 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm7.85-10.4a1.44 1.44 0 1 1-2.88 0 1.44 1.44 0 0 1 2.88 0z'/></svg>\";",
     "const ICONO_FB=\"<svg viewBox='0 0 24 24'><path d='M24 12.07C24 5.4 18.63 0 12 0S0 5.4 0 12.07C0 18.1 4.39 23.09 10.13 24v-8.44H7.08v-3.49h3.05V9.41c0-3.02 1.79-4.69 4.53-4.69 1.31 0 2.68.24 2.68.24v2.97h-1.51c-1.49 0-1.96.93-1.96 1.89v2.25h3.33l-.53 3.49h-2.8V24C19.61 23.09 24 18.1 24 12.07z'/></svg>\";",
+    "const ICONO_TT=\"<svg viewBox='0 0 24 24'><path d='M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64c.3 0 .59.05.87.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1z'/></svg>\";",
     // Búsqueda sin tildes y por varias palabras: escribir 'remera azul'
     // encuentra la remera azul aunque el nombre diga 'Remera Azúl lisa'.
     "function norm(t){return String(t||'').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g,'');}",
@@ -18222,7 +18334,10 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
     "const tl=(p.talles&&p.talles.length)?`<div class='talles'>${p.talles.map(t=>{const ok=hayCombo(p,t,colorDe(p.id));return `<button class='tsel${talleDe(p.id)===t?' on':''}${ok?'':' no'}' data-p='${p.id}' data-t='${esc(t)}'>${esc(t)}</button>`;}).join('')}</div>`:'';",
     "const cl=(p.colores&&p.colores.length)?`<div class='talles colores'>${p.colores.map(c=>{const ok=hayCombo(p,talleDe(p.id),c);return `<button class='csel${colorDe(p.id)===c?' on':''}${ok?'':' no'}' data-p='${p.id}' data-c='${esc(c)}'>${esc(c)}</button>`;}).join('')}</div>`:'';",
     "const ult=(!ag&&D.usarStock&&p.stock<=3)?`<div class='ultimas'>\\u00A1\\u00DAltimas ${p.stock}!</div>`:'';",
-    "return `<div class='prod${ag?' agotado':''}'><div class='foto'>${p.imagen?`<img src='${p.imagen}' alt='${esc(p.nombre)}' loading='lazy'>`:`<span class='ph'>${esc(p.nombre)}</span>`}${n?`<span class='qty' data-id='${p.id}' title='Quitar uno'>${n}</span>`:''}${ult}${ag?'':`<button class='add' data-id='${p.id}' aria-label='Agregar'>+</button>`}</div><div class='pn'>${esc(p.nombre)}</div><div class='pp'>${money(p.precio)}</div>${tl}${cl}</div>`;}",
+    "return `<div class='prod${ag?' agotado':''}' data-prod='${p.id}'><div class='foto' data-foto='${p.id}'>${p.imagen?`<img src='${p.imagen}' alt='${esc(p.nombre)}' loading='lazy' decoding='async'>`:`<span class='ph'>${esc(p.nombre)}</span>`}${n?`<span class='qty' data-id='${p.id}' title='Quitar uno'>${n}</span>`:''}${ult}${ag?'':`<button class='add' data-id='${p.id}' aria-label='Agregar'>+</button>`}</div><div class='pinfo'><div class='pn' data-ver='${p.id}'>${esc(p.nombre)}</div>${precios(p)}</div>${tl}${cl}</div>`;}",
+    // Los dos precios en la tarjeta, cada uno con su etiqueta
+    "function precios(p){const may=(p.precioMay!=null&&p.precioMay!==p.precioMin);",
+    "return `<div class='precios'><div class='pfila'><span class='pet'>${esc(D.nombreMin)}</span><span class='pval'>${money(p.precioMin)}</span></div>${may?`<div class='pfila may'><span class='pet'>${esc(D.nombreMay)}</span><span class='pval'>${money(p.precioMay)}</span></div>`:''}</div>`;}",
     "function seccion(c){const ps=visibles(c);if(!ps.length)return '';const abierta=expandidas[c];",
     "const cuerpo=abierta?`<div class='grid'>${ps.map(tarjeta).join('')}</div>`:`<div class='fila'>${ps.map(tarjeta).join('')}</div>`;",
     "return `<section class='sec' id='sec-${esc(c)}'><div class='sec-head'><h2 class='sec-tit'>${esc(c)} <span class='sec-cant'>${ps.length}</span></h2>${ps.length>4?`<button class='vertodo' data-cat='${esc(c)}'>${abierta?'Ver menos':'Ver todo →'}</button>`:''}</div>${cuerpo}</section>`;}",
@@ -18230,7 +18345,10 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
     "const cats=D.categorias.filter(c=>visibles(c).length);",
     "document.getElementById('app').innerHTML=",
     "(D.portada?`<img class='portada' src='${D.portada}' alt=''>`:`<div class='portada-vacia'></div>`)+",
-    "`<div class='ident'>${D.logo?`<img class='logo' src='${D.logo}' alt=''>`:`<div class='logo logo-vacio'>${esc(D.negocio.charAt(0))}</div>`}<h1 class='nombre'>${esc(D.negocio)}<span class='verif'>&#10003;</span></h1>${D.whatsapp?`<a class='wa' href='https://wa.me/${D.whatsapp}' target='_blank' rel='noopener'>${ICONO_WA}WhatsApp</a>`:''}${D.instagram?`<a class='red' href='https://instagram.com/${esc(D.instagram)}' target='_blank' rel='noopener' title='Instagram'>${ICONO_IG}</a>`:''}${D.facebook?`<a class='red' href='https://facebook.com/${esc(D.facebook)}' target='_blank' rel='noopener' title='Facebook'>${ICONO_FB}</a>`:''}</div>`+",
+    "`<div class='ident'>${D.logo?`<img class='logo' src='${D.logo}' alt=''>`:`<div class='logo logo-vacio'>${esc(D.negocio.charAt(0))}</div>`}<h1 class='nombre'>${esc(D.negocio)}<span class='verif'>&#10003;</span></h1></div>`+",
+    // Redes en su propia fila: con los cuatro botones al lado del nombre el
+    // encabezado se rompía en el celular.
+    "((D.whatsapp||D.instagram||D.tiktok||D.facebook)?`<div class='redes'>${D.whatsapp?`<a class='wa' href='https://wa.me/${D.whatsapp}' target='_blank' rel='noopener'>${ICONO_WA}WhatsApp</a>`:''}${D.instagram?`<a class='red ig' href='https://instagram.com/${esc(D.instagram)}' target='_blank' rel='noopener' title='Instagram'>${ICONO_IG}Instagram</a>`:''}${D.tiktok?`<a class='red tt' href='https://tiktok.com/@${esc(D.tiktok)}' target='_blank' rel='noopener' title='TikTok'>${ICONO_TT}TikTok</a>`:''}${D.facebook?`<a class='red fb' href='https://facebook.com/${esc(D.facebook)}' target='_blank' rel='noopener' title='Facebook'>${ICONO_FB}Facebook</a>`:''}</div>`:'')+",
     "`<div class='buscar'><svg viewBox='0 0 24 24'><circle cx='11' cy='11' r='7'/><line x1='16.5' y1='16.5' x2='21' y2='21'/></svg><input id='q' placeholder='Buscar en ${esc(D.negocio)}' value='${esc(q)}'></div>`+",
     // Filtros: ordenar por precio y esconder lo agotado. Sin esto el cliente
     // recorre todo el catálogo a mano para encontrar lo más barato.
@@ -18257,6 +18375,9 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
     "const qi=document.getElementById('q');if(qi){qi.oninput=e=>{q=e.target.value;render();const n=document.getElementById('q');if(n){n.focus();n.setSelectionRange(n.value.length,n.value.length);}};if(q)qi.focus();}",
     "const fd=document.getElementById('fd');if(fd)fd.onclick=()=>{soloDisp=!soloDisp;render();};",
     "const os=document.getElementById('ord');if(os)os.onchange=e=>{orden=e.target.value;render();};",
+    // Tocar la foto la abre a tamaño real; tocar el nombre abre la ficha
+    "document.querySelectorAll('.foto').forEach(f=>f.onclick=(e)=>{if(e.target.closest('.add')||e.target.closest('.qty'))return;const p=D.productos.find(x=>x.id===f.dataset.foto);if(p&&p.imagen)abrirLupa(p.imagen);else if(p)abrirFicha(p.id);});",
+    "document.querySelectorAll('.pn').forEach(b=>b.onclick=()=>abrirFicha(b.dataset.ver));",
     "actualizarBarra();}",
     "function actualizarBarra(){",
     "const its=lineas();const bar=document.getElementById('bar');",
@@ -18272,6 +18393,47 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
     "document.getElementById('enviar').href='https://wa.me/'+D.whatsapp+'?text='+encodeURIComponent(txt);",
     "bar.classList.add('on');}",
     "document.getElementById('vaciar').onclick=()=>{cart={};render();};",
+
+    // ===== Foto a tamaño real =====
+    "function abrirLupa(src){const l=document.getElementById('lupa');document.getElementById('lupaimg').src=src;l.classList.add('on');document.body.style.overflow='hidden';}",
+    "function cerrarLupa(){document.getElementById('lupa').classList.remove('on');if(!document.getElementById('velo').classList.contains('on'))document.body.style.overflow='';}",
+    "document.getElementById('lupa').onclick=cerrarLupa;",
+    "document.getElementById('lupax').onclick=(e)=>{e.stopPropagation();cerrarLupa();};",
+
+    // ===== Ficha ampliada del producto =====
+    // Muestra cada variante con su stock real, los dos precios y un selector
+    // de cantidad. Antes había que elegir talle y color en la tarjeta chica
+    // y no se veía cuántas unidades quedaban de cada combinación.
+    "let fichaId='',fichaVar=-1,fichaCant=1;",
+    "function abrirFicha(id){fichaId=id;fichaVar=-1;fichaCant=1;pintarFicha();document.getElementById('velo').classList.add('on');document.body.style.overflow='hidden';}",
+    "function cerrarFicha(){document.getElementById('velo').classList.remove('on');document.body.style.overflow='';fichaId='';render();}",
+    "function pintarFicha(){const p=D.productos.find(x=>x.id===fichaId);if(!p)return;",
+    "const vars=p.variantes||[];",
+    "const may=(p.precioMay!=null&&p.precioMay!==p.precioMin);",
+    "const elegida=vars[fichaVar]||null;",
+    "const tope=elegida?elegida.stock:(D.usarStock?p.stock:99);",
+    "const falta=vars.length&&fichaVar<0;",
+    "const agot=D.usarStock&&p.stock<=0;",
+    "const foto=p.imagen?`<div class='ffoto' id='ffoto'><img src='${p.imagen}' alt='${esc(p.nombre)}' loading='lazy'><button class='fcerrar' id='fx'>&times;</button></div>`:`<div class='ffoto'><button class='fcerrar' id='fx'>&times;</button></div>`;",
+    "document.getElementById('ficha').innerHTML=foto+`<div class='fcuerpo'>`+",
+    "`<h2 class='ftit'>${esc(p.nombre)}</h2>`+",
+    "`<div style='font-size:12.5px;color:var(--muted)'>${esc(p.categoria)}${D.usarStock?` \\u00B7 ${p.stock} en stock`:''}</div>`+",
+    "(p.descripcion?`<p class='fdesc'>${esc(p.descripcion)}</p>`:'')+",
+    "`<div class='fprecios'><div class='fp'><span class='pet'>${esc(D.nombreMin)}</span><span class='pval'>${money(p.precioMin)}</span></div>${may?`<div class='fp may'><span class='pet'>${esc(D.nombreMay)}</span><span class='pval'>${money(p.precioMay)}</span></div>`:''}</div>`+",
+    "(vars.length?`<div class='fsub'>Eleg\\u00ED talle y color</div><div class='fvars'>${vars.map((v,i)=>`<button class='fvar${i===fichaVar?' on':''}' data-v='${i}'><span>${[v.talle&&'Talle '+esc(v.talle),v.color&&esc(v.color)].filter(Boolean).join(' \\u00B7 ')||'\\u00DAnica'}</span><em>${v.stock} u</em></button>`).join('')}</div>`:'')+",
+    "(agot?`<div class='fnota'>Sin stock por el momento.</div>`:`<div class='fcant'><div class='ctrl'><button id='fmenos'>\\u2212</button><span class='n' id='fn'>${fichaCant}</span><button id='fmas'>+</button></div><button class='fagregar' id='fadd'${falta?' disabled':''}>Agregar al pedido</button></div>`)+",
+    "(falta&&!agot?`<div class='fnota'>Eleg\\u00ED una opci\\u00F3n para agregar.</div>`:`<div class='fnota'></div>`)+",
+    "`</div>`;",
+    "const fx=document.getElementById('fx');if(fx)fx.onclick=cerrarFicha;",
+    "const ff=document.getElementById('ffoto');if(ff&&p.imagen)ff.onclick=(e)=>{if(e.target.closest('.fcerrar'))return;abrirLupa(p.imagen);};",
+    "document.querySelectorAll('.fvar').forEach(b=>b.onclick=()=>{const i=Number(b.dataset.v);fichaVar=(fichaVar===i?-1:i);fichaCant=1;pintarFicha();});",
+    "const fm=document.getElementById('fmenos');if(fm)fm.onclick=()=>{if(fichaCant>1){fichaCant--;pintarFicha();}};",
+    "const fp=document.getElementById('fmas');if(fp)fp.onclick=()=>{if(!D.usarStock||fichaCant<tope){fichaCant++;pintarFicha();}};",
+    "const fa=document.getElementById('fadd');if(fa)fa.onclick=()=>{",
+    "const t=elegida?elegida.talle:'';const c=elegida?elegida.color:'';",
+    "const k=claveC(p.id,t,c);cart[k]=(cart[k]||0)+fichaCant;cerrarFicha();};}",
+    "document.getElementById('velo').onclick=(e)=>{if(e.target.id==='velo')cerrarFicha();};",
+    "document.addEventListener('keydown',(e)=>{if(e.key!=='Escape')return;if(document.getElementById('lupa').classList.contains('on'))cerrarLupa();else if(document.getElementById('velo').classList.contains('on'))cerrarFicha();});",
     "render();",
     "<" + "/script></body></html>"
   ].join("\n");
@@ -18285,7 +18447,8 @@ const CATALOGO_VACIO = {
   colorAcento: "#E11EC8",
   categorias: [],
   usarStock: true,
-  contacto: { whatsapp: "", direccion: "", horario: "", instagram: "", facebook: "" },
+  soloConFoto: false,
+  contacto: { whatsapp: "", direccion: "", horario: "", instagram: "", facebook: "", tiktok: "" },
   mensaje: "",
   promos: []
 };
@@ -18475,10 +18638,17 @@ function CatalogoOnline({ data, persist }) {
 
   // ---- Datos para la vista previa ----
   const visibles = cfg.categorias.filter((c) => c.visible);
+  // Cuántos productos quedarían fuera si se exige foto
+  const publicables = data.productos.filter((p) => p.activo !== false);
+  const totalPublicables = publicables.length;
+  const conFoto = publicables.filter((p) => !!(p.imagen || (imagenesDe(p) || [])[0])).length;
+  const sinFoto = totalPublicables - conFoto;
   const catActiva = visibles[Math.min(previewCat, Math.max(0, visibles.length - 1))] || null;
-  const productosCat = catActiva
+  // La vista previa muestra lo mismo que verá el cliente, filtro de foto incluido
+  const conFotoOk = (p) => cfg.soloConFoto !== true || !!(p.imagen || (imagenesDe(p) || [])[0]);
+  const productosCat = (catActiva
     ? data.productos.filter((p) => p.activo !== false && p.categoria === catActiva.nombre)
-    : data.productos.filter((p) => p.activo !== false);
+    : data.productos.filter((p) => p.activo !== false)).filter(conFotoOk);
 
   const ejemplo = productosCat.slice(0, 2).map((p) => ({ nombre: p.nombre, cantidad: 1, precio: precioCatalogo(p, lista) }));
   const itemsEjemplo = ejemplo.length ? ejemplo : [{ nombre: "Producto de ejemplo", cantidad: 1, precio: 8000 }];
@@ -18700,6 +18870,19 @@ function CatalogoOnline({ data, persist }) {
         extra: React.createElement(Switch, { on: cfg.usarStock !== false, onChange: () => set("usarStock", cfg.usarStock === false) })
       }
     ),
+    // Fotos obligatorias: un catálogo con cuadros vacíos se ve peor que uno
+    // con menos productos.
+    React.createElement(
+      BloqueCatalogo,
+      {
+        icono: ImageIcon,
+        titulo: "Mostrar sólo productos con foto",
+        ayuda: cfg.soloConFoto === true
+          ? "Activado: los productos sin foto no aparecen en el catálogo. Quedan " + conFoto + " de " + totalPublicables + " productos."
+          : "Desactivado: los productos sin foto aparecen con el nombre en un recuadro vacío. Hay " + sinFoto + " sin foto.",
+        extra: React.createElement(Switch, { on: cfg.soloConFoto === true, onChange: () => set("soloConFoto", cfg.soloConFoto !== true) })
+      }
+    ),
     // Promociones
     React.createElement(
       BloqueCatalogo,
@@ -18770,6 +18953,12 @@ function CatalogoOnline({ data, persist }) {
           React.createElement("input", {
             style: inputStyle, value: cfg.contacto.instagram || "",
             onChange: (e) => setContacto("instagram", e.target.value.replace(/^@+/, "").trim()),
+            placeholder: "modasangeles"
+          })),
+        React.createElement(Field, { label: "TikTok (sólo el usuario, sin @)" },
+          React.createElement("input", {
+            style: inputStyle, value: cfg.contacto.tiktok || "",
+            onChange: (e) => setContacto("tiktok", e.target.value.replace(/^@+/, "").trim()),
             placeholder: "modasangeles"
           })),
         React.createElement(Field, { label: "Facebook (usuario o página)" },
