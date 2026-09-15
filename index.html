@@ -129,7 +129,7 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.905";
+const VERSION_APP = "9.908";
 
 const NUBE_URL = "https://fanxjjhocudfeiqinbac.supabase.co";
 const NUBE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZhbnhqamhvY3VkZmVpcWluYmFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkwNzE4MjIsImV4cCI6MjEwNDY0NzgyMn0.iJmUVaHWUYajixKNuuGGqP0jIsh-7ogkSsjmq2nQYV8";
@@ -11974,6 +11974,21 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     // La deuda de una venta en cuenta corriente vive en la venta misma
     // (saldoDeCliente la cuenta). Antes acá se creaba además un movimiento
     // "cargo" con el mismo monto: eso sumaba la deuda dos veces. Se quitó.
+    //
+    // PERO en pago dividido la venta se guarda con el método del primer pago
+    // (no como "cuenta_corriente"), así que la parte que el cliente dejó a
+    // cuenta NO la contaría saldoDeCliente. Para ese caso se registra un
+    // cargo solo por ese monto. Como la venta no está marcada como CC, no
+    // se duplica.
+    if (variosPagos && clienteId) {
+      const montoACuenta = montoPorMetodo("cuenta_corriente");
+      if (montoACuenta > 0) {
+        movimientosCC = [
+          { id: uid(), clienteId, fecha: todayISO(), tipo: "cargo", monto: montoACuenta, concepto: "Parte de venta a cuenta corriente" },
+          ...movimientosCC
+        ];
+      }
+    }
     // La deuda que se sumó al carrito se descuenta de la cuenta del cliente
     const lineaDeuda = cart.find((it) => it.esDeuda);
     if (lineaDeuda && lineaDeuda.clienteDeuda) {
@@ -13421,6 +13436,22 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
               "div",
               { style: { display: "flex", flexDirection: "column", gap: 12, marginTop: 18 } },
               disponibles.map(filaPago),
+              // Cliente con cuenta: la diferencia que falta se puede mandar a
+              // su cuenta corriente de un toque, sin escribir el número a mano.
+              cliente && faltante > 0.5 && React.createElement("button", {
+                onClick: () => setPagos({ ...pagos, cuenta_corriente: String(Math.round((Number(pagos.cuenta_corriente) || 0) + faltante)) }),
+                style: {
+                  display: "flex", alignItems: "center", gap: 9, width: "100%", marginTop: 4,
+                  padding: "11px 12px", borderRadius: 9, cursor: "pointer",
+                  border: "1px solid color-mix(in srgb, var(--denim) 35%, transparent)",
+                  background: "color-mix(in srgb, var(--denim) 8%, transparent)",
+                  color: "var(--ink)", fontSize: 13, fontFamily: "'Inter', sans-serif", textAlign: "left"
+                }
+              },
+                React.createElement(Wallet, { size: 15, color: "var(--denim)", style: { flexShrink: 0 } }),
+                React.createElement("span", { style: { flex: 1 } }, "Poner ", money(faltante), " a cuenta de ", cliente.nombre),
+                React.createElement("span", { style: { color: "var(--denim)", fontWeight: 600, whiteSpace: "nowrap" } }, "A cuenta")
+              ),
               React.createElement(
                 "div",
                 { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6, paddingTop: 14, borderTop: "1px solid var(--line)", fontSize: 13.5 } },
@@ -16064,12 +16095,98 @@ function EstadoCuentaModal({ data, cliente, onClose }) {
   );
 }
 
+
+// Detalle expandido de una venta dentro de la ficha del cliente: cada
+// producto con su talle, color y precio, el resumen de pago y un botón
+// para ver o imprimir el ticket.
+function DetalleVentaFicha({ venta, onVerTicket }) {
+  const items = venta.items || [];
+  const unidades = items.reduce((a, it) => a + (it.cantidad || 0), 0);
+  const gris = "var(--muted)";
+  return React.createElement(
+    "div",
+    { style: { padding: "14px 18px", borderTop: "1px solid var(--line)" } },
+    // Encabezado con ticket # y botón de imprimir
+    React.createElement(
+      "div",
+      { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 } },
+      React.createElement("span", {
+        style: { fontSize: 11, textTransform: "uppercase", letterSpacing: 0.07, color: gris, fontWeight: 700 }
+      }, "Ticket #" + venta.id.slice(-8).toUpperCase() + " \u00B7 " + unidades + (unidades === 1 ? " unidad" : " unidades")),
+      React.createElement("button", {
+        onClick: (e) => { e.stopPropagation(); onVerTicket(); },
+        style: { display: "inline-flex", alignItems: "center", gap: 6, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, color: "var(--denim)", cursor: "pointer", fontWeight: 600, fontFamily: "'Inter', sans-serif" }
+      }, React.createElement(Receipt, { size: 13 }), " Ver ticket")
+    ),
+    // Lista de productos
+    React.createElement(
+      "div",
+      { style: { display: "flex", flexDirection: "column", gap: 2 } },
+      items.map((it, k) => React.createElement(
+        "div",
+        { key: k, style: { display: "flex", alignItems: "center", gap: 10, fontSize: 13, padding: "7px 0", borderBottom: k < items.length - 1 ? "1px solid color-mix(in srgb, var(--line) 45%, transparent)" : "none" } },
+        React.createElement("span", {
+          style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: "var(--denim-light)", minWidth: 28, flexShrink: 0 }
+        }, (it.cantidad || 0) + "\u00D7"),
+        React.createElement(
+          "span",
+          { style: { flex: 1, minWidth: 0 } },
+          React.createElement("span", { style: { display: "block", fontWeight: 500 } }, it.nombre),
+          (it.talla || it.color) && React.createElement("span", {
+            style: { display: "block", fontSize: 11.5, color: gris, marginTop: 1 }
+          }, [it.talla && ("Talle " + it.talla), it.color].filter(Boolean).join(" \u00B7 "))
+        ),
+        React.createElement("span", {
+          style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: gris, flexShrink: 0, textAlign: "right" }
+        },
+          money(it.precioUnit || 0),
+          it.cantidad > 1 && React.createElement("span", { style: { display: "block", fontSize: 11, color: gris } }, "= " + money((it.precioUnit || 0) * it.cantidad)))
+      ))
+    ),
+    // Resumen de pago
+    React.createElement(
+      "div",
+      { style: { marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 4, fontSize: 12.5 } },
+      (venta.descuento > 0 || venta.recargo > 0 || venta.envio > 0) && React.createElement(
+        "div", { style: { display: "flex", justifyContent: "space-between", color: gris } },
+        React.createElement("span", null, "Subtotal"),
+        React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(venta.subtotal || 0))
+      ),
+      venta.descuento > 0 && React.createElement(
+        "div", { style: { display: "flex", justifyContent: "space-between", color: "var(--sage)" } },
+        React.createElement("span", null, "Descuento"),
+        React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, "\u2212 " + money(venta.descuento))
+      ),
+      venta.recargo > 0 && React.createElement(
+        "div", { style: { display: "flex", justifyContent: "space-between", color: gris } },
+        React.createElement("span", null, "Recargo"),
+        React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, "+ " + money(venta.recargo))
+      ),
+      venta.envio > 0 && React.createElement(
+        "div", { style: { display: "flex", justifyContent: "space-between", color: gris } },
+        React.createElement("span", null, "Env\u00EDo"),
+        React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, "+ " + money(venta.envio))
+      ),
+      React.createElement(
+        "div", { style: { display: "flex", justifyContent: "space-between", marginTop: 3, fontWeight: 700, fontSize: 13.5 } },
+        React.createElement("span", null, "Total \u00B7 ", venta.variosPagos ? "Varios pagos" : (METODO_LABELS[venta.metodoPago] || venta.metodoPago || "\u2014")),
+        React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(venta.total || 0))
+      )
+    ),
+    venta.nota && React.createElement("div", {
+      style: { marginTop: 10, fontSize: 12, color: gris, fontStyle: "italic" }
+    }, "Nota: " + venta.nota)
+  );
+}
+
 function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
   const [registrando, setRegistrando] = useState(false);
   const [enviarCuenta, setEnviarCuenta] = useState(false);
   const [verCuenta, setVerCuenta] = useState(false);
   const [movForm, setMovForm] = useState({ tipo: "pago", monto: "", concepto: "", metodo: "Efectivo" });
   const [movError, setMovError] = useState("");
+  const [expandida, setExpandida] = useState(null);
+  const [ticketVenta, setTicketVenta] = useState(null);
 
   const movimientos = (data.movimientosCC || []).filter((m) => m.clienteId === cliente.id);
   // Solo las ventas en cuenta corriente son deuda. Una venta pagada al contado
@@ -16295,9 +16412,16 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
               filas.map((f) => {
                 const esVenta = f.clase === "venta";
                 const esPagada = f.clase === "pagada";
-                return React.createElement(
+                // Solo las filas con venta real se pueden abrir para ver el detalle
+                const tieneDetalle = !!(f.venta && (f.venta.items || []).length);
+                const abierta = expandida === f.id;
+                const filaPrincipal = React.createElement(
                   "tr",
-                  { key: f.id },
+                  {
+                    key: f.id,
+                    onClick: tieneDetalle ? () => setExpandida(abierta ? null : f.id) : null,
+                    style: tieneDetalle ? { cursor: "pointer", background: abierta ? "var(--surface-2)" : "transparent" } : null
+                  },
                   React.createElement("td", null,
                     React.createElement(
                       "span",
@@ -16309,7 +16433,12 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
                   React.createElement(
                     "td",
                     { style: { minWidth: 200 } },
-                    React.createElement("div", { style: { fontSize: 13.5, fontWeight: 650 } }, f.titulo),
+                    React.createElement("div", { style: { fontSize: 13.5, fontWeight: 650, display: "flex", alignItems: "center", gap: 6 } },
+                      f.titulo,
+                      tieneDetalle && React.createElement(ChevronDown, {
+                        size: 14, color: "var(--muted)",
+                        style: { transition: "transform .15s ease", transform: abierta ? "rotate(180deg)" : "none" }
+                      })),
                     // El detalle completo en dos renglones: cortado en uno no
                     // se sabía qué se había llevado.
                     f.detalle && React.createElement("div", {
@@ -16340,10 +16469,22 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
                             }, React.createElement(Trash2, { size: 15 }))
                           : null)
                 );
+                // La fila de detalle, solo si está abierta
+                const filaDetalle = abierta && tieneDetalle && React.createElement(
+                  "tr",
+                  { key: f.id + "-det" },
+                  React.createElement("td", { colSpan: 6, style: { padding: 0, background: "var(--surface-2)" } },
+                    React.createElement(DetalleVentaFicha, {
+                      venta: f.venta,
+                      onVerTicket: () => setTicketVenta(f.venta)
+                    }))
+                );
+                return filaDetalle ? [filaPrincipal, filaDetalle] : filaPrincipal;
               })
             )
           )
         ),
+    ticketVenta && React.createElement(TicketModal, { data, venta: ticketVenta, onClose: () => setTicketVenta(null) }),
     verCuenta && React.createElement(EstadoCuentaModal, {
       data, cliente, onClose: () => setVerCuenta(false)
     }),
