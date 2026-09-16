@@ -129,7 +129,38 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.931";
+const VERSION_APP = "9.940";
+// v9.940 (2026-09-15) — ETAPA A: puntos 1 y 3
+// PUNTO 1 · Tarjetas sin talles, en los dos catálogos
+// - Catálogo público: la tarjeta muestra imagen, nombre, los dos precios y un
+//   indicador de stock general ("8 disponibles · 2 opciones" o "Sin stock").
+//   Se fueron los chips de talle y color: con 6.000 variantes la lista quedaba
+//   ilegible y había que acertar la combinación desde una tarjeta chica.
+// - El botón "+" agrega directo sólo si el producto no tiene variantes. Si hay
+//   que elegir, abre la ficha, para que no se pueda mandar el talle equivocado.
+// - Catálogo de venta (POS e inventario): la celda decía "TALLE M: 3 u", que
+//   es el primer talle con stock y no representa al producto. Ahora muestra el
+//   total del negocio y cuántas opciones hay.
+// - El panel de talle × color ahora indica también cuánto hay de esa MISMA
+//   combinación en los otros negocios, para poder pedir una transferencia en
+//   vez de decir que no hay.
+// - El buscador ya abría la grilla de talles al elegir un producto con
+//   variantes (addToCart → setEligiendoTalle), y los códigos de variante
+//   siguen entrando derecho al carrito. No se tocó.
+//
+// PUNTO 3 · Movimientos y Cierre: contenedores más grandes
+// - Alto de 240/260/280 px a 460 px en los cuatro bloques (ventas del turno,
+//   mercadería vendida, movimientos de efectivo y comprobantes).
+// - Los textos ya no se recortan con puntos suspensivos: el concepto del
+//   movimiento, el nombre del cliente, el del producto y el número de
+//   comprobante pasan a los renglones que hagan falta.
+// - Más interlineado (1.45) y tipografía un punto más grande.
+//
+// Rendimiento: ninguna consulta nueva, ninguna suscripción nueva. Todo es CSS
+// y render. El catálogo generado pesa lo mismo que antes.
+//
+// PENDIENTE — Etapas B, C y D: puntos 4, 2 y 5.
+//
 // v9.931 (2026-09-15) — FECHAS, COLUMNAS Y REGISTRAR PAGO
 // FECHAS de ventas y pagos en la ficha del cliente
 // - ARREGLO del desfase horario: fechaHoraLabel hacía new Date("2026-09-15"),
@@ -8495,14 +8526,28 @@ function CeldaStock({ producto: p, negocioId, otrosNegocios }) {
       "Talles y colores"),
     vs.map((v, k) => {
       const cant = Number(v.stock) || 0;
+      // Cuánto hay de esta misma combinación en los otros negocios: sirve para
+      // saber si conviene pedir una transferencia en vez de decir que no hay.
+      const enOtrosDeEsta = (otrosNegocios || []).map((n) => {
+        const suyas = variantesNegocio(p, n.id) || [];
+        const igual = suyas.find((x) => (x.talle || "") === (v.talle || "") && (x.color || "") === (v.color || ""));
+        return { nombre: n.nombre, cant: igual ? (Number(igual.stock) || 0) : 0 };
+      }).filter((x) => x.cant > 0);
       return React.createElement(
         "div",
-        { key: k, style: { display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12.5, padding: "5px 0", borderBottom: k < vs.length - 1 ? "1px solid color-mix(in srgb, var(--line) 50%, transparent)" : "none" } },
-        React.createElement("span", { style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", opacity: cant > 0 ? 1 : 0.5 } },
-          String(v.talle || "—"), v.color ? " · " + v.color : ""),
-        React.createElement("span", {
-          style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 650, flexShrink: 0, color: cant > 0 ? "var(--ink)" : "var(--rose)" }
-        }, cant, " u")
+        { key: k, style: { padding: "6px 0", borderBottom: k < vs.length - 1 ? "1px solid color-mix(in srgb, var(--line) 50%, transparent)" : "none" } },
+        React.createElement(
+          "div",
+          { style: { display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12.5 } },
+          React.createElement("span", { style: { minWidth: 0, overflowWrap: "anywhere", opacity: cant > 0 ? 1 : 0.5 } },
+            String(v.talle || "—"), v.color ? " · " + v.color : ""),
+          React.createElement("span", {
+            style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 650, flexShrink: 0, color: cant > 0 ? "var(--ink)" : "var(--rose)" }
+          }, cant, " u")
+        ),
+        enOtrosDeEsta.length > 0 && React.createElement("div", {
+          style: { fontSize: 11, color: "var(--muted)", marginTop: 3, lineHeight: 1.4 }
+        }, enOtrosDeEsta.map((x) => x.nombre + ": " + x.cant + " u").join(" · "))
       );
     })
   );
@@ -8523,15 +8568,20 @@ function CeldaStock({ producto: p, negocioId, otrosNegocios }) {
   );
 
   if (vs.length) {
+    // La tarjeta muestra el stock general, no un talle suelto. Antes decía
+    // "TALLE M: 3 u", que es el primero con stock y no representa al producto:
+    // con 6 talles cargados el número de arriba engañaba más de lo que ayudaba.
+    // El detalle talle × color sigue estando al tocar.
     const conStock = vs.filter((v) => (Number(v.stock) || 0) > 0);
-    const principal = conStock[0] || vs[0];
     return React.createElement(
       "div",
       gestos,
       React.createElement(SwingTag, { tone: bajo ? "rose" : "ink", small: true },
-        "TALLE " + String(principal.talle).toUpperCase() + ": " + (Number(principal.stock) || 0) + " u"),
+        enEste > 0 ? enEste + " u" : "SIN STOCK"),
       React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 4 } },
-        vs.length > 1 ? "+" + (vs.length - 1) + " talles · " + enEste + " u" : enEste + " u en total"),
+        conStock.length
+          ? conStock.length + (conStock.length === 1 ? " opción" : " opciones")
+          : (enOtros > 0 ? "+" + enOtros + " u en otros negocios" : "Sin stock acá")),
       panelTalles
     );
   }
@@ -8891,6 +8941,13 @@ function InventarioStock({ data, persist }) {
   const verCostos = puede(data, "verCostos");
   const verAlertas = puede(data, "verAlertasStock");
   const negId = verNegocio || negocioActivo(data).id;
+  // Los otros locales, para mostrar en el panel de talles cuánto hay de la
+  // misma combinación en cada uno. Se calcula una vez para toda la lista:
+  // hacerlo dentro de cada fila recorría la lista de negocios por producto.
+  const otrosLocales = useMemo(
+    () => listaNegocios(data).filter((n) => n.id !== negocioActivo(data).id),
+    [data.negocios, data.negocioActivo]
+  );
   const esOtro = negId !== negocioActivo(data).id;
   const nombreVisto = (listaNegocios(data).find((n) => n.id === negId) || {}).nombre || "";
   const enEste = (p) => stockNegocio(p, negId);
@@ -9124,7 +9181,7 @@ function InventarioStock({ data, persist }) {
                     ),
                     React.createElement("td", null, React.createElement(SwingTag, { tone: "denim", small: true }, (p.categoria || "Sin categoría").toUpperCase())),
                     React.createElement("td", null, React.createElement(Switch, { on: activo, onChange: () => toggleActivo(p), title: activo ? "A la venta" : "Pausado" })),
-                    React.createElement("td", null, React.createElement(CeldaStock, { producto: p, negocioId: negocioActivo(data).id })),
+                    React.createElement("td", null, React.createElement(CeldaStock, { producto: p, negocioId: negocioActivo(data).id, otrosNegocios: otrosLocales })),
                     verCostos && React.createElement("td", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 13.5, color: dinero ? "var(--ink)" : "var(--muted)" } }, dinero ? money(dinero) : "–"),
                     verCostos && React.createElement("td", { style: { color: "var(--muted)" } }, p.proveedor || "Sin proveedor"),
                     // Tres puntos: la columna queda angosta y la fila se lee
@@ -11657,7 +11714,13 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
       : children
   );
 
-  const celdaStock = (p) => React.createElement(CeldaStock, { producto: p, negocioId: negocioActivo(data).id });
+  // Los otros locales se calculan una sola vez para toda la lista: hacerlo
+  // dentro de cada fila recorría la lista de negocios por producto.
+  const otrosLocales = useMemo(
+    () => listaNegocios(data).filter((n) => n.id !== negocioActivo(data).id),
+    [data.negocios, data.negocioActivo]
+  );
+  const celdaStock = (p) => React.createElement(CeldaStock, { producto: p, negocioId: negocioActivo(data).id, otrosNegocios: otrosLocales });
 
   if (showForm) {
     // Se devuelve un fragmento: así el modal de etiquetas puede abrirse encima
@@ -19755,7 +19818,7 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
             { titulo: "Ventas del turno", extra: String(delTurno.length) },
             React.createElement(
               "div",
-              { style: { maxHeight: 280, overflowY: "auto" } },
+              { style: { maxHeight: 460, overflowY: "auto" } },
               delTurno.slice().sort((a, b) => String(b.horaTexto || "").localeCompare(String(a.horaTexto || "")))
                 .map((v) => React.createElement(
                   "div",
@@ -19767,7 +19830,7 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
                     "span",
                     { style: { flex: 1, minWidth: 0 } },
                     React.createElement("span", {
-                      style: { display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }
+                      style: { display: "block", lineHeight: 1.45, overflowWrap: "anywhere", whiteSpace: "normal" }
                     }, v.clienteNombre || "Consumidor final"),
                     React.createElement("span", {
                       style: { display: "block", fontSize: 11, color: "var(--muted)", marginTop: 1 }
@@ -19796,7 +19859,7 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
             { titulo: "Mercadería vendida", extra: unidades + (unidades === 1 ? " unidad" : " unidades") },
             React.createElement(
               "div",
-              { style: { maxHeight: 240, overflowY: "auto" } },
+              { style: { maxHeight: 460, overflowY: "auto" } },
               listaArticulos.map((a2, k) => React.createElement(
                 "div",
                 { key: k, style: { display: "flex", alignItems: "center", gap: 10, fontSize: 13, padding: "7px 0", borderBottom: "1px solid color-mix(in srgb, var(--line) 50%, transparent)" } },
@@ -19806,7 +19869,7 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
                 React.createElement(
                   "span",
                   { style: { flex: 1, minWidth: 0 } },
-                  React.createElement("span", { style: { display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, a2.nombre),
+                  React.createElement("span", { style: { display: "block", lineHeight: 1.45, overflowWrap: "anywhere", whiteSpace: "normal" } }, a2.nombre),
                   (a2.talle || a2.color) && React.createElement("span", {
                     style: { display: "block", fontSize: 11.5, color: "var(--muted)", marginTop: 2 }
                   }, [a2.talle && ("Talle " + a2.talle), a2.color].filter(Boolean).join(" · "))
@@ -19824,44 +19887,49 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
             { titulo: "Movimientos de efectivo", extra: money(efectivoEnCaja(caja)) },
             React.createElement(
               "div",
-              { style: { maxHeight: 280, overflowY: "auto" } },
+              { style: { maxHeight: 460, overflowY: "auto" } },
               // La apertura primero: es de donde sale el efectivo inicial y
               // sin ella los números de abajo no cierran.
               caja.abierta && React.createElement(
                 "div",
-                { style: { display: "flex", alignItems: "center", gap: 9, fontSize: 13, padding: "8px 0", borderBottom: "1px solid color-mix(in srgb, var(--line) 50%, transparent)" } },
-                React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "var(--muted)", flexShrink: 0 } }, horaHMS(caja.abiertaEn)),
+                { style: { display: "flex", alignItems: "flex-start", gap: 11, fontSize: 13.5, padding: "11px 0", borderBottom: "1px solid color-mix(in srgb, var(--line) 50%, transparent)" } },
+                React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "var(--muted)", flexShrink: 0, paddingTop: 1 } }, horaHMS(caja.abiertaEn)),
                 React.createElement(
                   "span",
                   { style: { flex: 1, minWidth: 0 } },
-                  React.createElement("span", { style: { display: "block", fontWeight: 600 } }, "Apertura de caja"),
-                  React.createElement("span", { style: { display: "block", fontSize: 11, color: "var(--muted)", marginTop: 1 } }, "Fondo inicial")
+                  React.createElement("span", { style: { display: "block", fontWeight: 600, lineHeight: 1.45 } }, "Apertura de caja"),
+                  React.createElement("span", { style: { display: "block", fontSize: 11.5, color: "var(--muted)", marginTop: 3 } }, "Fondo inicial")
                 ),
                 React.createElement("span", {
-                  style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, flexShrink: 0, color: "var(--sage)" }
+                  style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, flexShrink: 0, color: "var(--sage)", paddingTop: 1 }
                 }, "+ " + money(caja.montoInicial || 0))
               ),
               movs.map((m) => {
                 const sale = m.tipo === "retiro" || m.tipo === "devolucion";
                 return React.createElement(
                   "div",
-                  { key: m.id, style: { display: "flex", alignItems: "center", gap: 9, fontSize: 13, padding: "8px 0", borderBottom: "1px solid color-mix(in srgb, var(--line) 50%, transparent)" } },
-                  React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11.5, color: "var(--muted)", flexShrink: 0 } }, horaHMS(m.fecha)),
+                  { key: m.id, style: { display: "flex", alignItems: "flex-start", gap: 11, fontSize: 13.5, padding: "11px 0", borderBottom: "1px solid color-mix(in srgb, var(--line) 50%, transparent)" } },
+                  React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, color: "var(--muted)", flexShrink: 0, paddingTop: 1 } }, horaHMS(m.fecha)),
                   React.createElement(
                     "span",
                     { style: { flex: 1, minWidth: 0 } },
-                    React.createElement("span", { style: { display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, m.concepto || (TIPO_MOV_LABEL[m.tipo] || m.tipo)),
-                    React.createElement("span", { style: { display: "block", fontSize: 11, color: "var(--muted)", marginTop: 1 } }, TIPO_MOV_LABEL[m.tipo] || m.tipo)
+                    // El concepto entero, en los renglones que haga falta. Antes
+                    // se cortaba en uno con puntos suspensivos y no se sabía a
+                    // qué correspondía el movimiento.
+                    React.createElement("span", {
+                      style: { display: "block", lineHeight: 1.45, overflowWrap: "anywhere", whiteSpace: "normal" }
+                    }, m.concepto || (TIPO_MOV_LABEL[m.tipo] || m.tipo)),
+                    React.createElement("span", { style: { display: "block", fontSize: 11.5, color: "var(--muted)", marginTop: 3 } }, TIPO_MOV_LABEL[m.tipo] || m.tipo)
                   ),
                   React.createElement("span", {
-                    style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, flexShrink: 0, color: sale ? "var(--rose)" : "var(--sage)" }
+                    style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, flexShrink: 0, color: sale ? "var(--rose)" : "var(--sage)", paddingTop: 1 }
                   }, (sale ? "− " : "+ ") + money(m.monto))
                 );
               }),
               // El total, para poder contar la plata contra este número
               React.createElement(
                 "div",
-                { style: { display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "10px 0 2px", fontWeight: 700 } },
+                { style: { display: "flex", justifyContent: "space-between", fontSize: 14, padding: "12px 0 2px", fontWeight: 700 } },
                 React.createElement("span", null, "Efectivo en caja"),
                 React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(efectivoEnCaja(caja)))
               )
@@ -19874,7 +19942,7 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
             { titulo: "Comprobantes recibidos", extra: String(comprobantes.length) },
             React.createElement(
               "div",
-              { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: 260, overflowY: "auto" } },
+              { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: 460, overflowY: "auto" } },
               comprobantes.map((c) => React.createElement(
                 "div",
                 { key: c.clave, style: { display: "flex", alignItems: "center", gap: 11, background: "var(--surface-2)", borderRadius: 10, padding: "9px 11px" } },
@@ -19886,7 +19954,7 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
                   "div",
                   { style: { flex: 1, minWidth: 0 } },
                   React.createElement("div", {
-                    style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }
+                    style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, lineHeight: 1.4, overflowWrap: "anywhere", whiteSpace: "normal" }
                   }, c.numero || "sin número"),
                   React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 2 } }, c.cliente)
                 ),
@@ -20386,7 +20454,6 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
         id: p.id,
         nombre: p.nombre,
         categoria: p.categoria || "Sin categoría",
-        talla: p.talla || "",
         descripcion: p.descripcion || "",
         precio: precioCatalogo(p, lista),
         // Los dos precios a la vista: el cliente mayorista deja de preguntar
@@ -20394,20 +20461,16 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
         precioMin: listaMin ? precioCatalogo(p, listaMin) : p.precioVenta,
         precioMay: listaMay ? precioCatalogo(p, listaMay) : null,
         stock: stockNegocio(p, negId),
-        // Talles y colores con stock, sin repetir. El cliente elige la
-        // combinación exacta en vez de aclararla después por chat.
+        // Talles sueltos, sólo para que el buscador los encuentre
         talles: [...new Set(vs.filter((v) => (Number(v.stock) || 0) > 0 && v.talle).map((v) => v.talle))],
-        colores: [...new Set(vs.filter((v) => (Number(v.stock) || 0) > 0 && v.color).map((v) => v.color))],
-        // Qué combinaciones existen realmente, para no ofrecer un talle que
-        // en ese color no hay
-        combos: vs.filter((v) => (Number(v.stock) || 0) > 0).map((v) => (v.talle || "") + "|" + (v.color || "")),
         // Detalle por variante: talle, color y cuántas unidades hay. Es lo que
-        // muestra la ficha ampliada al tocar el producto.
+        // muestra la ficha ampliada al tocar el producto, y desde que las
+        // tarjetas no llevan chips, es la ÚNICA lista que hace falta: antes
+        // viajaban también "colores" y "combos", que repetían este mismo dato.
         variantes: vs.filter((v) => (Number(v.stock) || 0) > 0).map((v) => ({
           talle: v.talle || "", color: v.color || "", stock: Number(v.stock) || 0
         })),
-        imagen: p.imagen || "",
-        imagenes: (imagenesDe(p) || []).slice(0, 4)
+        imagen: p.imagen || ""
       };
     });
 
@@ -20514,19 +20577,13 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
     ".pp{font-size:14.5px;color:var(--muted);margin-top:3px}",
     ".agotado{opacity:.4}",
     ".talles{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;padding:0 12px}",
-    ".tsel{font-size:11px;color:var(--muted);border:1px solid var(--line);background:none;border-radius:5px;padding:4px 8px;cursor:pointer;font-family:inherit;transition:all .12s ease}",
-    ".tsel:hover{border-color:var(--acento);color:var(--ink)}",
-    ".tsel.on{background:var(--acento);border-color:var(--acento);color:#fff;font-weight:700}",
-    ".csel{font-size:11px;color:var(--muted);border:1px solid var(--line);background:none;border-radius:5px;padding:4px 9px;cursor:pointer;font-family:inherit;transition:all .12s ease}",
-    ".csel:hover{border-color:var(--acento);color:var(--ink)}",
-    ".csel.on{background:var(--acento);border-color:var(--acento);color:#fff;font-weight:700}",
+    /* Indicador de stock general en la tarjeta, en lugar de los chips */
+    ".estado{font-size:11.5px;margin-top:6px}",
+    ".estado.hay{color:var(--muted)}",
+    ".estado.sin{color:#F0616D;font-weight:650}",
     ".colores{margin-top:4px}",
     // Combinación sin stock: se ve pero apagada, para que no la elija
-    ".tsel.no,.csel.no{opacity:.32;text-decoration:line-through}",
-    // Si falta elegir talle, la tarjeta lo señala en vez de agregar mal
-    "@keyframes pide{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}",
-    ".pide-talle{animation:pide .3s ease 2}",
-    ".pide-talle .talles{outline:2px solid var(--acento);outline-offset:3px;border-radius:6px}",
+
     // Detalle del pedido desplegable
     ".barfila{display:flex;align-items:center;gap:10px;flex-wrap:wrap}",
     ".det{display:none;max-height:210px;overflow-y:auto;margin-bottom:10px;border-bottom:1px solid var(--line);padding-bottom:8px}",
@@ -20611,8 +20668,6 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
     // El carrito guarda producto+talle: antes se guardaba sólo el producto, así
     // que dos talles del mismo artículo se pisaban entre sí.
     "const claveC=(id,t,c)=>id+'||'+(t||'')+'||'+(c||'');",
-    "const talleDe=id=>talles[id]||'';",
-    "const colorDe=id=>colores[id]||'';",
     "const totalDe=id=>Object.keys(cart).filter(k=>k.split('||')[0]===id).reduce((a,k)=>a+cart[k],0);",
     "const lineas=()=>Object.keys(cart).filter(k=>cart[k]>0).map(k=>{const [id,t,c]=k.split('||');const p=D.productos.find(x=>x.id===id);return p?{id,talle:t,color:c,nombre:p.nombre,precio:p.precio,cantidad:cart[k],clave:k}:null;}).filter(Boolean);",
     "const ICONO_WA=\"<svg viewBox='0 0 24 24'><path d='M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38a9.9 9.9 0 0 0 4.79 1.22h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.82 9.82 0 0 0 12.04 2zm5.8 14.13c-.24.68-1.42 1.31-1.96 1.36-.5.05-1.13.07-1.82-.11-.42-.11-.96-.29-1.65-.59-2.9-1.25-4.8-4.17-4.94-4.36-.15-.19-1.19-1.58-1.19-3.01 0-1.43.75-2.14 1.02-2.43.27-.29.58-.36.78-.36.19 0 .39 0 .56.01.18.01.42-.7.8.61.39.94 1.32 3.24 1.44 3.48.12.24.2.51.04.8-.16.29-.24.47-.47.72-.24.24-.5.55-.71.73-.24.19-.48.4-.21.87.27.47 1.2 1.98 2.58 3.21 1.77 1.58 3.27 2.07 3.74 2.3.47.24.74.2 1.01-.12.27-.32 1.16-1.36 1.47-1.83.31-.47.62-.39 1.04-.24.42.16 2.68 1.27 3.14 1.5.46.24.77.36.88.55.12.19.12 1.11-.12 1.79z'/></svg>\";",
@@ -20629,12 +20684,13 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
     "function tarjeta(p){const ag=D.usarStock&&p.stock<=0;const n=totalDe(p.id);",
     // Talles disponibles y aviso de últimas unidades: son los dos datos que el
     // cliente pregunta por WhatsApp antes de decidir.
-    // Un talle sólo se ofrece si existe en el color elegido, y al revés
-    "const hayCombo=(p,t,c)=>!p.combos||!p.combos.length||p.combos.some(k=>{const [kt,kc]=k.split('|');return (!t||kt===t)&&(!c||kc===c);});",
-    "const tl=(p.talles&&p.talles.length)?`<div class='talles'>${p.talles.map(t=>{const ok=hayCombo(p,t,colorDe(p.id));return `<button class='tsel${talleDe(p.id)===t?' on':''}${ok?'':' no'}' data-p='${p.id}' data-t='${esc(t)}'>${esc(t)}</button>`;}).join('')}</div>`:'';",
-    "const cl=(p.colores&&p.colores.length)?`<div class='talles colores'>${p.colores.map(c=>{const ok=hayCombo(p,talleDe(p.id),c);return `<button class='csel${colorDe(p.id)===c?' on':''}${ok?'':' no'}' data-p='${p.id}' data-c='${esc(c)}'>${esc(c)}</button>`;}).join('')}</div>`:'';",
+    // La tarjeta NO muestra talles ni colores: se eligen al abrir el producto.
+    // Con 6.000 variantes, una grilla de chips por tarjeta hacía la lista
+    // ilegible y obligaba a acertar la combinación desde una tarjeta chica.
     "const ult=(!ag&&D.usarStock&&p.stock<=3)?`<div class='ultimas'>\\u00A1\\u00DAltimas ${p.stock}!</div>`:'';",
-    "return `<div class='prod${ag?' agotado':''}' data-prod='${p.id}'><div class='foto' data-foto='${p.id}'>${p.imagen?`<img src='${p.imagen}' alt='${esc(p.nombre)}' loading='lazy' decoding='async'>`:`<span class='ph'>${esc(p.nombre)}</span>`}${n?`<span class='qty' data-id='${p.id}' title='Quitar uno'>${n}</span>`:''}${ult}${ag?'':`<button class='add' data-id='${p.id}' aria-label='Agregar'>+</button>`}</div><div class='pinfo'><div class='pn' data-ver='${p.id}'>${esc(p.nombre)}</div>${precios(p)}</div>${tl}${cl}</div>`;}",
+    // Indicador de stock general, que reemplaza a los chips
+    "const est=!D.usarStock?'':(ag?`<div class='estado sin'>Sin stock</div>`:`<div class='estado hay'>${p.stock} disponibles${(p.variantes&&p.variantes.length>1)?` \\u00B7 ${p.variantes.length} opciones`:''}</div>`);",
+    "return `<div class='prod${ag?' agotado':''}' data-prod='${p.id}'><div class='foto' data-foto='${p.id}'>${p.imagen?`<img src='${p.imagen}' alt='${esc(p.nombre)}' loading='lazy' decoding='async'>`:`<span class='ph'>${esc(p.nombre)}</span>`}${n?`<span class='qty' data-id='${p.id}' title='Quitar uno'>${n}</span>`:''}${ult}${ag?'':`<button class='add' data-id='${p.id}' aria-label='Agregar'>+</button>`}</div><div class='pinfo'><div class='pn' data-ver='${p.id}'>${esc(p.nombre)}</div>${precios(p)}${est}</div></div>`;}",
     // Los dos precios en la tarjeta, cada uno con su etiqueta
     "function precios(p){const may=(p.precioMay!=null&&p.precioMay!==p.precioMin);",
     "return `<div class='precios'><div class='pfila'><span class='pet'>${esc(D.nombreMin)}</span><span class='pval'>${money(p.precioMin)}</span></div>${may?`<div class='pfila may'><span class='pet'>${esc(D.nombreMay)}</span><span class='pval'>${money(p.precioMay)}</span></div>`:''}</div>`;}",
@@ -20659,19 +20715,17 @@ function generarCatalogoHTML({ data, cfg, lista, negocioNombre }) {
     "`<div class='pie'>${D.direccion?esc(D.direccion)+'<br>':''}${D.horario?esc(D.horario):''}</div>`;",
     "document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{catActiva=b.dataset.cat;const el=document.getElementById('sec-'+b.dataset.cat);if(el)el.scrollIntoView({behavior:'smooth',block:'start'});document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.cat===catActiva));});",
     "document.querySelectorAll('.vertodo').forEach(b=>b.onclick=()=>{expandidas[b.dataset.cat]=!expandidas[b.dataset.cat];render();});",
-    "document.querySelectorAll('.add').forEach(b=>b.onclick=()=>{const id=b.dataset.id;const p=D.productos.find(x=>x.id===id);",
-    "const faltaT=p&&p.talles&&p.talles.length&&!talles[id];const faltaC=p&&p.colores&&p.colores.length&&!colores[id];",
-    "if(faltaT||faltaC){const c=b.closest('.prod');if(c){c.classList.add('pide-talle');setTimeout(()=>c.classList.remove('pide-talle'),1600);}return;}",
-    "const k=claveC(id,talles[id],colores[id]);cart[k]=(cart[k]||0)+1;render();});",
-    // Elegir color, con la misma lógica de deseleccionar que el talle
-    "document.querySelectorAll('.csel').forEach(b=>b.onclick=(e)=>{e.stopPropagation();const id=b.dataset.p,c=b.dataset.c;colores[id]=colores[id]===c?'':c;render();});",
-    // Elegir talle: se puede volver a tocar para deseleccionarlo
-    "document.querySelectorAll('.tsel').forEach(b=>b.onclick=(e)=>{e.stopPropagation();const id=b.dataset.p,t=b.dataset.t;talles[id]=talles[id]===t?'':t;render();});",
+    // El "+" agrega directo sólo si el producto no tiene variantes. Si hay
+    // talles o colores que elegir, abre la ficha: desde la tarjeta ya no se
+    // ve cuál es cuál, así que agregar a ciegas mandaría el talle equivocado.
+    "document.querySelectorAll('.add').forEach(b=>b.onclick=(e)=>{e.stopPropagation();const id=b.dataset.id;const p=D.productos.find(x=>x.id===id);",
+    "if(p&&p.variantes&&p.variantes.length){abrirFicha(id);return;}",
+    "const k=claveC(id,'','');cart[k]=(cart[k]||0)+1;render();});",
     "const det=document.getElementById('verdet');if(det)det.onclick=()=>{verDetalle=!verDetalle;render();};",
     "document.querySelectorAll('.quitar').forEach(b=>b.onclick=()=>{delete cart[b.dataset.k];render();});",
     // Tocar el contador resta una unidad: antes solo se podía vaciar el carrito
     // entero y volver a empezar.
-    "document.querySelectorAll('.qty').forEach(b=>b.onclick=()=>{const id=b.dataset.id;if(!id)return;const k=claveC(id,talles[id],colores[id]);if(cart[k]){cart[k]--;if(cart[k]<=0)delete cart[k];}else{const otra=Object.keys(cart).find(x=>x.split('||')[0]===id);if(otra){cart[otra]--;if(cart[otra]<=0)delete cart[otra];}}render();});",
+    "document.querySelectorAll('.qty').forEach(b=>b.onclick=(e)=>{e.stopPropagation();const id=b.dataset.id;if(!id)return;const k=Object.keys(cart).find(x=>x.split('||')[0]===id);if(k){cart[k]--;if(cart[k]<=0)delete cart[k];}render();});",
     "const qi=document.getElementById('q');if(qi){qi.oninput=e=>{q=e.target.value;render();const n=document.getElementById('q');if(n){n.focus();n.setSelectionRange(n.value.length,n.value.length);}};if(q)qi.focus();}",
     "const fd=document.getElementById('fd');if(fd)fd.onclick=()=>{soloDisp=!soloDisp;render();};",
     "const os=document.getElementById('ord');if(os)os.onchange=e=>{orden=e.target.value;render();};",
