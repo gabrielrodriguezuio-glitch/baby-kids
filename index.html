@@ -129,7 +129,51 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.960";
+const VERSION_APP = "9.961";
+// v9.961 (2026-09-16) — LA RAÍZ DE LOS PAGOS Y FIADOS DUPLICADOS
+//
+// Los arreglos de la v9.957 y la v9.959 eran reales pero atacaban síntomas.
+// La causa de fondo estaba en la sincronización y explica TODO lo que se
+// venía viendo: pagos dobles, fiados dobles, saldos que no cuadran y el
+// botón "Cobrar saldo" que no aparecía.
+//
+// QUÉ PASABA
+// Cada pago o fiado se creaba con un id corto de la app (uid). Al subir a la
+// nube NO se mandaba ese id, y la base le asignaba uno propio. Cuando el
+// movimiento volvía por sincronización, la app comparaba por id, no lo
+// reconocía, y lo agregaba OTRA VEZ. Resultado: cada movimiento cargado en
+// un dispositivo quedaba dos veces en ese dispositivo. Los demás lo veían
+// una sola vez, y por eso el problema parecía intermitente.
+// Las ventas, los clientes, los productos y los cierres no tienen esto
+// porque después de insertar reemplazan el id local por el de la base. Los
+// movimientos de cuenta corriente eran los ÚNICOS que no lo hacían.
+//
+// ARREGLO, en tres partes
+//  1. Los movimientos nacen con UUID (uidUUID) y ese id VIAJA a la nube, como
+//     las ventas. Vuelve con el mismo id y se reconoce.
+//  2. Red de seguridad: si la base asignara otro id igual, se reemplaza en
+//     memoria como hacen las demás tablas. Si la copia de la nube ya había
+//     llegado, queda una sola.
+//  3. Limpieza de lo que ya está duplicado en el dispositivo: un movimiento
+//     con id corto que tiene un gemelo con id de la base (mismo cliente,
+//     tipo, monto, fecha y concepto) es la copia sobrante y se descarta,
+//     al arrancar y en cada sincronización. Se conserva siempre la copia de
+//     la nube, que es la que existe de verdad. Un movimiento con id corto
+//     SIN gemelo (todavía no subió) no se toca.
+// Probado: 10 de 10 casos, incluyendo dos clientes con el mismo monto (no se
+// confunden) y un pago que todavía no subió (se conserva).
+//
+// El saldo de los clientes se corrige solo al abrir la app. Los que tenían
+// pagos duplicados van a deber MÁS de lo que figuraba; los que tenían
+// fiados duplicados, MENOS. Los nuevos valores son los correctos.
+//
+// CARTEL: falta el SQL de comprobantes
+// Si al leer las ventas la columna calculada de comprobantes es la vieja,
+// aparece un aviso fijo arriba, sólo para el Propietario. Sin ese SQL, el
+// monto, la fecha y el banco que lee el escáner se PIERDEN cada vez que la
+// venta vuelve de la nube, y parece que el escáner no los leyó. No es el
+// escáner: es la base, que no los devuelve.
+//
 // v9.960 (2026-09-16) — ARREGLO: LAS FOTOS SE LEÍAN GIRADAS
 // La preparación de imagen de la v9.956 rompió la lectura de las FOTOS (las
 // capturas de pantalla no, porque no llevan marca de rotación).
@@ -2376,7 +2420,7 @@ const registrarDevolucion = (data, venta, seleccion, motivo, reintegro) => {
   const vaACuenta = reintegro === "cuenta_corriente" || (!reintegro && venta.metodoPago === "cuenta_corriente");
   if (vaACuenta && venta.clienteId) {
     movimientosCC = [
-      { id: uid(), clienteId: venta.clienteId, fecha: todayISO(), tipo: "pago", monto: montoDevuelto, concepto: `Devolución de venta #${venta.id.slice(-6)}` },
+      { id: uidUUID(), clienteId: venta.clienteId, fecha: todayISO(), tipo: "pago", monto: montoDevuelto, concepto: `Devolución de venta #${venta.id.slice(-6)}` },
       ...movimientosCC
     ];
   }
@@ -2780,6 +2824,12 @@ function guardarCopiaLocal(quien, frescos) {
 function ControlTienda() {
   const [data, setData] = useState(EMPTY);
   const [sesion, setSesion] = useState(null);
+  // Si al leer ventas de la nube se detectó la columna vieja de comprobantes
+  const [faltaSQL, setFaltaSQL] = useState(false);
+  useEffect(() => {
+    // Se mira después de cada carga: la bandera la levanta deLaNube.venta
+    if (window.__ctFaltaSQLComprobantes && !faltaSQL) setFaltaSQL(true);
+  }, [data]);
   const [verificando, setVerificando] = useState(true);
   const [errorNube, setErrorNube] = useState("");
   // Cuántos guardados hay en curso. Mientras haya alguno, no se traen datos
@@ -2934,6 +2984,11 @@ function ControlTienda() {
       const copia = JSON.parse(localStorage.getItem("ct-copia") || "null");
       if (copia && copia.quien === sesion.auth_id && copia.datos) {
         copiaEnMano = migrarCajas(migrarDatos(copia.datos));
+        // Los duplicados de cuenta corriente que hayan quedado guardados en
+        // la copia del dispositivo se descartan acá, antes de mostrar nada.
+        if (copiaEnMano && copiaEnMano.movimientosCC) {
+          copiaEnMano = { ...copiaEnMano, movimientosCC: sinMovimientosDuplicados(copiaEnMano.movimientosCC) };
+        }
         setData(copiaEnMano);
         setLoading(false);
         mostradoDeLaCopia = true;
@@ -3363,6 +3418,14 @@ function ControlTienda() {
               salida = { ...salida,
                 notasCredito: (salida.notasCredito || []).map((n) => n.id === c.viejo ? { ...n, id: c.nuevo } : n),
                 cambios: (salida.cambios || []).map((x) => x.notaCreditoId === c.viejo ? { ...x, notaCreditoId: c.nuevo } : x) };
+            } else if (c.tipo === "movcc") {
+              // El movimiento de cuenta corriente pasa a tener el id de la
+              // nube. Si por sincronización ya llegó la copia con ese id, se
+              // queda una sola: dos con el mismo id sumarían el pago dos veces.
+              const yaEsta = (salida.movimientosCC || []).some((m) => m.id === c.nuevo);
+              salida = { ...salida, movimientosCC: (salida.movimientosCC || [])
+                .filter((m) => !(yaEsta && m.id === c.viejo))
+                .map((m) => m.id === c.viejo ? { ...m, id: c.nuevo } : m) };
             } else if (c.tipo === "venta") {
               salida = { ...salida, ventas: salida.ventas.map((v) =>
                 v.id === c.viejo ? { ...v, id: c.nuevo } : v) };
@@ -3539,8 +3602,28 @@ function ControlTienda() {
         style: { background: "rgba(255,255,255,.2)", border: "none", color: "#fff", borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 12.5 }
       }, "Entendido")),
 
+    // Aviso de que falta correr el SQL de comprobantes. Sin él, el monto, la
+    // fecha y el banco de cada comprobante se PIERDEN cada vez que la venta
+    // vuelve de la nube, y parece que el escáner no los leyó. Sólo lo ve el
+    // Propietario, que es quien puede correrlo.
+    !errorGuardado && faltaSQL && esPropietario(data) && /* @__PURE__ */ React.createElement("div", {
+      style: {
+        position: "fixed", top: ventasEnCola > 0 ? 40 : 0, left: 0, right: 0, zIndex: 9998,
+        background: "var(--mustard)", color: "#111", padding: "11px 18px",
+        fontSize: 13.5, lineHeight: 1.45, display: "flex", alignItems: "center", gap: 12,
+        boxShadow: "0 2px 12px rgba(0,0,0,.2)"
+      }
+    },
+      /* @__PURE__ */ React.createElement(AlertTriangle, { size: 18, style: { flexShrink: 0 } }),
+      /* @__PURE__ */ React.createElement("span", { style: { flex: 1, fontWeight: 600 } },
+        "Falta correr el SQL de comprobantes en Supabase (archivo comprobantes-v9950.sql). Hasta entonces, el monto, la fecha y el banco de los comprobantes se pierden al sincronizar y no salen en el ticket."),
+      /* @__PURE__ */ React.createElement("button", {
+        onClick: () => setFaltaSQL(false),
+        style: { background: "rgba(0,0,0,.75)", border: "none", color: "#fff", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 12.5, fontWeight: 600, flexShrink: 0 }
+      }, "Ocultar por ahora")),
+
     // MEJORA 1: aviso de respaldo. Aparece cuando pasaron 7 días o nunca se hizo
-    !errorGuardado && avisoRespaldo && /* @__PURE__ */ React.createElement("div", {
+    !errorGuardado && !faltaSQL && avisoRespaldo && /* @__PURE__ */ React.createElement("div", {
       style: {
         position: "fixed", top: ventasEnCola > 0 ? 40 : 0, left: 0, right: 0, zIndex: 9998,
         background: "var(--mustard)", color: "#111", padding: "11px 18px",
@@ -6419,6 +6502,17 @@ const deLaNube = {
       // calculada de la base es la vieja: se normalizan acá para que la app
       // funcione igual antes y después de correr el SQL.
       comprobantes: (Array.isArray(v.comprobantes_livianos) ? v.comprobantes_livianos : (v.comprobantes || []))
+        .map((c) => {
+          // Si la columna calculada de la base devuelve comprobantes SIN la
+          // clave "monto" (ni siquiera en null), es la versión vieja: el SQL
+          // de la v9.950 no está corrido y el monto, la fecha y el banco se
+          // pierden cada vez que la venta vuelve de la nube. Se anota para
+          // avisarlo en pantalla.
+          if (Array.isArray(v.comprobantes_livianos) && c && typeof c === "object" && !("monto" in c)) {
+            window.__ctFaltaSQLComprobantes = true;
+          }
+          return c;
+        })
         .map((c) => ({
           ...c,
           metodo: c.metodo || "",
@@ -7123,12 +7217,30 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
   for (let i = 0; i < movsNuevos.length; i += 200) {
     const tanda = movsNuevos.slice(i, i + 200).filter((m) => m.clienteId);
     if (!tanda.length) continue;
-    const { error } = await nube.from("movimientos_cc").insert(tanda.map((m) => ({
+    // El id VIAJA a la nube, como en las ventas. Antes no se mandaba: la
+    // nube le ponía uno nuevo, y cuando el movimiento volvía por
+    // sincronización la app no lo reconocía y lo agregaba OTRA VEZ. Cada
+    // pago y cada fiado quedaban dos veces en el dispositivo donde se
+    // cargaron, y el saldo del cliente salía mal. Los ids viejos (los de
+    // uid(), cortos) no tienen formato de la base y se dejan sin mandar para
+    // que ella lo genere, como hasta ahora.
+    const { data: filasMov, error } = await nube.from("movimientos_cc").insert(tanda.map((m) => ({
+      ...(esIdDeLaBase(m.id) ? { id: m.id } : {}),
       cliente_id: idRealCliente(m.clienteId), tipo: m.tipo, monto: m.monto,
       concepto: m.concepto || null, metodo: m.metodo || null,
       fecha: m.fecha, usuario: m.usuario || null
-    })));
+    }))).select("id");
     if (error) throw new Error("Al guardar el movimiento de cuenta: " + error.message);
+    // Red de seguridad: si la base asignó un id distinto al que mandó la app
+    // (los movimientos viejos, con id corto), se anota para reemplazarlo en
+    // memoria. Es lo mismo que ya hacen las ventas, los clientes y los
+    // productos; los movimientos de cuenta eran los únicos que faltaban, y
+    // por eso eran los únicos que se duplicaban.
+    (filasMov || []).forEach((fila, k) => {
+      if (tanda[k] && fila && fila.id && fila.id !== tanda[k].id) {
+        cambios.push({ tipo: "movcc", viejo: tanda[k].id, nuevo: fila.id });
+      }
+    });
   }
 
   // Pagos/movimientos que el Propietario eliminó: se borran también de la nube
@@ -7674,6 +7786,28 @@ function tsMaximo(filas) {
 }
 // Fusiona por id: los del delta reemplazan a los actuales, el resto queda
 // tal cual. Sin delta, retorna el actual sin tocar (0 alocaciones).
+// Saca los movimientos de cuenta corriente duplicados que quedaron guardados
+// en el dispositivo por el problema de los ids (hasta la v9.961, cada pago y
+// cada fiado cargado acá se guardaba dos veces: una con el id corto de la
+// app y otra con el id que le puso la nube). Un movimiento con id corto que
+// tiene un gemelo con id de la base —mismo cliente, tipo, monto, fecha y
+// concepto— es esa copia sobrante, y se descarta. Se conserva siempre el de
+// la nube, que es el que existe de verdad.
+function sinMovimientosDuplicados(movs) {
+  if (!movs || !movs.length) return movs || [];
+  const firma = (m) => [m.clienteId, m.tipo, Number(m.monto) || 0, m.fecha || "", m.concepto || ""].join("|");
+  const deLaBase = new Set();
+  for (const m of movs) if (m && esIdDeLaBase(m.id)) deLaBase.add(firma(m));
+  let sacados = 0;
+  const limpio = movs.filter((m) => {
+    if (!m || esIdDeLaBase(m.id)) return true;
+    if (deLaBase.has(firma(m))) { sacados++; return false; }
+    return true;
+  });
+  if (sacados && DIAG) console.log("%c✓ cuenta corriente", "color:#16a34a;font-weight:bold", sacados, "movimiento(s) duplicado(s) descartado(s)");
+  return limpio;
+}
+
 function fusionarPorId(actual, delta) {
   if (!delta || !delta.length) return actual || [];
   if (!actual || !actual.length) return delta.slice();
@@ -8115,7 +8249,7 @@ async function traerParcial(tablas, quienEntro, actual) {
     });
     const delta = await traerDelta("movimientos_cc", "movimientos_cc");
     if (delta && actual.movimientosCC && actual.movimientosCC.length) {
-      salida.movimientosCC = fusionarPorId(actual.movimientosCC, delta.map(mapa));
+      salida.movimientosCC = sinMovimientosDuplicados(fusionarPorId(actual.movimientosCC, delta.map(mapa)));
       const ts = tsMaximo(delta);
       if (ts) tsSet("movimientos_cc", ts);
       deltaAnotar("movimientos_cc", delta.length, "delta");
@@ -15191,7 +15325,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     if (montoCC > 0 && !ventaEsTodoCC && clienteId) {
       movimientosCC = [
         {
-          id: uid(), clienteId, fecha: todayISO(),
+          id: uidUUID(), clienteId, fecha: todayISO(),
           tipo: "cargo", monto: montoCC,
           concepto: "Parte a cuenta corriente de una venta"
         },
@@ -15203,7 +15337,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     if (lineaDeuda && lineaDeuda.clienteDeuda) {
       movimientosCC = [
         {
-          id: uid(), clienteId: lineaDeuda.clienteDeuda, fecha: todayISO(),
+          id: uidUUID(), clienteId: lineaDeuda.clienteDeuda, fecha: todayISO(),
           tipo: "pago", monto: lineaDeuda.precioUnit * lineaDeuda.cantidad,
           metodo: metodoPago === "efectivo" ? "Efectivo" : (METODO_LABELS[metodoPago] || metodoPago),
           concepto: "Saldo cobrado con una venta"
@@ -19143,14 +19277,14 @@ function ImportarClientesModal({ data, persist, onClose }) {
       const cargo = c.saldoInicial + pagado;
       if (cargo > 0) {
         movs.push({
-          id: uid(), clienteId: c.id, tipo: "cargo", monto: cargo,
+          id: uidUUID(), clienteId: c.id, tipo: "cargo", monto: cargo,
           concepto: "Compras anteriores",
           fecha: c.pagos.length ? c.pagos[0].fecha : todayISO(),
           usuario: usuarioActivo(data)
         });
       }
       c.pagos.forEach((p) => movs.push({
-        id: uid(), clienteId: c.id, tipo: "pago", monto: p.monto,
+        id: uidUUID(), clienteId: c.id, tipo: "pago", monto: p.monto,
         concepto: p.concepto, metodo: p.metodo, fecha: p.fecha,
         usuario: usuarioActivo(data)
       }));
@@ -19665,7 +19799,7 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
     if (!movForm.monto || isNaN(monto) || monto <= 0) return setMovError("Ingresá un monto válido.");
     setMovError("");
     const mov = {
-      id: uid(), clienteId: cliente.id, fecha: todayISO(), tipo: movForm.tipo, monto,
+      id: uidUUID(), clienteId: cliente.id, fecha: todayISO(), tipo: movForm.tipo, monto,
       metodo: movForm.metodo,
       concepto: movForm.concepto || (movForm.tipo === "cargo" ? "Fiado" : "Pago recibido")
     };
