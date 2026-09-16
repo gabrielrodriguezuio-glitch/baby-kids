@@ -129,7 +129,49 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.910";
+const VERSION_APP = "9.920";
+// v9.920 (2026-09-15) — ETAPA 1
+// PUNTO 7 · Espera del escáner
+// - Constante única ESPERA_ESCANER = 2500 ms. La usan los 8 escáneres de la
+//   app, porque todos pasan por EscanerModal.
+// - La espera pasó a ser GLOBAL: después de cada lectura no entra ninguna
+//   otra por 2,5 s, ni siquiera un código distinto. Antes eran 1,5 s por
+//   código, así que apoyar el teléfono sobre una pila de etiquetas podía
+//   cargar varias prendas seguidas.
+// - Se muestra la cuenta regresiva en pantalla ("Esperá 2s…"): sin el número
+//   parece que el escáner se colgó.
+// - Modo de lectura única: guarda contra el doble disparo de ZXing, que
+//   alcanzaba a avisar dos veces antes de que el reset hiciera efecto.
+//
+// PUNTO 8 · Fechas y columnas de la ficha del cliente
+// - ARREGLO del desfase horario: fechaHoraLabel hacía new Date("2026-09-15"),
+//   que JavaScript lee como medianoche de Greenwich; en Argentina (UTC-3) el
+//   resultado era el DÍA ANTERIOR. Una venta del 15 figuraba el 14. Ahora el
+//   día se arma partiendo el texto, sin pasar por Date.
+// - Formato DD/MM/AAAA en todos los casos.
+// - ARREGLO del orden: se ordenaba sólo por día, así que todas las filas de
+//   una misma fecha empataban y quedaban agrupadas por tipo (primero todas
+//   las ventas, después todos los pagos). Ahora ordena por hora real, sacada
+//   de creadaEn, de horaTexto, o de la hora que uid() guarda en el id.
+// - Quitadas las columnas "Compras" y "Registro" de la lista de clientes.
+//
+// PUNTO 9 · "Registrar pago" se mantiene, con diseño nuevo
+//   No se quitó: desde el POS sólo se puede cobrar el saldo COMPLETO, así que
+//   era la única forma de cobrar una parte, y la única de cargar un fiado a
+//   mano. Rediseño: pestañas con ícono y color (verde entra, rojo sale),
+//   monto grande con teclado numérico, aviso en vivo de cuánto queda
+//   debiendo, método de pago en botones en vez de desplegable, y botón de
+//   confirmar a lo ancho con el monto escrito.
+//
+// PUNTO 12 · Columnas más juntas
+// - Relleno de celda de 13 px a 10/9 px; en celular baja a 9/6 px.
+// - Encabezados en dos renglones en vez de estirar la columna.
+// - Anchos mínimos de tabla bajados (880→600, 800→580, 740/714→560, 680→540,
+//   640/620→520) y anulados del todo en pantallas de hasta 640 px.
+//
+// Rendimiento: ninguna consulta nueva, ninguna suscripción nueva, ningún
+// cambio en la sincronización. Todo es formato, CSS y lógica en memoria.
+//
 // v9.910 (2026-09-15) — CATÁLOGO ONLINE
 // - Ancho: de 1100 a 860 px, centrado. En pantalla grande el fondo queda
 //   más oscuro alrededor para que se lea como una página, no como una hoja
@@ -568,6 +610,48 @@ import { Tag, Package, ShoppingBag, Users, Wallet, Plus, Trash2, X, AlertTriangl
 } from "lucide-react";
 const STORAGE_KEY = "control-tienda-ropa-v1";
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+// Espera entre lecturas del escáner, en milisegundos. Una sola constante para
+// TODOS los escáneres de la app (venta, stock, productos, transferencias,
+// cambios, devoluciones). Después de cada lectura aceptada no entra ninguna
+// otra hasta que pase este rato, aunque el código sea distinto.
+const ESPERA_ESCANER = 2500;
+
+// Momento exacto de una fila de la ficha del cliente, para ordenarla bien
+// dentro del mismo día. Las fechas se guardan sólo con el día ("2026-09-15"),
+// así que todas las del mismo día empataban y quedaban agrupadas por tipo:
+// primero todas las ventas y después todos los pagos, sin importar el orden
+// real en que pasaron. La hora se saca de lo mejor que haya:
+//  · ventas: creadaEn (viene de la nube, es la más precisa) u horaTexto
+//  · movimientos cargados en el teléfono: uid() arranca con la hora en base 36
+// Lo que no tiene hora queda al final de su día, que es lo habitual: primero
+// se lleva la mercadería y después se paga.
+const claveCronologica = (f) => {
+  const dia = String((f && f.fecha) || "").slice(0, 10) || "0000-00-00";
+  let hora = "";
+  if (f && f.venta) {
+    const c = f.venta.creadaEn;
+    if (c && String(c).length > 10) hora = String(c).slice(11, 19);
+    if (!hora) {
+      const h = String(f.venta.horaTexto || "").match(/^(\d{1,2}):(\d{2})/);
+      if (h) hora = h[1].padStart(2, "0") + ":" + h[2] + ":00";
+    }
+  }
+  if (!hora) {
+    const cod = String((f && f.id) || "").slice(0, 8);
+    if (/^[0-9a-z]{8}$/.test(cod)) {
+      const ms = parseInt(cod, 36);
+      // Sólo si da una fecha creíble: de 2020 en adelante y no futura
+      if (ms > 15778e8 && ms < Date.now() + 864e5) {
+        const d = new Date(ms);
+        hora = String(d.getHours()).padStart(2, "0") + ":" +
+               String(d.getMinutes()).padStart(2, "0") + ":" +
+               String(d.getSeconds()).padStart(2, "0");
+      }
+    }
+  }
+  return dia + " " + (hora || "99:99:99") + " " + ((f && f.id) || "");
+};
+
 // Clave para ordenar productos por orden de carga (el más viejo primero).
 // No hay un solo dato confiable para esto, así que se usa el mejor disponible:
 //  · creadoEn: lo pone la nube, es el más preciso (trae fecha y hora)
@@ -2545,8 +2629,19 @@ function Wrapper({ children, mobile, tema = "oscuro" }) {
         .ct-tablewrap tbody tr:hover { position: relative; z-index: 20; }
         /* En tarjetas sin relleno, la tabla pone el suyo para que las columnas
            arranquen donde el título y no pegadas al borde. */
-        .ct-suelta th:first-child, .ct-suelta td:first-child { padding-left: 16px; }
-        .ct-suelta th:last-child, .ct-suelta td:last-child { padding-right: 16px; }
+        .ct-suelta th:first-child, .ct-suelta td:first-child { padding-left: 12px; }
+        .ct-suelta th:last-child, .ct-suelta td:last-child { padding-right: 12px; }
+        /* En celular se aprieta todavía más y los encabezados largos pasan a
+           dos renglones en lugar de estirar la columna a lo ancho. */
+        @media (max-width: 640px) {
+          .ct-tablewrap tbody td { padding: 9px 6px; font-size: 12.5px; }
+          .ct-tablewrap thead th { padding: 7px 6px 8px; letter-spacing: 0.02em; white-space: normal; line-height: 1.25; }
+          .ct-suelta th:first-child, .ct-suelta td:first-child { padding-left: 10px; }
+          .ct-suelta th:last-child, .ct-suelta td:last-child { padding-right: 10px; }
+          /* Las tablas piden un ancho mínimo para que no se aplasten las
+             columnas; en pantalla chica manda la pantalla. */
+          .ct-tablewrap table { min-width: 0 !important; }
+        }
         /* La primera columna no se pierde al desplazar de costado */
         .ct-tablewrap td:first-child, .ct-tablewrap th:first-child { position: relative; }
         /* ===== Estilo de tablas: más aire =====
@@ -2555,19 +2650,20 @@ function Wrapper({ children, mobile, tema = "oscuro" }) {
         .ct-tablewrap table { border-collapse: separate; border-spacing: 0; }
         .ct-tablewrap thead th {
           border-bottom: 1px solid var(--line);
-          padding: 9px 13px 10px;
+          padding: 8px 9px 9px;
           font-size: 10px;
           font-weight: 700;
-          letter-spacing: 0.1em;
+          letter-spacing: 0.06em;
           color: var(--muted);
           /* Queda a la vista al desplazar; el fondo tiene que ser sólido
              o las filas se transparentan por debajo. */
           position: sticky; top: 0; z-index: 2; background: var(--surface);
         }
         .ct-tablewrap tbody td {
-          /* Más alto de fila: con datos densos el ojo necesita el aire para
-             seguir el renglón sin perderse de columna. */
-          padding: 13px;
+          /* Columnas juntas: con el relleno anterior (13px por lado) una tabla
+             de seis columnas no entraba en un celular y había que arrastrarla
+             de costado para leer la última. */
+          padding: 10px 9px;
           border-bottom: 1px solid color-mix(in srgb, var(--line) 45%, transparent);
           vertical-align: middle;
         }
@@ -2594,7 +2690,7 @@ function Wrapper({ children, mobile, tema = "oscuro" }) {
         /* ===== Productos: cuatro columnas y aire =====
            Con pocas columnas no hacen falta tarjetas ni bordes: alcanza con
            espacio y una divisoria fina. */
-        .ct-prods tbody td { padding: 12px 11px; }
+        .ct-prods tbody td { padding: 9px 8px; }
         .ct-prods tbody tr:hover td { background: var(--hover); }
         /* ===== Movimiento general de la interfaz ===== */
         /* Todo lo clicable responde al toque: sin esto la app se siente muerta */
@@ -7115,7 +7211,7 @@ function InventarioStock({ data, persist }) {
             { className: "ct-tablewrap ct-suelta" },
             React.createElement(
               "table",
-              { style: { minWidth: 800 } },
+              { style: { minWidth: 580 } },
               React.createElement(
                 "thead",
                 null,
@@ -9967,7 +10063,7 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
             { className: "ct-tablewrap ct-suelta ct-prods" },
             React.createElement(
               "table",
-              { style: { minWidth: 880 } },
+              { style: { minWidth: 600 } },
               React.createElement(
                 "thead",
                 null,
@@ -11438,11 +11534,22 @@ function nowDatetimeLocal() {
   const pad = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+// Muestra una fecha en DD/MM/AAAA, y agrega la hora sólo si el dato la trae.
+// Las fechas de la app se guardan como "2026-09-15" (sin hora). Pasarlas por
+// new Date() las lee como medianoche de Greenwich y, en Argentina (UTC-3),
+// toLocaleDateString devolvía el DÍA ANTERIOR: una venta del 15 figuraba el
+// 14. Por eso el día se arma partiendo el texto, sin pasar por Date.
 function fechaHoraLabel(dtLocal) {
   if (!dtLocal) return "";
-  const d = new Date(dtLocal);
-  if (isNaN(d.getTime())) return dtLocal;
-  return d.toLocaleDateString("es-AR") + ", " + d.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
+  const texto = String(dtLocal);
+  const [a, m, d] = texto.slice(0, 10).split("-");
+  if (!a || !m || !d) return texto;
+  const dia = d + "/" + m + "/" + a;
+  // Sin parte horaria (largo 10) se muestra sólo el día
+  if (texto.length <= 10) return dia;
+  const reloj = new Date(texto);
+  if (isNaN(reloj.getTime())) return dia;
+  return dia + ", " + reloj.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
 }
 function PosButton({ children, onClick, variant = "primary", disabled, style, className, title }) {
   const variants = {
@@ -15497,7 +15604,7 @@ function Compras({ data, persist, senalCompra }) {
         { className: "ct-tablewrap ct-suelta", style: { marginTop: 14 } },
         React.createElement(
           "table",
-          { style: { minWidth: 680 } },
+          { style: { minWidth: 540 } },
           React.createElement(
             "thead",
             null,
@@ -16495,7 +16602,7 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       monto: m.monto,
       esMovimiento: true
     }))
-  ].sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+  ].sort((a, b) => claveCronologica(b).localeCompare(claveCronologica(a)));
 
   // El saldo que quedaba después de cada movimiento, contando desde el más viejo
   const enOrden = [...filas].reverse();
@@ -16556,21 +16663,32 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
     avisar("Venta eliminada · stock devuelto", { deshacer: () => persist(anterior) });
   };
 
-  const botonTipo = (id, label) => React.createElement("button", {
-    key: id,
-    // Pago: vuelve a proponer el saldo completo. Fiado: se vacía, porque el
-    // monto de lo que se lleva no tiene nada que ver con lo que debe.
-    onClick: () => {
-      setMovError("");
-      setMovForm({ ...movForm, tipo: id, monto: id === "pago" && saldo > 0 ? String(saldo) : "" });
+  const botonTipo = (id, label, Icono) => {
+    const activo = movForm.tipo === id;
+    // Verde para lo que entra, rojo para lo que sale: el color solo ya dice
+    // cuál está elegido, sin tener que leer.
+    const color = id === "pago" ? "var(--sage)" : "var(--rose)";
+    return React.createElement("button", {
+      key: id,
+      // Pago: vuelve a proponer el saldo completo. Fiado: se vacía, porque el
+      // monto de lo que se lleva no tiene nada que ver con lo que debe.
+      onClick: () => {
+        setMovError("");
+        setMovForm({ ...movForm, tipo: id, monto: id === "pago" && saldo > 0 ? String(saldo) : "" });
+      },
+      style: {
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+        padding: "13px 10px", borderRadius: 12, cursor: "pointer",
+        fontSize: 13.5, fontWeight: 650, fontFamily: "'Inter', sans-serif",
+        border: "1px solid " + (activo ? color : "var(--line)"),
+        background: activo ? "color-mix(in srgb, " + (id === "pago" ? "var(--sage)" : "var(--rose)") + " 15%, transparent)" : "var(--surface)",
+        color: activo ? "var(--ink)" : "var(--muted)",
+        transition: "background-color .14s ease, border-color .14s ease"
+      }
     },
-    style: {
-      flex: 1, padding: "10px 8px", borderRadius: 9, cursor: "pointer", fontSize: 13, fontWeight: 600, fontFamily: "'Inter', sans-serif",
-      border: "1px solid " + (movForm.tipo === id ? "var(--denim)" : "var(--line)"),
-      background: movForm.tipo === id ? "var(--denim)" : "var(--surface-2)",
-      color: movForm.tipo === id ? "var(--on-accent)" : "var(--ink)"
-    }
-  }, label);
+      Icono && React.createElement(Icono, { size: 16, color: activo ? color : "var(--muted)" }),
+      label);
+  };
 
   return React.createElement(
     ModalOverlay,
@@ -16637,48 +16755,121 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
     // El formulario aparece solo cuando se lo pide
     registrando && React.createElement(
       "div",
-      { style: { border: "none", borderRadius: 12, padding: "16px 18px", marginBottom: 18 } },
-      React.createElement("div", { style: { display: "flex", gap: 9, marginBottom: 13 } },
-        botonTipo("pago", "Pago recibido"), botonTipo("cargo", "Nuevo fiado")),
+      {
+        style: {
+          borderRadius: 16, padding: "18px 18px 16px", marginBottom: 18,
+          background: "var(--surface-2)",
+          border: "1px solid " + (movForm.tipo === "pago" ? "color-mix(in srgb, var(--sage) 40%, transparent)" : "color-mix(in srgb, var(--rose) 35%, transparent)")
+        }
+      },
+      // Dos pestañas grandes y con color propio: en el mostrador se toca sin
+      // mirar y equivocar pago por fiado deja el saldo al revés.
+      React.createElement("div", {
+        style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }
+      }, botonTipo("pago", "Pago recibido", ArrowDownCircle), botonTipo("cargo", "Nuevo fiado", ArrowUpCircle)),
+
+      // El monto es lo único que importa: va grande, solo, y con el teclado
+      // numérico del teléfono.
       React.createElement(
         "div",
-        { style: { display: "grid", gridTemplateColumns: "150px minmax(0, 1fr) auto", gap: 10, alignItems: "end" } },
-        React.createElement("div", { style: { minWidth: 0 } },
-          React.createElement(
-            "div",
-            { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 } },
-            React.createElement("span", { style: { fontSize: 12.5, color: "var(--muted)" } }, "Monto"),
-            // Si cobró una parte y quiere volver al total, un toque lo repone:
-            // no hay que acordarse del número ni volver a tipearlo.
-            movForm.tipo === "pago" && saldo > 0 && Number(movForm.monto) !== saldo && React.createElement("button", {
-              onClick: () => { setMovForm({ ...movForm, monto: String(saldo) }); setMovError(""); },
-              title: "Usar el saldo completo",
-              style: { background: "none", border: "none", cursor: "pointer", color: "var(--denim-light)", fontSize: 11.5, fontWeight: 650, fontFamily: "'Inter', sans-serif", padding: 0 }
-            }, "Todo el saldo")
-          ),
+        { style: { marginBottom: 14 } },
+        React.createElement(
+          "div",
+          { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 7 } },
+          React.createElement("span", { style: { fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", color: "var(--muted)" } },
+            movForm.tipo === "pago" ? "CUÁNTO PAGÓ" : "CUÁNTO SE LLEVA"),
+          // Si cobró una parte y quiere volver al total, un toque lo repone:
+          // no hay que acordarse del número ni volver a tipearlo.
+          movForm.tipo === "pago" && saldo > 0 && Number(movForm.monto) !== saldo && React.createElement("button", {
+            onClick: () => { setMovForm({ ...movForm, monto: String(saldo) }); setMovError(""); },
+            style: {
+              background: "color-mix(in srgb, var(--denim) 16%, transparent)", border: "none",
+              borderRadius: 999, padding: "4px 11px", cursor: "pointer",
+              color: "var(--denim-light)", fontSize: 11.5, fontWeight: 650, fontFamily: "'Inter', sans-serif"
+            }
+          }, "Todo: " + money(saldo))
+        ),
+        React.createElement(
+          "div",
+          { style: { position: "relative" } },
+          React.createElement("span", {
+            style: {
+              position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)",
+              fontSize: 20, fontWeight: 700, color: "var(--muted)", pointerEvents: "none"
+            }
+          }, "$"),
           React.createElement("input", {
-            autoFocus: true, type: "number", style: { ...inputStyle, width: "100%" }, value: movForm.monto,
+            autoFocus: true, type: "number", inputMode: "decimal",
+            value: movForm.monto,
             onChange: (e) => { setMovForm({ ...movForm, monto: e.target.value }); setMovError(""); },
             onFocus: (e) => e.target.select(),
-            placeholder: "0"
-          })),
-        React.createElement("div", { style: { minWidth: 0 } },
-          React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginBottom: 6 } },
-            movForm.tipo === "pago" ? "Método" : "Concepto"),
-          movForm.tipo === "pago"
-            ? React.createElement("select", {
-                style: { ...inputStyle, width: "100%" }, value: movForm.metodo,
-                onChange: (e) => setMovForm({ ...movForm, metodo: e.target.value })
-              }, ["Efectivo", "Transferencia", "Débito", "Crédito"].map((m) =>
-                React.createElement("option", { key: m, value: m }, m)))
-            : React.createElement("input", {
-                style: { ...inputStyle, width: "100%" }, value: movForm.concepto,
-                onChange: (e) => setMovForm({ ...movForm, concepto: e.target.value }),
-                placeholder: "Mercadería que se lleva"
-              })),
-        React.createElement(Button, { onClick: registrar, style: { padding: "12px 20px" } }, "Guardar")
+            placeholder: "0",
+            style: {
+              width: "100%", padding: "14px 14px 14px 34px", borderRadius: 12,
+              border: "1px solid var(--line)", background: "var(--surface)",
+              color: "var(--ink)", fontSize: 24, fontWeight: 700,
+              fontFamily: "'IBM Plex Mono', monospace", outline: "none"
+            }
+          })
+        ),
+        // Cuánto queda debiendo después de este pago, en vivo
+        movForm.tipo === "pago" && Number(movForm.monto) > 0 && React.createElement("div", {
+          style: { fontSize: 12.5, color: "var(--muted)", marginTop: 8 }
+        },
+          Number(movForm.monto) >= saldo
+            ? React.createElement("span", { style: { color: "var(--sage)", fontWeight: 650 } }, "Queda sin deuda")
+            : ["Le quedan debiendo ", React.createElement("strong", { key: "m", style: { color: "var(--ink)" } }, money(saldo - Number(movForm.monto)))])
       ),
-      movError && React.createElement("p", { style: { color: "var(--rose)", fontSize: 12.5, marginTop: 10 } }, movError)
+
+      // Método de pago como fila de botones: el desplegable obligaba a dos
+      // toques y a esperar el menú del sistema.
+      movForm.tipo === "pago"
+        ? React.createElement(
+            "div",
+            { style: { marginBottom: 16 } },
+            React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", color: "var(--muted)", marginBottom: 7 } }, "CÓMO PAGÓ"),
+            React.createElement("div", { style: { display: "flex", gap: 7, flexWrap: "wrap" } },
+              ["Efectivo", "Transferencia", "Débito", "Crédito"].map((m) => React.createElement("button", {
+                key: m,
+                onClick: () => setMovForm({ ...movForm, metodo: m }),
+                style: {
+                  flex: "1 1 auto", minWidth: 88, padding: "10px 12px", borderRadius: 10, cursor: "pointer",
+                  fontSize: 12.5, fontWeight: 650, fontFamily: "'Inter', sans-serif",
+                  border: "1px solid " + (movForm.metodo === m ? "var(--denim)" : "var(--line)"),
+                  background: movForm.metodo === m ? "color-mix(in srgb, var(--denim) 16%, transparent)" : "var(--surface)",
+                  color: movForm.metodo === m ? "var(--denim-light)" : "var(--muted)"
+                }
+              }, m)))
+          )
+        : React.createElement(
+            "div",
+            { style: { marginBottom: 16 } },
+            React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", color: "var(--muted)", marginBottom: 7 } }, "QUÉ SE LLEVA"),
+            React.createElement("input", {
+              style: { ...inputStyle, width: "100%" }, value: movForm.concepto,
+              onChange: (e) => setMovForm({ ...movForm, concepto: e.target.value }),
+              placeholder: "Mercadería que se lleva"
+            })
+          ),
+
+      movError && React.createElement("p", {
+        style: {
+          color: "var(--rose)", fontSize: 12.5, marginBottom: 12, padding: "9px 12px",
+          borderRadius: 9, background: "color-mix(in srgb, var(--rose) 12%, transparent)"
+        }
+      }, movError),
+
+      // Botón de ancho completo: es la acción de la tarjeta y con el pulgar
+      // se llega sin buscarlo en un rincón.
+      React.createElement(Button, {
+        onClick: registrar,
+        style: {
+          width: "100%", padding: "14px 20px", fontSize: 14.5, borderRadius: 12,
+          justifyContent: "center"
+        }
+      }, movForm.tipo === "pago"
+        ? (Number(movForm.monto) > 0 ? "Registrar pago de " + money(Number(movForm.monto)) : "Registrar pago")
+        : (Number(movForm.monto) > 0 ? "Sumar fiado de " + money(Number(movForm.monto)) : "Sumar fiado"))
     ),
 
     // La cuenta, movimiento por movimiento
@@ -16689,7 +16880,7 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
           { className: "ct-tablewrap" },
           React.createElement(
             "table",
-            { style: { minWidth: 620 } },
+            { style: { minWidth: 520 } },
             React.createElement("thead", null, React.createElement("tr", null,
               React.createElement("th", null, "Tipo"),
               React.createElement("th", null, "Fecha"),
@@ -16872,17 +17063,15 @@ function Clientes({ data, persist, senalNuevoCliente, senalImportarClientes, sen
             { className: "ct-tablewrap ct-suelta" },
             React.createElement(
               "table",
-              { style: { minWidth: 680 } },
+              { style: { minWidth: 540 } },
               React.createElement("thead", null, React.createElement(
                 "tr",
                 null,
-                React.createElement(Th, { campo: "nombre", style: { minWidth: 200 } }, "Cliente"),
-                React.createElement("th", { style: { minWidth: 190 } }, "Contacto"),
-                React.createElement(Th, { campo: "compras", style: { textAlign: "right" } }, "Compras"),
-                React.createElement(Th, { campo: "deuda", style: { textAlign: "right" } }, "Deuda Total"),
-                React.createElement("th", null, "Última Compra"),
-                React.createElement("th", null, "Registro"),
-                React.createElement("th", { style: { textAlign: "right" } }, "Acciones")
+                React.createElement(Th, { campo: "nombre", style: { minWidth: 150 } }, "Cliente"),
+                React.createElement("th", { style: { minWidth: 130 } }, "Contacto"),
+                React.createElement(Th, { campo: "deuda", style: { textAlign: "right" } }, "Deuda"),
+                React.createElement("th", null, "Últ. compra"),
+                React.createElement("th", { style: { textAlign: "right", width: 44 } }, "")
               )),
               React.createElement("tbody", null, enPantallaCli.map((c) => React.createElement(
                 "tr",
@@ -16915,10 +17104,8 @@ function Clientes({ data, persist, senalNuevoCliente, senalImportarClientes, sen
                       )
                     : React.createElement("span", { style: { color: "var(--muted)" } }, "Sin teléfono")
                 ),
-                React.createElement("td", { style: { textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 } }, c.compras),
                 React.createElement("td", { style: { textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, fontSize: 14, color: c.deuda > 0 ? "var(--rose)" : "var(--muted)" } }, c.deuda > 0 ? money(c.deuda) : "\u2014"),
                 React.createElement("td", { style: { color: "var(--muted)", whiteSpace: "nowrap" } }, fechaRelativa(c.ultima)),
-                React.createElement("td", { style: { color: "var(--muted)", whiteSpace: "nowrap" } }, c.fechaRegistro ? fechaLarga(c.fechaRegistro) : "—"),
                 React.createElement(
                   "td",
                   { style: { textAlign: "right", position: "relative" } },
@@ -17613,7 +17800,7 @@ function HistorialCajaModal({ data, caja, cierres, onVolver, onClose }) {
               { style: { maxHeight: "50vh", overflowY: "auto", overflowX: "auto", border: "none", borderRadius: 10 } },
               React.createElement(
                 "table",
-                { style: { minWidth: 640 } },
+                { style: { minWidth: 520 } },
                 React.createElement("thead", null, React.createElement(
                   "tr",
                   null,
@@ -20450,19 +20637,36 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual, continuo }) {
   const onLeerRef = React.useRef(onLeer);
   useEffect(() => { onLeerRef.current = onLeer; });
 
-  // El mismo código no vuelve a entrar hasta que pase este rato: la cámara
-  // manda muchos cuadros por segundo y, sin esto, un solo código cargaría
-  // veinte unidades de golpe.
-  const ESPERA_REPETIDO = 1500;
-  const cooldownRef = React.useRef({});
+  // Espera global: después de cada lectura no entra NINGUNA otra hasta que
+  // pasen los segundos de ESPERA_ESCANER, ni siquiera un código distinto.
+  // La cámara manda muchos cuadros por segundo y con la espera por código
+  // solamente, apoyar el teléfono sobre una pila de etiquetas cargaba varias
+  // prendas de golpe sin que nadie lo viera.
+  const cooldownRef = React.useRef(0);
   const ultimoRef = React.useRef("");
+  // Cuántos segundos faltan para poder leer de nuevo, para mostrarlo en
+  // pantalla: sin el número el operador cree que el escáner se colgó.
+  const [esperando, setEsperando] = useState(0);
+  const tickRef = React.useRef(null);
 
-  // ¿Se toma esta lectura o es la misma de recién?
-  const aceptar = (valor) => {
+  // Al cerrar el modal se corta la cuenta regresiva: si no, sigue corriendo
+  // en un componente que ya no existe.
+  useEffect(() => () => { if (tickRef.current) clearInterval(tickRef.current); }, []);
+
+  // ¿Se toma esta lectura o todavía está en la espera?
+  const aceptar = () => {
     const ahora = Date.now();
-    const previo = cooldownRef.current[valor] || 0;
-    if (ahora - previo < ESPERA_REPETIDO) return false;
-    cooldownRef.current[valor] = ahora;
+    if (ahora - cooldownRef.current < ESPERA_ESCANER) return false;
+    cooldownRef.current = ahora;
+    // Cuenta regresiva visible. Un solo intervalo: se limpia el anterior
+    // antes de abrir otro para no acumularlos.
+    if (tickRef.current) clearInterval(tickRef.current);
+    setEsperando(Math.ceil(ESPERA_ESCANER / 1000));
+    tickRef.current = setInterval(() => {
+      const resta = ESPERA_ESCANER - (Date.now() - cooldownRef.current);
+      if (resta <= 0) { clearInterval(tickRef.current); tickRef.current = null; setEsperando(0); }
+      else setEsperando(Math.ceil(resta / 1000));
+    }, 250);
     return true;
   };
 
@@ -20610,10 +20814,15 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual, continuo }) {
               // Continuo: no se apaga nada, se toma el código y se sigue
               // mirando. Cerrar acá era lo que sacaba la cámara a cada lectura.
               if (continuo) {
-                if (aceptar(valor)) registrarContinuo(valor);
+                if (aceptar()) registrarContinuo(valor);
                 return;
               }
               try { alterno.reset(); } catch (e2) {}
+              // Un solo disparo: esta librería avisa varios cuadros seguidos y
+              // alcanzaba a llamar dos veces antes de que el reset hiciera
+              // efecto, cargando el producto por duplicado.
+              if (ultimoRef.current === "__leido__") return;
+              ultimoRef.current = "__leido__";
               detener();
               onLeerRef.current(valor);
             }).catch(() => {});
@@ -20643,7 +20852,7 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual, continuo }) {
               if (valor) {
                 // Continuo: entra y el bucle sigue, la cámara no se toca
                 if (continuo) {
-                  if (aceptar(valor)) registrarContinuo(valor);
+                  if (aceptar()) registrarContinuo(valor);
                 } else if (valor !== ultimoRef.current) {
                   // El valor anterior va en una referencia: el estado quedaba
                   // congelado en el bucle y nunca coincidía.
@@ -20756,6 +20965,22 @@ function EscanerModal({ titulo, onLeer, onClose, sinManual, continuo }) {
             React.createElement("span", { style: { fontWeight: 650 } },
               leidos === 0 ? "Esperando el primer código…" : leidos + (leidos === 1 ? " lectura" : " lecturas")),
             ultimo && React.createElement("span", { style: { color: "var(--muted)", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12 } }, ultimo)
+          ),
+          // Mientras corre la espera se avisa cuánto falta: sin el número
+          // parece que el escáner dejó de andar y se termina sacudiendo el
+          // teléfono al pedo.
+          continuo && esperando > 0 && React.createElement(
+            "div",
+            {
+              style: {
+                display: "flex", alignItems: "center", gap: 9, marginTop: 8,
+                padding: "9px 12px", borderRadius: 9, fontSize: 12.5,
+                background: "color-mix(in srgb, var(--mustard) 14%, transparent)",
+                color: "var(--ink)"
+              }
+            },
+            React.createElement(Clock3, { size: 14, color: "var(--mustard)", style: { flexShrink: 0 } }),
+            React.createElement("span", { style: { flex: 1 } }, "Esperá " + esperando + "s para el próximo código")
           ),
           continuo && avisoLectura && React.createElement(
             "div",
@@ -26604,7 +26829,7 @@ function UsuariosView({ data, persist, senalUsuario, senalInvitaciones, senalRol
             { className: "ct-tablewrap ct-suelta" },
             React.createElement(
               "table",
-              { style: { minWidth: 640 } },
+              { style: { minWidth: 520 } },
               React.createElement("thead", null, React.createElement(
                 "tr",
                 null,
@@ -28698,7 +28923,7 @@ function SinVenderReportes({ data, rango, persist }) {
             { className: "ct-tablewrap ct-suelta" },
             React.createElement(
               "table",
-              { style: { minWidth: 740 } },
+              { style: { minWidth: 560 } },
               React.createElement("thead", null, React.createElement(
                 "tr",
                 null,
@@ -29653,7 +29878,7 @@ function VentasReportes({ data, rango, persist }) {
             { className: "ct-tablewrap ct-suelta" },
             React.createElement(
               "table",
-              { style: { minWidth: 714 } },
+              { style: { minWidth: 560 } },
               React.createElement("thead", null, React.createElement("tr", null,
                 React.createElement("th", { style: { width: 34, paddingRight: 0 } },
                   React.createElement("input", {
@@ -30952,7 +31177,7 @@ function CajaReportes({ data, rango, persist, dataReal }) {
             { className: "ct-tablewrap ct-suelta", style: { marginTop: 10 } },
             React.createElement(
               "table",
-              { style: { minWidth: 680 } },
+              { style: { minWidth: 540 } },
               React.createElement("thead", null, React.createElement(
                 "tr",
                 null,
