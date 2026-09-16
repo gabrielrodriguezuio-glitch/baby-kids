@@ -129,7 +129,73 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.955";
+const VERSION_APP = "9.958";
+// v9.958 (2026-09-15) — BORRAR DESDE LA FICHA, BIEN
+// Los tres botones ya estaban, pero eran un ícono gris chico sin borde y
+// costaba encontrarlos. Ahora tienen recuadro y 34 px de lado, que es lo
+// mínimo para acertarle con el dedo.
+// ARREGLO GRAVE encontrado al revisarlo: borrar una venta devolvía el stock
+// pero NO sacaba la plata de la caja. Una venta en efectivo de $30.000
+// borrada dejaba esos $30.000 contados en el arqueo, y la caja cerraba con un
+// sobrante fantasma que después no se sabía de dónde salía. Ahora:
+//  · vuelve el stock al local donde se hizo, por talle y color
+//  · sale de la caja SÓLO la parte que había entrado en efectivo (un pago
+//    dividido de efectivo $20.000 + transferencia $60.000 saca $20.000)
+//  · si la venta era fiada, baja de la deuda del cliente
+//  · se van también los cargos de cuenta corriente que había creado
+// La corrección se asienta como movimiento en la caja ABIERTA de ahora, con
+// referencia a la venta original: un cierre pasado no se toca nunca.
+// Borrar un pago o un fiado, que antes se hacía de un toque sin avisar, ahora
+// pide confirmación mostrando cómo queda el saldo: "La deuda de Ana pasa de
+// $35.000 a $75.000". Borrar un pago SUBE la deuda y borrar un fiado la BAJA,
+// y es fácil equivocarse de renglón.
+// Las tres acciones siguen siendo sólo del Propietario y todas se pueden
+// deshacer desde el aviso.
+//
+// v9.957 (2026-09-15) — ARREGLO GRAVE: LA DEUDA SE CONTABA DOS VECES
+// Al cobrar una venta a cuenta corriente se guardaban DOS cosas: la venta con
+// método "cuenta_corriente" y, además, un cargo "Venta en cuenta corriente"
+// por el mismo monto. Y el saldo suma las dos: las ventas fiadas MÁS los
+// cargos. Resultado: cada venta fiada contaba doble y el cliente figuraba
+// debiendo el doble de lo real. En la ficha se veía como dos renglones con el
+// mismo importe, que es lo que se notó.
+// Arreglado en cuatro lugares:
+//  1. Al cobrar: el cargo se crea SÓLO si el pago es dividido y una parte va
+//     a cuenta corriente. Si la venta entera es fiada, la venta ya suma por
+//     sí sola y no se crea nada. El cargo nuevo se llama "Parte a cuenta
+//     corriente de una venta", para no confundirlo con los viejos.
+//  2. saldoDeCliente ignora los cargos "Venta en cuenta corriente" que YA
+//     están guardados, así los saldos se corrigen solos sin migrar nada.
+//  3. La ficha del cliente deja de listarlos: la venta ya aparece arriba.
+//  4. El estado de cuenta (el que se imprime y se manda por WhatsApp) saltea
+//     los duplicados pero ahora SÍ muestra los fiados legítimos: antes
+//     excluía todos los cargos, así que un fiado cargado a mano no figuraba.
+// Los movimientos viejos no se borran: quedan en la base por si hay que
+// revisar el historial, simplemente no se cuentan ni se muestran.
+//
+// v9.956 (2026-09-15) — ESCÁNER: LA FOTO SE PREPARA ANTES DE LEERLA
+// Hasta ahora la imagen iba cruda al lector. El lector está entrenado con
+// texto NEGRO sobre fondo BLANCO, y una captura de Mercado Pago, Ualá o
+// Brubank en tema oscuro es justo al revés: ahí se equivocaba o no leía nada.
+// Esa es la causa más probable de los comprobantes que no salían.
+// Ahora, en el propio teléfono y antes de mandar la imagen:
+//   1. se pasa a escala de grises
+//   2. se mide el brillo del grueso de la imagen y, si es una captura oscura,
+//      se INVIERTE — el texto queda negro sobre blanco, como el lector espera
+//   3. se estira el contraste entre los percentiles 2 y 98, así una foto
+//      grisada queda con el texto bien marcado. Si ya venía con buen
+//      contraste no se toca, porque forzarlo ensucia los bordes de las letras
+//   4. se agranda si vino chica (hasta 1500 px de ancho, tope de 3x). Es lo
+//      que más ayuda: con letras de menos de 20 px el lector confunde 8 con B
+//      y 0 con O. Nunca se achica: perder píxeles es perder letras
+// Si con la imagen preparada no sale el número de operación, se reintenta con
+// la original. Los comprobantes impresos y escaneados a veces pierden letras
+// finas con el preparado de más. El segundo intento sólo corre cuando el
+// primero falló, así el caso normal sigue costando una sola pasada.
+// El cálculo de píxeles va aparte (prepararPixeles) para poder probarlo sin
+// un navegador: 8 de 8 casos correctos con capturas oscuras, claras, fotos
+// con poca luz y papel con poco contraste.
+//
 // v9.955 (2026-09-15) — AVISO AL COBRAR + EL CUARTO TICKET
 // AVISO ANTES DE COBRAR
 // Si los comprobantes no cubren lo declarado de transferencia, ahora hay que
@@ -1623,12 +1689,19 @@ const mesCorto = (iso) => {
 
 // Lo que un cliente debe: las ventas fiadas y los cargos, menos los pagos.
 // Vive acá porque lo usan la ficha del cliente y el punto de venta.
+// Un cargo "Venta en cuenta corriente" es el duplicado de una venta que ya
+// se cuenta por sí sola: hasta la v9.957 se creaba uno por cada venta fiada,
+// y el cliente figuraba debiendo el doble. Se dejan de crear, y los que
+// quedaron guardados se ignoran acá. No se borran de la base: el historial
+// queda intacto y se puede revisar.
+const esCargoDuplicado = (m) => m && m.tipo === "cargo" && m.concepto === "Venta en cuenta corriente";
+
 const saldoDeCliente = (data, clienteId) => {
   if (!clienteId) return 0;
   const ventas = (data.ventas || [])
     .filter((v) => v.clienteId === clienteId && !esDevolucion(v) && v.metodoPago === "cuenta_corriente")
     .reduce((a, v) => a + (v.total || 0), 0);
-  const movs = (data.movimientosCC || []).filter((m) => m.clienteId === clienteId);
+  const movs = (data.movimientosCC || []).filter((m) => m.clienteId === clienteId && !esCargoDuplicado(m));
   const cargos = movs.filter((m) => m.tipo === "cargo").reduce((a, m) => a + (m.monto || 0), 0);
   const pagos = movs.filter((m) => m.tipo !== "cargo").reduce((a, m) => a + (m.monto || 0), 0);
   return Math.max(0, ventas + cargos - pagos);
@@ -5960,6 +6033,100 @@ const pdfAImagen = async (archivo) => {
 };
 
 let _lector = null;
+// ===== Preparar la foto antes de leerla =====
+// El lector está entrenado con texto NEGRO sobre fondo BLANCO. Una captura de
+// Mercado Pago, Ualá o Brubank en tema oscuro es justo al revés, y ahí se
+// equivocaba o directamente no leía nada. Además, una foto sacada de lejos o
+// con poca luz llega con las letras chicas y grises.
+// Acá se corrige todo eso en el propio teléfono, antes de mandar la imagen:
+//   1. escala de grises
+//   2. si la captura es oscura, se invierte
+//   3. se estira el contraste para que el texto quede bien negro
+//   4. se agranda si vino chica, que es lo que más ayuda al reconocimiento
+const ANCHO_OCR = 1500;   // ancho al que conviene llevar la imagen
+
+// El cálculo de píxeles, aparte para poder probarlo sin un navegador.
+// Recibe y devuelve los datos crudos del lienzo (RGBA).
+const prepararPixeles = (datos) => {
+  const n = datos.length;
+  // 1. Gris, y de paso el histograma para decidir los dos pasos siguientes
+  const histo = new Uint32Array(256);
+  for (let i = 0; i < n; i += 4) {
+    // Pesos de luminancia: el verde manda en cómo el ojo percibe el brillo
+    const g = (datos[i] * 0.299 + datos[i + 1] * 0.587 + datos[i + 2] * 0.114) | 0;
+    datos[i] = datos[i + 1] = datos[i + 2] = g;
+    histo[g]++;
+  }
+  const total = n / 4;
+
+  // 2. ¿Es una captura de tema oscuro? Se mira el brillo del grueso de la
+  // imagen: si la mayoría de los píxeles son oscuros, el fondo es negro.
+  let acumulado = 0, mediana = 128;
+  for (let v = 0; v < 256; v++) {
+    acumulado += histo[v];
+    if (acumulado >= total / 2) { mediana = v; break; }
+  }
+  const invertir = mediana < 110;
+  if (invertir) for (let i = 0; i < n; i += 4) {
+    datos[i] = datos[i + 1] = datos[i + 2] = 255 - datos[i];
+  }
+
+  // 3. Estirar el contraste entre los percentiles 2 y 98. Se recalcula el
+  // histograma si se invirtió, porque el de arriba ya no sirve.
+  const h2 = new Uint32Array(256);
+  for (let i = 0; i < n; i += 4) h2[datos[i]]++;
+  let bajo = 0, alto = 255, acc = 0;
+  for (let v = 0; v < 256; v++) { acc += h2[v]; if (acc >= total * 0.02) { bajo = v; break; } }
+  acc = 0;
+  for (let v = 255; v >= 0; v--) { acc += h2[v]; if (acc >= total * 0.02) { alto = v; break; } }
+  const rango = Math.max(1, alto - bajo);
+  // Si ya venía con buen contraste no se toca: forzarlo ensucia los bordes
+  if (rango < 230) {
+    for (let i = 0; i < n; i += 4) {
+      let v = ((datos[i] - bajo) * 255 / rango) | 0;
+      v = v < 0 ? 0 : v > 255 ? 255 : v;
+      datos[i] = datos[i + 1] = datos[i + 2] = v;
+    }
+  }
+  return { invertida: invertir, contraste: rango < 230, mediana };
+};
+
+// Deja la imagen lista y devuelve el lienzo para pasárselo al lector
+const prepararParaOCR = async (fuente) => {
+  // createImageBitmap acepta tanto el archivo que eligió la persona como el
+  // lienzo que devuelve pdfAImagen, así que no hace falta convertir nada.
+  let bitmap = null;
+  try {
+    if (typeof createImageBitmap === "function") bitmap = await createImageBitmap(fuente);
+  } catch (e) { bitmap = null; }
+  const ancho0 = bitmap ? bitmap.width : (fuente && fuente.width) || 0;
+  const alto0 = bitmap ? bitmap.height : (fuente && fuente.height) || 0;
+  // Sin poder medirla no hay nada que preparar: va como vino
+  if (!ancho0 || !alto0) return fuente;
+  // Y si no se pudo abrir y tampoco es algo que se pueda dibujar, igual
+  if (!bitmap && typeof fuente.getContext !== "function") return fuente;
+
+  // 4. Agrandar si vino chica. Es lo que más mejora el reconocimiento: con
+  // letras de menos de 20 px el lector confunde 8 con B y 0 con O.
+  // No se achica nunca: perder píxeles es perder letras.
+  const escala = ancho0 < ANCHO_OCR ? Math.min(3, ANCHO_OCR / ancho0) : 1;
+  const ancho = Math.round(ancho0 * escala);
+  const alto = Math.round(alto0 * escala);
+
+  const lienzo = document.createElement("canvas");
+  lienzo.width = ancho; lienzo.height = alto;
+  const ctx = lienzo.getContext("2d", { willReadFrequently: true });
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(bitmap || fuente, 0, 0, ancho, alto);
+  if (bitmap && bitmap.close) bitmap.close();
+
+  const img = ctx.getImageData(0, 0, ancho, alto);
+  prepararPixeles(img.data);
+  ctx.putImageData(img, 0, 0);
+  return lienzo;
+};
+
 const leerImagen = async (archivo, avisarAvance) => {
   if (!_lector) {
     avisarAvance("Preparando el lector\u2026");
@@ -5991,8 +6158,34 @@ const leerImagen = async (archivo, avisarAvance) => {
   const fuente = (/pdf/i.test(archivo.type) || /\.pdf$/i.test(archivo.name))
     ? await pdfAImagen(archivo)
     : archivo;
-  const { data: r } = await _lector.recognize(fuente);
-  return r.text || "";
+
+  // Primer intento: con la imagen preparada. Es la que anda en la mayoría de
+  // los casos, sobre todo con capturas de tema oscuro.
+  let texto = "";
+  try {
+    const listo = await prepararParaOCR(fuente);
+    const { data: r } = await _lector.recognize(listo);
+    texto = r.text || "";
+  } catch (e) {
+    // Si la preparación falla (un formato raro, memoria), se sigue con el
+    // original en vez de dar error: mejor leer peor que no leer.
+    texto = "";
+  }
+
+  // Segundo intento: la imagen tal cual vino. Se hace sólo si el primero no
+  // sacó nada aprovechable, así el caso normal sigue costando una sola
+  // pasada. Hay comprobantes impresos y escaneados donde el preparado de más
+  // borra letras finas.
+  if (!extraerNumeroOp(texto)) {
+    avisarAvance("Reintentando la lectura\u2026");
+    try {
+      const { data: r2 } = await _lector.recognize(fuente);
+      const texto2 = r2.text || "";
+      // Se queda con el que encontró número de operación, o con el más largo
+      if (extraerNumeroOp(texto2) || texto2.length > texto.length) texto = texto2;
+    } catch (e) { /* se queda con lo del primer intento */ }
+  }
+  return texto;
 };
 
 function VisorComprobante({ src, onClose }) {
@@ -14872,10 +15065,24 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     productosActualizados = productosActualizados.map((p) =>
       esCombo(p) ? fijarEnNegocio(p, negocioId, { activo: p.activo !== false, stock: stockCombo(p, productosActualizados, negocioId), variantes: [] }) : p);
     let movimientosCC = data.movimientosCC || [];
+    // Cuenta corriente en esta venta:
+    //   - Si TODA la venta va a cuenta corriente, la venta ya suma al saldo
+    //     por sí sola: saldoDeCliente cuenta las ventas con ese método. Crear
+    //     además un cargo hacía que la misma venta se contara DOS VECES, y el
+    //     cliente figuraba debiendo el doble.
+    //   - Si el pago es dividido y sólo una PARTE va a cuenta corriente, la
+    //     venta se guarda con el método del PRIMER pago (que no es CC), así
+    //     que el saldo no la vería. Ahí SÍ hay que crear el cargo, o el tramo
+    //     fiado se pierde.
     const montoCC = montoPorMetodo("cuenta_corriente");
-    if (montoCC > 0 && clienteId) {
+    const ventaEsTodoCC = metodoPago === "cuenta_corriente";
+    if (montoCC > 0 && !ventaEsTodoCC && clienteId) {
       movimientosCC = [
-        { id: uid(), clienteId, fecha: todayISO(), tipo: "cargo", monto: montoCC, concepto: "Venta en cuenta corriente" },
+        {
+          id: uid(), clienteId, fecha: todayISO(),
+          tipo: "cargo", monto: montoCC,
+          concepto: "Parte a cuenta corriente de una venta"
+        },
         ...movimientosCC
       ];
     }
@@ -16150,6 +16357,7 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
     }
     setAvisoComp(null);
     setError("");
+
     const detallePagos = variosPagos
       ? Object.keys(pagos).filter((k) => Number(pagos[k]) > 0).map((k) => ({ metodo: k, monto: Number(pagos[k]) }))
       : [{ metodo: metodoPago, monto: total }];
@@ -16395,6 +16603,7 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
     }),
 
     error && React.createElement("p", { style: { color: "var(--rose)", fontSize: 13, marginTop: 12, textAlign: "center" } }, error),
+
 
     // Los comprobantes no cubren lo declarado: se pide confirmar viendo los
     // números, en vez de dejar pasar la diferencia en silencio.
@@ -18515,11 +18724,23 @@ const filasEstadoCuenta = (data, cliente) => {
       debe: v.metodoPago === "cuenta_corriente" ? v.total : 0,
       haber: v.metodoPago === "cuenta_corriente" ? 0 : v.total
     })),
-    ...movs.filter((m) => m.tipo !== "cargo").map((m) => ({
-      fecha: m.fecha, hora: "",
-      items: [m.concepto || "Pago recibido"],
-      tipo: "Pago", debe: 0, haber: m.monto
-    }))
+    // Los movimientos de la cuenta. Se saltean los cargos "Venta en cuenta
+    // corriente", que son el duplicado de una venta ya listada arriba; los
+    // demás cargos SÍ van: un fiado cargado a mano, o la parte a cuenta de un
+    // pago dividido, son deuda real y antes no aparecían en el estado.
+    ...movs.filter((m) => !esCargoDuplicado(m)).map((m) => (
+      m.tipo === "cargo"
+        ? {
+            fecha: m.fecha, hora: "",
+            items: [m.concepto || "Fiado"],
+            tipo: "Fiado", debe: m.monto, haber: 0
+          }
+        : {
+            fecha: m.fecha, hora: "",
+            items: [m.concepto || "Pago recibido"],
+            tipo: "Pago", debe: 0, haber: m.monto
+          }
+    ))
   ].sort((a, b) => (a.fecha + a.hora).localeCompare(b.fecha + b.hora));
 };
 
@@ -19262,7 +19483,11 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
   const [movForm, setMovForm] = useState({ tipo: "pago", monto: "", concepto: "", metodo: "Efectivo" });
   const [movError, setMovError] = useState("");
 
-  const movimientos = (data.movimientosCC || []).filter((m) => m.clienteId === cliente.id);
+  // Los cargos "Venta en cuenta corriente" son duplicados de la venta: la
+  // venta ya aparece como "Fiado" en la línea de tiempo, y este movimiento
+  // hacía que apareciera dos veces con el mismo monto. Se ocultan de la vista
+  // sin borrarlos de la base, así el historial queda intacto.
+  const movimientos = (data.movimientosCC || []).filter((m) => m.clienteId === cliente.id && !esCargoDuplicado(m));
   // Solo las ventas en cuenta corriente son deuda. Una venta pagada al contado
   // no deja saldo, aunque sea del mismo cliente.
   const ventasFiadas = data.ventas.filter((v) =>
@@ -19331,20 +19556,52 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       { deshacer: () => persist(anterior) });
   };
 
+  // Eliminar un pago o un fiado cargado por error. Pide confirmación
+  // mostrando cómo queda el saldo: borrar un pago SUBE la deuda y borrar un
+  // fiado la BAJA, y de un toque sin avisar es fácil equivocarse de renglón.
   const borrarMovimiento = (id) => {
+    const m = (data.movimientosCC || []).find((x) => x.id === id);
+    if (!m) return;
+    const esCargo = m.tipo === "cargo";
+    const saldoAhora = saldoDeCliente(data, cliente.id);
+    // Sacar un cargo baja la deuda; sacar un pago la sube
+    const saldoDespues = Math.max(0, saldoAhora + (esCargo ? -(m.monto || 0) : (m.monto || 0)));
+    if (!window.confirm(
+      "¿Eliminar " + (esCargo ? "este fiado" : "este pago") + " de " + money(m.monto) + "?\n\n" +
+      (m.concepto ? "\u201C" + m.concepto + "\u201D\n\n" : "") +
+      "La deuda de " + cliente.nombre + " pasa de " + money(saldoAhora) + " a " + money(saldoDespues) + ".\n\n" +
+      "Se puede deshacer."
+    )) return;
     const anterior = data;
-    persist({ ...data, movimientosCC: (data.movimientosCC || []).filter((m) => m.id !== id) });
-    avisar("Movimiento eliminado", { deshacer: () => persist(anterior) });
+    persist({ ...data, movimientosCC: (data.movimientosCC || []).filter((x) => x.id !== id) });
+    avisar((esCargo ? "Fiado eliminado" : "Pago eliminado") + " \u00B7 deuda " + money(saldoDespues),
+      { deshacer: () => persist(anterior) });
   };
 
-  // Eliminar una venta entera. Sólo el Propietario. Devuelve el stock al local
-  // donde se hizo (por talle y color, no sólo el talle) y borra la venta. Es
-  // una acción delicada, así que pide confirmación y deja deshacer.
+  // Eliminar una venta entera. Devuelve el stock al local donde se hizo (por
+  // talle y color, no sólo el talle), saca de la caja la parte que había
+  // entrado en efectivo y borra la venta. Es delicado: pide confirmación
+  // mostrando qué va a pasar, y deja deshacer.
   const borrarVenta = (venta) => {
+    // Cuánto de esta venta había entrado en efectivo: eso es lo que hay que
+    // sacar del cajón. Sin esto, borrar una venta en efectivo dejaba la plata
+    // contada en el arqueo y la caja cerraba con un sobrante fantasma.
+    const pagosVenta = (venta.pagos && venta.pagos.length)
+      ? venta.pagos
+      : [{ metodo: venta.metodoPago, monto: venta.total }];
+    const enEfectivo = pagosVenta
+      .filter((p) => p.metodo === "efectivo")
+      .reduce((a, p) => a + (Number(p.monto) || 0), 0);
+    const unidades = (venta.items || []).reduce((a, it) => a + (it.cantidad || 0), 0);
+
     if (!window.confirm(
       "¿Eliminar esta venta de " + money(venta.total) + "?\n\n" +
-      "Se va a devolver el stock al local y la venta desaparece del historial y de la cuenta del cliente. Se puede deshacer."
+      (unidades > 0 ? "\u2022 Vuelven " + unidades + (unidades === 1 ? " unidad" : " unidades") + " al stock de este local\n" : "") +
+      (enEfectivo > 0 ? "\u2022 Salen " + money(enEfectivo) + " de la caja\n" : "") +
+      (venta.metodoPago === "cuenta_corriente" ? "\u2022 Baja " + money(venta.total) + " de la deuda del cliente\n" : "") +
+      "\nSe puede deshacer."
     )) return;
+
     const anterior = data;
     const negocioVenta = venta.negocioId || listaNegocios(data)[0].id;
     // Repone lo vendido en cada variante exacta (talle|color)
@@ -19357,8 +19614,40 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       });
       return out;
     });
-    persist({ ...data, productos, ventas: data.ventas.filter((v) => v.id !== venta.id) });
-    avisar("Venta eliminada · stock devuelto", { deshacer: () => persist(anterior) });
+
+    let salida = { ...data, productos, ventas: data.ventas.filter((v) => v.id !== venta.id) };
+
+    // La plata sale del cajón. Se asienta como movimiento en la caja ABIERTA
+    // de ahora, aunque la venta sea de una caja ya cerrada: un cierre pasado
+    // no se toca nunca, así que la corrección se registra en la de hoy con
+    // referencia a la venta original.
+    if (enEfectivo > 0) {
+      const miId = usuarioActualId(data);
+      const caja = cajaDe(data, miId, negocioVenta);
+      const cajaCorregida = {
+        ...caja,
+        movimientos: [
+          {
+            id: uid(), tipo: "retiro", monto: enEfectivo,
+            concepto: "Venta eliminada #" + venta.id.slice(-6) + (caja.abierta ? "" : " (caja cerrada)"),
+            fecha: (/* @__PURE__ */ new Date()).toISOString(),
+            usuario: usuarioActivo(data), fueraDeCaja: !caja.abierta
+          },
+          ...(caja.movimientos || [])
+        ]
+      };
+      salida = guardarCaja(salida, miId, cajaCorregida, negocioVenta);
+    }
+
+    // Los cargos de cuenta corriente que había creado esta venta se van con
+    // ella: si no, la deuda quedaba aunque la venta ya no exista.
+    salida.movimientosCC = (salida.movimientosCC || []).filter((m) =>
+      !(m.ventaId && m.ventaId === venta.id));
+
+    persist(salida);
+    avisar("Venta eliminada" + (enEfectivo > 0 ? " \u00B7 " + money(enEfectivo) + " fuera de caja" : "") +
+           (unidades > 0 ? " \u00B7 stock devuelto" : ""),
+      { deshacer: () => persist(anterior) });
   };
 
   const botonTipo = (id, label, Icono) => {
@@ -19613,21 +19902,26 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
                     style: { textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: saldos[f.id] > 0 ? "var(--ink)" : "var(--muted)" }
                   }, saldos[f.id] > 0 ? money(saldos[f.id]) : "—"),
                   React.createElement("td", { style: { textAlign: "right" } },
-                    // Eliminar pagos y ventas es sólo del Propietario. Los
-                    // empleados ven el historial pero no lo pueden borrar.
+                    // Eliminar pagos, fiados y ventas es sólo del Propietario.
+                    // Los empleados ven el historial pero no lo pueden borrar.
                     !esPropietario(data)
                       ? null
-                      : f.esMovimiento
-                        ? React.createElement("button", {
-                            onClick: () => borrarMovimiento(f.id), title: "Eliminar el movimiento",
-                            style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", display: "inline-flex", padding: 5 }
-                          }, React.createElement(Trash2, { size: 15 }))
-                        : f.venta
-                          ? React.createElement("button", {
-                              onClick: () => borrarVenta(f.venta), title: "Eliminar la venta y devolver el stock",
-                              style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", display: "inline-flex", padding: 5 }
-                            }, React.createElement(Trash2, { size: 15 }))
-                          : null)
+                      : React.createElement("button", {
+                          onClick: () => f.esMovimiento ? borrarMovimiento(f.id) : (f.venta ? borrarVenta(f.venta) : null),
+                          title: f.esMovimiento
+                            ? (f.clase === "venta" ? "Eliminar este fiado" : "Eliminar este pago")
+                            : "Eliminar la venta y devolver el stock",
+                          style: {
+                            background: "none",
+                            // Un borde tenue: el ícono suelto sobre el fondo no
+                            // se leía como botón y no se encontraba.
+                            border: "1px solid color-mix(in srgb, var(--line) 80%, transparent)",
+                            borderRadius: 8, cursor: "pointer", color: "var(--muted)",
+                            display: "inline-flex", alignItems: "center", justifyContent: "center",
+                            // 34 px: lo mínimo para acertarle con el dedo
+                            width: 34, height: 34
+                          }
+                        }, React.createElement(Trash2, { size: 15 })))
                 );
               })
             )
