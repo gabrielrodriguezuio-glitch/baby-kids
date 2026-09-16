@@ -129,7 +129,36 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.940";
+const VERSION_APP = "9.950";
+// v9.950 (2026-09-15) — COMPROBANTES POR MÉTODO DE PAGO
+// Ya se podían cargar varios comprobantes, pero todos quedaban en una bolsa
+// común: con tres transferencias de bancos distintos no se sabía cuál cubría
+// qué, ni si lo cargado cerraba con lo cobrado.
+// - Cada comprobante lleva ahora su MÉTODO, su MONTO y el BANCO o billetera.
+//   El número de operación y la foto ya estaban.
+// - El método se propone solo: toma el primer medio que todavía no esté
+//   cubierto, así cargando uno atrás de otro casi nunca hay que tocarlo.
+// - Resumen en vivo por método: cuánto se esperaba, cuánto se cargó y si
+//   faltan o sobran. Sólo aparece con pago dividido, que es cuando se puede
+//   desbalancear.
+// - Funciona en los dos casos: varias transferencias con UN solo medio de
+//   pago, y varios medios combinados (efectivo + transferencias + tarjeta).
+// - El ticket imprime cada comprobante debajo del método que le toca, con
+//   banco y número, para poder reclamar con el papel en la mano.
+// - Los comprobantes viejos siguen andando: los campos que no tienen quedan
+//   vacíos y se completan al cargar uno nuevo.
+//
+// REQUIERE SQL: la app no baja las fotos al arrancar, usa la columna
+// calculada `comprobantes_livianos`. Esa columna hoy devuelve sólo el número
+// y si hay foto, así que los campos nuevos se guardarían pero no volverían de
+// la nube. El archivo comprobantes-v9950.sql la reemplaza y agrega el índice
+// para avisar de números repetidos sin recorrer la tabla entera.
+// Hasta que se corra, la app funciona igual: los campos nuevos se ven en el
+// dispositivo donde se cargaron y se normalizan al leer.
+//
+// Rendimiento: ninguna consulta nueva, ninguna suscripción nueva. La foto se
+// sigue pidiendo sólo al abrirla.
+//
 // v9.940 (2026-09-15) — ETAPA A: puntos 1 y 3
 // PUNTO 1 · Tarjetas sin talles, en los dos catálogos
 // - Catálogo público: la tarjeta muestra imagen, nombre, los dos precios y un
@@ -5818,7 +5847,17 @@ const deLaNube = {
       usuarioNombre: v.usuario_nombre || "",
       // Si llegó la versión liviana se usa esa: cada comprobante trae su
       // número y tieneFoto, y la imagen se pide sola cuando se abre.
-      comprobantes: Array.isArray(v.comprobantes_livianos) ? v.comprobantes_livianos : (v.comprobantes || []),
+      // Los campos de método y monto pueden no venir todavía, si la columna
+      // calculada de la base es la vieja: se normalizan acá para que la app
+      // funcione igual antes y después de correr el SQL.
+      comprobantes: (Array.isArray(v.comprobantes_livianos) ? v.comprobantes_livianos : (v.comprobantes || []))
+        .map((c) => ({
+          ...c,
+          metodo: c.metodo || "",
+          monto: c.monto == null ? "" : c.monto,
+          banco: c.banco || "",
+          nota: c.nota || ""
+        })),
       comprobante: v.comprobante || "",
       numeroOperacion: v.numero_operacion || "",
       // La app distingue venta de devolución por este campo. Sin él, las
@@ -8095,7 +8134,13 @@ async function traerDeLaNube(quienEntro) {
 // ===== Comprobantes de una venta =====
 // Los clientes de reparto suelen pagar con varias transferencias, así que se
 // carga una lista: cada comprobante con su imagen y su número de operación.
-function ListaComprobantes({ ventas, lista, onCambiar }) {
+// Lista de comprobantes de un cobro. Acepta varios por venta y, cuando el
+// pago es dividido, cada uno se asigna al método al que corresponde: sin eso,
+// tres transferencias de distintos bancos quedaban todas juntas y al revisar
+// la caja no se sabía cuál cubría qué.
+// `metodos` son los medios de pago en juego; `esperado` dice cuánto se espera
+// por cada uno, para poder avisar si lo cargado no llega o se pasa.
+function ListaComprobantes({ ventas, lista, onCambiar, metodos, esperado }) {
   const [leyendo, setLeyendo] = useState("");
   const [ampliado, setAmpliado] = useState(null);
   const [aviso, setAviso] = useState("");
@@ -8137,15 +8182,37 @@ function ListaComprobantes({ ventas, lista, onCambiar }) {
         try { return await achicarImagen(file, LADO_COMPROBANTE); }
         catch (e) { return ""; }
       })();
-      nuevos.push({ id: uid(), imagen, numero, exacto, nombre: file.name });
+      // Se asigna al primer método que todavía no esté cubierto: con un solo
+      // medio de pago acierta siempre, y con varios deja el más probable.
+      nuevos.push({
+        id: uid(), imagen, numero, exacto, nombre: file.name,
+        metodo: metodoSugerido(), monto: "", banco: "", nota: ""
+      });
     }
     setLeyendo("");
     onCambiar([...(lista || []), ...nuevos]);
   };
 
   const editar = (id, numero) => onCambiar((lista || []).map((c) => c.id === id ? { ...c, numero, exacto: false } : c));
+  // Cambiar cualquier otro campo del comprobante (método, monto, banco, nota)
+  const fijar = (id, campo, valor) => onCambiar((lista || []).map((c) => c.id === id ? { ...c, [campo]: valor } : c));
   const sacar = (id) => onCambiar((lista || []).filter((c) => c.id !== id));
   const total = (lista || []).length;
+
+  const medios = (metodos && metodos.length) ? metodos : [];
+  const variosMedios = medios.length > 1;
+  // Cuánto se cargó ya por cada método, para el resumen de abajo
+  const cargadoPor = (id) => (lista || [])
+    .filter((c) => (c.metodo || (medios[0] || {}).id) === id)
+    .reduce((a, c) => a + (Number(c.monto) || 0), 0);
+  // El método que conviene proponer para el próximo comprobante: el primero
+  // que todavía no esté cubierto del todo.
+  const metodoSugerido = () => {
+    if (!medios.length) return "";
+    if (!esperado) return medios[0].id;
+    const libre = medios.find((m) => cargadoPor(m.id) < (Number(esperado[m.id]) || 0) - 0.5);
+    return (libre || medios[0]).id;
+  };
 
   return React.createElement(
     "div",
@@ -8164,11 +8231,14 @@ function ListaComprobantes({ ventas, lista, onCambiar }) {
         {
           key: c.id,
           style: {
-            display: "flex", alignItems: "center", gap: 11, marginBottom: 9,
+            marginBottom: 9,
             background: "var(--surface-2)", borderRadius: 12, padding: "10px 12px",
             border: "1.5px solid " + (repe ? "var(--rose)" : "transparent")
           }
         },
+        React.createElement(
+        "div",
+        { style: { display: "flex", alignItems: "center", gap: 11 } },
         c.imagen
           ? React.createElement("img", { loading: "lazy", decoding: "async",
               src: c.imagen, alt: "",
@@ -8204,8 +8274,70 @@ function ListaComprobantes({ ventas, lista, onCambiar }) {
           title: "Sacar",
           style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", padding: 6, display: "flex", flexShrink: 0 }
         }, React.createElement(Trash2, { size: 15 }))
-      );
+      ),
+
+      // Segunda fila: a qué método corresponde, por cuánto y de qué banco.
+      // Va debajo y no al costado porque en un celular los cuatro campos en
+      // línea quedan de 40 px y no se puede tipear.
+      React.createElement(
+        "div",
+        { style: { display: "flex", gap: 7, marginTop: 9, flexWrap: "wrap", alignItems: "center" } },
+        variosMedios && React.createElement("select", {
+          value: c.metodo || (medios[0] || {}).id || "",
+          onChange: (e) => fijar(c.id, "metodo", e.target.value),
+          style: {
+            background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8,
+            color: "var(--ink)", fontSize: 12.5, padding: "7px 9px", fontFamily: "'Inter', sans-serif",
+            flex: "1 1 120px", minWidth: 0
+          }
+        }, medios.map((m) => React.createElement("option", { key: m.id, value: m.id }, m.label))),
+        React.createElement("input", {
+          type: "number", inputMode: "decimal",
+          value: c.monto == null ? "" : c.monto,
+          onChange: (e) => fijar(c.id, "monto", e.target.value),
+          placeholder: "Monto",
+          style: {
+            background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8,
+            color: "var(--ink)", fontSize: 12.5, padding: "7px 9px",
+            fontFamily: "'IBM Plex Mono', monospace", flex: "1 1 92px", minWidth: 0, outline: "none"
+          }
+        }),
+        React.createElement("input", {
+          value: c.banco || "",
+          onChange: (e) => fijar(c.id, "banco", e.target.value),
+          placeholder: "Banco o billetera",
+          style: {
+            background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8,
+            color: "var(--ink)", fontSize: 12.5, padding: "7px 9px",
+            fontFamily: "'Inter', sans-serif", flex: "1 1 130px", minWidth: 0, outline: "none"
+          }
+        })
+      )
+    );
     }),
+
+    // Resumen por método: cuánto se esperaba y cuánto se cargó. Sólo cuando
+    // hay más de un medio, que es cuando se puede desbalancear.
+    variosMedios && esperado && total > 0 && React.createElement(
+      "div",
+      { style: { background: "var(--surface-2)", borderRadius: 10, padding: "10px 12px", marginBottom: 10 } },
+      medios.map((m) => {
+        const espera = Number(esperado[m.id]) || 0;
+        const cargado = cargadoPor(m.id);
+        const dif = espera - cargado;
+        const ok = Math.abs(dif) < 0.5;
+        return React.createElement(
+          "div",
+          { key: m.id, style: { display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12.5, padding: "3px 0" } },
+          React.createElement("span", { style: { color: "var(--muted)" } }, m.label),
+          React.createElement("span", {
+            style: { fontFamily: "'IBM Plex Mono', monospace", color: ok ? "var(--sage)" : (dif > 0 ? "var(--mustard)" : "var(--rose)") }
+          }, ok
+            ? money(cargado)
+            : money(cargado) + " de " + money(espera) + (dif > 0 ? " · faltan " + money(dif) : " · sobran " + money(-dif)))
+        );
+      })
+    ),
 
     React.createElement("label", {
       style: {
@@ -15853,12 +15985,24 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
       )
     ),
 
-    // Con transferencia conviene guardar la captura del comprobante
-    !variosPagos && (metodoPago === "transferencia" || metodoPago === "qr") &&
-      // Sólo cuando hay transferencia: es el único medio con número de operación
-      // Los comprobantes van sólo con transferencia: es el único medio que
-      // trae número de operación para chequear repetidos.
-      hayTransferencia && React.createElement(ListaComprobantes, { ventas, lista: comprobantes, onCambiar: setComprobantes }),
+    // Los comprobantes se muestran siempre que haya al menos una transferencia
+    // o QR, tanto en pago simple como en varios pagos combinados.
+    // Antes se ocultaban cuando "variosPagos" estaba activo, así que si el
+    // cliente pagaba efectivo + transferencia no había forma de cargar el
+    // comprobante.
+    hayTransferencia && React.createElement(ListaComprobantes, {
+      ventas,
+      lista: comprobantes,
+      onCambiar: setComprobantes,
+      // En pago dividido mostramos contra qué método se carga cada uno
+      metodos: variosPagos
+        ? Object.keys(pagos).filter((k) => Number(pagos[k]) > 0).map((k) => ({ id: k, label: METODO_LABELS[k] || k }))
+        : [{ id: metodoPago, label: METODO_LABELS[metodoPago] || metodoPago }],
+      // Cuánto se espera por cada método, para avisar si lo cargado no cierra
+      esperado: variosPagos
+        ? Object.keys(pagos).reduce((a, k) => { const n = Number(pagos[k]) || 0; if (n > 0) a[k] = n; return a; }, {})
+        : { [metodoPago]: total }
+    }),
 
     error && React.createElement("p", { style: { color: "var(--rose)", fontSize: 13, marginTop: 12, textAlign: "center" } }, error),
 
@@ -16390,9 +16534,22 @@ function construirTicketTexto(data, venta) {
   if (venta.pagos && venta.pagos.length > 1) {
     venta.pagos.forEach((x) => {
       out.push(linea("  " + (metodoPagoLabel[x.metodo] || x.metodo), money(x.monto)));
+      // Los comprobantes de ese método, debajo del renglón que les toca: con
+      // tres transferencias de bancos distintos, el ticket tiene que decir
+      // cuál es cuál o no sirve para reclamar.
+      (venta.comprobantes || [])
+        .filter((c) => (c.metodo || venta.pagos[0].metodo) === x.metodo && (c.numero || c.banco))
+        .forEach((c) => {
+          const det = [c.banco, c.numero].filter(Boolean).join(" ");
+          if (det) out.push("    " + det.slice(0, 30));
+        });
     });
   } else {
     out.push(linea("  " + (metodoPagoLabel[venta.metodoPago] || venta.metodoPago || "-"), money(venta.total)));
+    (venta.comprobantes || []).filter((c) => c.numero || c.banco).forEach((c) => {
+      const det = [c.banco, c.numero].filter(Boolean).join(" ");
+      if (det) out.push("    " + det.slice(0, 30));
+    });
   }
   if (venta.metodoPago === "efectivo" && venta.montoEntregado != null) {
     out.push(linea("  Pago con", money(venta.montoEntregado)));
