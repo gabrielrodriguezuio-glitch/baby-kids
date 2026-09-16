@@ -129,7 +129,26 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.959";
+const VERSION_APP = "9.960";
+// v9.960 (2026-09-16) — ARREGLO: LAS FOTOS SE LEÍAN GIRADAS
+// La preparación de imagen de la v9.956 rompió la lectura de las FOTOS (las
+// capturas de pantalla no, porque no llevan marca de rotación).
+// createImageBitmap abre la foto como la guardó el sensor e IGNORA la marca
+// de orientación, así que una sacada con el teléfono vertical quedaba girada
+// 90 grados y el lector no podía leer nada. Antes el archivo iba derecho al
+// lector, que lo carga en un <img>, y ahí el navegador endereza la foto solo:
+// por eso andaba antes y dejó de andar.
+// Se abre con imageOrientation "from-image", que aplica la marca. Si algún
+// navegador rechaza la opción, se reintenta sin ella.
+//
+// Y el reintento no servía de red de seguridad: miraba sólo si había
+// aparecido un número de operación, y ese dato tiene un último recurso que
+// agarra la cadena larga que más se le parezca. De un texto ilegible salía
+// "MIH80OQ" y la app daba la lectura por buena. Ahora se puntúa cuántos datos
+// se pudieron sacar de verdad (monto, banco, fecha, número) y se reintenta
+// con la imagen original si el puntaje es bajo, quedándose con la mejor de
+// las dos. Una foto girada puntúa 0 y siempre se reintenta.
+//
 // v9.959 (2026-09-16) — CUENTA CORRIENTE EN PAGO DIVIDIDO + FECHAS
 //
 // ARREGLO GRAVE · la parte fiada de un pago dividido
@@ -6154,14 +6173,39 @@ const prepararPixeles = (datos) => {
   return { invertida: invertir, contraste: rango < 230, mediana };
 };
 
+// Cuánto sirvió una lectura, para decidir si conviene reintentar. NO alcanza
+// con mirar si apareció el número de operación: cuando el comprobante no trae
+// rótulo, se toma la cadena larga que más se le parece, y de un texto
+// ilegible sale una igual. Se cuentan los datos que se pudieron sacar de
+// verdad, y el monto pesa doble porque es el que más cuesta leer bien.
+const puntajeLectura = (texto) => {
+  if (!texto || texto.length < 12) return 0;
+  let p = 0;
+  if (extraerMonto(texto) != null) p += 2;
+  if (extraerBanco(texto)) p += 1;
+  if (extraerFecha(texto)) p += 1;
+  if (extraerNumeroOp(texto)) p += 1;
+  return p;
+};
+
 // Deja la imagen lista y devuelve el lienzo para pasárselo al lector
 const prepararParaOCR = async (fuente) => {
   // createImageBitmap acepta tanto el archivo que eligió la persona como el
   // lienzo que devuelve pdfAImagen, así que no hace falta convertir nada.
   let bitmap = null;
   try {
-    if (typeof createImageBitmap === "function") bitmap = await createImageBitmap(fuente);
-  } catch (e) { bitmap = null; }
+    if (typeof createImageBitmap === "function") {
+      // imageOrientation "from-image" es OBLIGATORIO acá. Sin esto la foto se
+      // abre como la guardó el sensor, ignorando la marca de rotación: una
+      // sacada con el teléfono vertical queda GIRADA 90 grados y el lector no
+      // puede leer nada. Antes el archivo iba directo al lector, que lo carga
+      // en un <img> y ahí el navegador sí endereza la foto solo.
+      bitmap = await createImageBitmap(fuente, { imageOrientation: "from-image" });
+    }
+  } catch (e) {
+    // Hay navegadores que rechazan la opción en vez de ignorarla
+    try { bitmap = await createImageBitmap(fuente); } catch (e2) { bitmap = null; }
+  }
   const ancho0 = bitmap ? bitmap.width : (fuente && fuente.width) || 0;
   const alto0 = bitmap ? bitmap.height : (fuente && fuente.height) || 0;
   // Sin poder medirla no hay nada que preparar: va como vino
@@ -6236,16 +6280,16 @@ const leerImagen = async (archivo, avisarAvance) => {
   }
 
   // Segundo intento: la imagen tal cual vino. Se hace sólo si el primero no
-  // sacó nada aprovechable, así el caso normal sigue costando una sola
-  // pasada. Hay comprobantes impresos y escaneados donde el preparado de más
-  // borra letras finas.
-  if (!extraerNumeroOp(texto)) {
+  // sacó casi nada, así el caso normal sigue costando una sola pasada. Hay
+  // comprobantes impresos y escaneados donde el preparado de más borra letras
+  // finas, y ahí la original sale mejor.
+  if (puntajeLectura(texto) < 3) {
     avisarAvance("Reintentando la lectura\u2026");
     try {
       const { data: r2 } = await _lector.recognize(fuente);
       const texto2 = r2.text || "";
-      // Se queda con el que encontró número de operación, o con el más largo
-      if (extraerNumeroOp(texto2) || texto2.length > texto.length) texto = texto2;
+      // Se queda con la lectura de la que se pueda sacar más datos
+      if (puntajeLectura(texto2) > puntajeLectura(texto)) texto = texto2;
     } catch (e) { /* se queda con lo del primer intento */ }
   }
   return texto;
