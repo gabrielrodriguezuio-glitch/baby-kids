@@ -129,7 +129,42 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.950";
+const VERSION_APP = "9.952";
+// v9.952 (2026-09-15) — EL COMPROBANTE ES SÓLO DE TRANSFERENCIA
+// - El botón "Agregar comprobante" aparece apenas entra una transferencia,
+//   SIN esperar a que se cargue el monto. Era al revés de como se trabaja:
+//   ahora que el escáner lee el importe de la foto, lo natural es cargar
+//   primero el comprobante y que el número complete el campo, no tipearlo dos
+//   veces.
+// - Ese monto se COPIA SOLO al campo de la transferencia en pago dividido.
+//   No pisa un número escrito a mano: sólo completa si el campo está vacío o
+//   si tenía justo lo que sumaban los comprobantes anteriores.
+// - El comprobante ya no se puede asignar a efectivo, tarjeta ni cuenta
+//   corriente. Un comprobante es de una transferencia y nada más; antes se
+//   ofrecían todos los métodos y podía terminar colgado del efectivo. Se fue
+//   el selector de método de cada fila: no había nada que elegir.
+// - El resumen quedó en una línea: cuántos comprobantes hay, cuánto suman, y
+//   si coincide con la transferencia o faltan o sobran. Si todavía no se
+//   cargó el monto de la transferencia, muestra sólo lo que suman.
+//
+// v9.951 (2026-09-15) — EL ESCÁNER COMPLETA MONTO Y BANCO
+// El escáner ya leía todo el texto del comprobante pero sólo aprovechaba el
+// número de operación. Ahora del MISMO texto saca también:
+// - MONTO: busca los rótulos ("monto transferido", "transferiste", "importe",
+//   "total") antes de mirar los números sueltos, porque un comprobante suele
+//   traer varios importes (saldo anterior, comisión) y el correcto no siempre
+//   es el más grande. Entiende el formato argentino: 1.234.567,89.
+// - BANCO o billetera: reconoce 29 entidades por su nombre — Mercado Pago,
+//   Ualá, Cuenta DNI, Brubank, Galicia, Santander, BBVA, Macro y las demás.
+// Reconocer la imagen es lo caro y ya se hacía: sacar estos dos datos no
+// agrega ni un milisegundo.
+// Lo que completa el escáner queda con borde ámbar y un aviso debajo, porque
+// un dígito mal leído en el monto descuadra la caja. Al corregirlo a mano la
+// marca desaparece.
+// De paso, ARREGLO en la lectura del número: un rótulo "Operación 1122334455"
+// a secas se perdía, porque el descarte de CUIT se come cualquier número de
+// 11 dígitos y muchos números de operación tienen justo 11.
+//
 // v9.950 (2026-09-15) — COMPROBANTES POR MÉTODO DE PAGO
 // Ya se podían cargar varios comprobantes, pero todos quedaban en una bolsa
 // común: con tres transferencias de bancos distintos no se sabía cuál cubría
@@ -5621,7 +5656,12 @@ const extraerNumeroOp = (texto) => {
     /\bid\s*op[.:\s]+([0-9A-Za-z-]{6,})/i,                                    // Ualá
     /n[uú]mero\s+de\s+(?:operaci[oó]n|transacci[oó]n)[^\n:]*[:\s]+([0-9A-Za-z-]{6,})/i,
     /c[oó]digo\s+de\s+(?:operaci[oó]n|transferencia)[^\n:]*[:\s]+([0-9A-Za-z-]{6,})/i,
-    /\bcomprobante\s*(?:n[.\u00BA\u00B0]?)?[:\s]+([0-9A-Za-z-]{6,})/i
+    /\bcomprobante\s*(?:n[.\u00BA\u00B0]?)?[:\s]+([0-9A-Za-z-]{6,})/i,
+    // "Operación 88112233445" a secas, sin "número de" adelante. Va último
+    // para no ganarle a los rótulos de arriba, que son más precisos. Sin esto
+    // se perdía: el descarte de CUIT de abajo se come cualquier número de
+    // 11 dígitos, y muchos números de operación tienen justo 11.
+    /\boperaci[oó]n\b[^\n:]*[:\s]+([0-9A-Za-z-]{6,})/i
   ];
   for (const r of rotulos) {
     const m = t.match(r);
@@ -5635,6 +5675,83 @@ const extraerNumeroOp = (texto) => {
     .filter((x) => !/^\d{11}$/.test(x))                   // un CUIT son 11
     .sort((a, b) => b.length - a.length);
   return candidatos[0] || null;
+};
+
+// Saca el MONTO del comprobante. Es el dato que más se tipea mal, y el que
+// hace que la caja no cierre. Se buscan primero los rótulos, porque un
+// comprobante suele traer varios números con pinta de plata (saldo anterior,
+// comisión, CBU cortado) y el monto no siempre es el más grande.
+const extraerMonto = (texto) => {
+  const t = String(texto || "");
+  if (t.length < 12) return null;
+
+  // Un importe argentino: 1.234.567,89 · 1234567,89 · 1.234.567 · 50000
+  const NUM = "(\\d{1,3}(?:\\.\\d{3})+(?:,\\d{1,2})?|\\d+(?:,\\d{1,2})?)";
+  const aNumero = (s) => {
+    // Los puntos son separador de miles y la coma es el decimal
+    const limpio = String(s).replace(/\./g, "").replace(",", ".");
+    const n = Number(limpio);
+    return isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null;
+  };
+
+  const rotulos = [
+    new RegExp("(?:monto|importe)\\s+(?:transferido|enviado|total|de\\s+la\\s+transferencia)[^\\d]{0,20}\\$?\\s*" + NUM, "i"),
+    new RegExp("\\b(?:transferiste|enviaste|pagaste)[^\\d]{0,20}\\$?\\s*" + NUM, "i"),
+    new RegExp("\\b(?:monto|importe)\\b[^\\d]{0,20}\\$?\\s*" + NUM, "i"),
+    new RegExp("\\btotal\\b[^\\d]{0,20}\\$?\\s*" + NUM, "i")
+  ];
+  for (const r of rotulos) {
+    const m = t.match(r);
+    if (m) { const n = aNumero(m[1]); if (n) return n; }
+  }
+
+  // Sin rótulo: el importe más grande escrito con signo $. Se descartan los
+  // que parecen CBU o CUIT, que también salen como números largos.
+  const conPeso = (t.match(new RegExp("\\$\\s*" + NUM, "g")) || [])
+    .map((x) => aNumero(x.replace(/[$\s]/g, "")))
+    .filter((n) => n && n < 1e9);
+  if (conPeso.length) return Math.max(...conPeso);
+  return null;
+};
+
+// Reconoce el banco o la billetera por el nombre que aparezca en el texto.
+// Se busca por orden: el primero que coincide gana, así que los nombres más
+// específicos van antes que los genéricos.
+const BANCOS_CONOCIDOS = [
+  [/mercado\s*pago/i, "Mercado Pago"],
+  [/ual[aá]/i, "Ualá"],
+  [/personal\s*pay/i, "Personal Pay"],
+  [/naranja\s*x/i, "Naranja X"],
+  [/brubank/i, "Brubank"],
+  [/prex/i, "Prex"],
+  [/belo\b/i, "Belo"],
+  [/lemon/i, "Lemon"],
+  [/cuenta\s*dni/i, "Cuenta DNI"],
+  [/modo\b/i, "MODO"],
+  [/banco\s+natal/i, "Banco Nación"],
+  [/\bbna\b|banco\s+de\s+la\s+naci[oó]n/i, "Banco Nación"],
+  [/galicia/i, "Banco Galicia"],
+  [/santander/i, "Santander"],
+  [/\bbbva\b|franc[eé]s/i, "BBVA"],
+  [/macro/i, "Banco Macro"],
+  [/\bhsbc\b/i, "HSBC"],
+  [/supervielle/i, "Supervielle"],
+  [/credicoop/i, "Credicoop"],
+  [/patagonia/i, "Banco Patagonia"],
+  [/ciudad/i, "Banco Ciudad"],
+  [/provincia|bapro/i, "Banco Provincia"],
+  [/\bicbc\b/i, "ICBC"],
+  [/comafi/i, "Banco Comafi"],
+  [/hipotecario/i, "Banco Hipotecario"],
+  [/\bbind\b|industrial/i, "Banco Industrial"],
+  [/mendoza|\bbmza\b/i, "Banco de Mendoza"],
+  [/reba\b/i, "Rebanking"],
+  [/\bnaranja\b/i, "Naranja"]
+];
+const extraerBanco = (texto) => {
+  const t = String(texto || "");
+  for (const [re, nombre] of BANCOS_CONOCIDOS) if (re.test(t)) return nombre;
+  return "";
 };
 
 // Busca ese número entre las ventas ya cobradas
@@ -8134,13 +8251,14 @@ async function traerDeLaNube(quienEntro) {
 // ===== Comprobantes de una venta =====
 // Los clientes de reparto suelen pagar con varias transferencias, así que se
 // carga una lista: cada comprobante con su imagen y su número de operación.
-// Lista de comprobantes de un cobro. Acepta varios por venta y, cuando el
-// pago es dividido, cada uno se asigna al método al que corresponde: sin eso,
-// tres transferencias de distintos bancos quedaban todas juntas y al revisar
-// la caja no se sabía cuál cubría qué.
-// `metodos` son los medios de pago en juego; `esperado` dice cuánto se espera
-// por cada uno, para poder avisar si lo cargado no llega o se pasa.
-function ListaComprobantes({ ventas, lista, onCambiar, metodos, esperado }) {
+// Lista de comprobantes de un cobro. Acepta varios por venta: los clientes de
+// reparto suelen pagar con dos o tres transferencias de bancos distintos.
+// TODO comprobante es de una transferencia — el efectivo, la tarjeta y la
+// cuenta corriente no tienen comprobante que cargar — así que no hay método
+// que elegir por comprobante.
+// `esperado` es cuánto suma la transferencia en este cobro, para avisar si lo
+// cargado no llega o se pasa.
+function ListaComprobantes({ ventas, lista, onCambiar, esperado }) {
   const [leyendo, setLeyendo] = useState("");
   const [ampliado, setAmpliado] = useState(null);
   const [aviso, setAviso] = useState("");
@@ -8157,6 +8275,11 @@ function ListaComprobantes({ ventas, lista, onCambiar, metodos, esperado }) {
       setLeyendo("Leyendo" + cual + "\u2026");
       let numero = "";
       let exacto = false;
+      // El monto y el banco salen del MISMO texto que ya se leía para sacar
+      // el número: reconocer la imagen es lo caro, y eso se hace una sola vez.
+      // Sacarlos no agrega ni un milisegundo de lectura.
+      let montoLeido = null;
+      let bancoLeido = "";
       try {
         const esPDF = /pdf/i.test(file.type) || /\.pdf$/i.test(file.name);
         let texto = "";
@@ -8168,6 +8291,8 @@ function ListaComprobantes({ ventas, lista, onCambiar, metodos, esperado }) {
           texto = await leerImagen(file, (m) => setLeyendo(m + cual));
         }
         numero = extraerNumeroOp(texto) || "";
+        montoLeido = extraerMonto(texto);
+        bancoLeido = extraerBanco(texto);
       } catch (err) {
         // Se muestra el error tal cual: los mensajes genéricos hacen buscar
         // el problema donde no está.
@@ -8186,7 +8311,13 @@ function ListaComprobantes({ ventas, lista, onCambiar, metodos, esperado }) {
       // medio de pago acierta siempre, y con varios deja el más probable.
       nuevos.push({
         id: uid(), imagen, numero, exacto, nombre: file.name,
-        metodo: metodoSugerido(), monto: "", banco: "", nota: ""
+        metodo: "transferencia",
+        monto: montoLeido != null ? String(montoLeido) : "",
+        banco: bancoLeido,
+        // Queda marcado qué se leyó solo, para avisar que hay que revisarlo:
+        // el reconocimiento de una foto puede confundir un dígito.
+        leido: { monto: montoLeido != null, banco: !!bancoLeido },
+        nota: ""
       });
     }
     setLeyendo("");
@@ -8195,30 +8326,22 @@ function ListaComprobantes({ ventas, lista, onCambiar, metodos, esperado }) {
 
   const editar = (id, numero) => onCambiar((lista || []).map((c) => c.id === id ? { ...c, numero, exacto: false } : c));
   // Cambiar cualquier otro campo del comprobante (método, monto, banco, nota)
-  const fijar = (id, campo, valor) => onCambiar((lista || []).map((c) => c.id === id ? { ...c, [campo]: valor } : c));
+  // Al corregir a mano se saca la marca de "leído": ya no es un dato del
+  // escáner sino uno confirmado por la persona.
+  const fijar = (id, campo, valor) => onCambiar((lista || []).map((c) =>
+    c.id === id ? { ...c, [campo]: valor, leido: { ...(c.leido || {}), [campo]: false } } : c));
   const sacar = (id) => onCambiar((lista || []).filter((c) => c.id !== id));
   const total = (lista || []).length;
 
-  const medios = (metodos && metodos.length) ? metodos : [];
-  const variosMedios = medios.length > 1;
-  // Cuánto se cargó ya por cada método, para el resumen de abajo
-  const cargadoPor = (id) => (lista || [])
-    .filter((c) => (c.metodo || (medios[0] || {}).id) === id)
-    .reduce((a, c) => a + (Number(c.monto) || 0), 0);
-  // El método que conviene proponer para el próximo comprobante: el primero
-  // que todavía no esté cubierto del todo.
-  const metodoSugerido = () => {
-    if (!medios.length) return "";
-    if (!esperado) return medios[0].id;
-    const libre = medios.find((m) => cargadoPor(m.id) < (Number(esperado[m.id]) || 0) - 0.5);
-    return (libre || medios[0]).id;
-  };
+  // Lo que suman los comprobantes cargados
+  const cargado = (lista || []).reduce((a, c) => a + (Number(c.monto) || 0), 0);
+  const espera = Number(esperado) || 0;
 
   return React.createElement(
     "div",
     { style: { marginTop: 12 } },
     React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginBottom: 9 } },
-      total ? "Comprobantes (" + total + ")" : "Comprobantes de la transferencia"),
+      total ? "Comprobantes de transferencia (" + total + ")" : "Comprobantes de transferencia"),
 
     (lista || []).map((c) => {
       // Repetido contra ventas anteriores y contra los otros de esta venta
@@ -8282,22 +8405,17 @@ function ListaComprobantes({ ventas, lista, onCambiar, metodos, esperado }) {
       React.createElement(
         "div",
         { style: { display: "flex", gap: 7, marginTop: 9, flexWrap: "wrap", alignItems: "center" } },
-        variosMedios && React.createElement("select", {
-          value: c.metodo || (medios[0] || {}).id || "",
-          onChange: (e) => fijar(c.id, "metodo", e.target.value),
-          style: {
-            background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8,
-            color: "var(--ink)", fontSize: 12.5, padding: "7px 9px", fontFamily: "'Inter', sans-serif",
-            flex: "1 1 120px", minWidth: 0
-          }
-        }, medios.map((m) => React.createElement("option", { key: m.id, value: m.id }, m.label))),
         React.createElement("input", {
           type: "number", inputMode: "decimal",
           value: c.monto == null ? "" : c.monto,
           onChange: (e) => fijar(c.id, "monto", e.target.value),
           placeholder: "Monto",
+          title: (c.leido && c.leido.monto) ? "Lo leyó el escáner: revisalo" : "",
           style: {
-            background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8,
+            background: "var(--surface)", borderRadius: 8,
+            // Borde ámbar en lo que completó el escáner: un dígito mal leído
+            // en el monto descuadra la caja, así que tiene que saltar a la vista
+            border: "1px solid " + ((c.leido && c.leido.monto) ? "var(--mustard)" : "var(--line)"),
             color: "var(--ink)", fontSize: 12.5, padding: "7px 9px",
             fontFamily: "'IBM Plex Mono', monospace", flex: "1 1 92px", minWidth: 0, outline: "none"
           }
@@ -8306,37 +8424,47 @@ function ListaComprobantes({ ventas, lista, onCambiar, metodos, esperado }) {
           value: c.banco || "",
           onChange: (e) => fijar(c.id, "banco", e.target.value),
           placeholder: "Banco o billetera",
+          title: (c.leido && c.leido.banco) ? "Lo leyó el escáner: revisalo" : "",
           style: {
-            background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8,
+            background: "var(--surface)", borderRadius: 8,
+            border: "1px solid " + ((c.leido && c.leido.banco) ? "var(--mustard)" : "var(--line)"),
             color: "var(--ink)", fontSize: 12.5, padding: "7px 9px",
             fontFamily: "'Inter', sans-serif", flex: "1 1 130px", minWidth: 0, outline: "none"
           }
         })
-      )
+      ),
+
+      // Aviso de lo que completó el escáner, para que se revise antes de cerrar
+      (c.leido && (c.leido.monto || c.leido.banco)) && React.createElement("div", {
+        style: { fontSize: 11, color: "var(--mustard)", marginTop: 6 }
+      }, "El escáner completó " +
+         [c.leido.monto && "el monto", c.leido.banco && "el banco"].filter(Boolean).join(" y ") +
+         ". Revisalo contra la foto.")
     );
     }),
 
-    // Resumen por método: cuánto se esperaba y cuánto se cargó. Sólo cuando
-    // hay más de un medio, que es cuando se puede desbalancear.
-    variosMedios && esperado && total > 0 && React.createElement(
+    // Lo cargado contra lo que suma la transferencia en este cobro. Si
+    // todavía no se puso el monto de la transferencia, se muestra sólo el
+    // total de los comprobantes: es el número que hay que copiar ahí.
+    total > 0 && React.createElement(
       "div",
-      { style: { background: "var(--surface-2)", borderRadius: 10, padding: "10px 12px", marginBottom: 10 } },
-      medios.map((m) => {
-        const espera = Number(esperado[m.id]) || 0;
-        const cargado = cargadoPor(m.id);
+      { style: { background: "var(--surface-2)", borderRadius: 10, padding: "10px 12px", marginBottom: 10, display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12.5, flexWrap: "wrap" } },
+      React.createElement("span", { style: { color: "var(--muted)" } },
+        total === 1 ? "1 comprobante" : total + " comprobantes"),
+      (() => {
         const dif = espera - cargado;
-        const ok = Math.abs(dif) < 0.5;
-        return React.createElement(
-          "div",
-          { key: m.id, style: { display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12.5, padding: "3px 0" } },
-          React.createElement("span", { style: { color: "var(--muted)" } }, m.label),
-          React.createElement("span", {
-            style: { fontFamily: "'IBM Plex Mono', monospace", color: ok ? "var(--sage)" : (dif > 0 ? "var(--mustard)" : "var(--rose)") }
-          }, ok
-            ? money(cargado)
-            : money(cargado) + " de " + money(espera) + (dif > 0 ? " · faltan " + money(dif) : " · sobran " + money(-dif)))
-        );
-      })
+        const ok = espera > 0 && Math.abs(dif) < 0.5;
+        if (!espera) {
+          return React.createElement("span", {
+            style: { fontFamily: "'IBM Plex Mono', monospace", color: "var(--ink)" }
+          }, "Suman " + money(cargado));
+        }
+        return React.createElement("span", {
+          style: { fontFamily: "'IBM Plex Mono', monospace", color: ok ? "var(--sage)" : (dif > 0 ? "var(--mustard)" : "var(--rose)") }
+        }, ok
+          ? money(cargado) + " \u00B7 coincide"
+          : money(cargado) + " de " + money(espera) + (dif > 0 ? " \u00B7 faltan " + money(dif) : " \u00B7 sobran " + money(-dif)));
+      })()
     ),
 
     React.createElement("label", {
@@ -8356,7 +8484,7 @@ function ListaComprobantes({ ventas, lista, onCambiar, metodos, esperado }) {
     ),
     total === 0 && !leyendo && React.createElement("p", {
       style: { fontSize: 11.5, color: "var(--muted)", marginTop: 8, lineHeight: 1.5 }
-    }, "Podés elegir varios a la vez. La app lee el número de cada uno y avisa si alguno ya se usó."),
+    }, "Podés elegir varios a la vez. La app lee el número, el monto y el banco de cada uno, y avisa si alguno ya se usó."),
     aviso && React.createElement("p", { style: { fontSize: 11.5, color: "var(--rose)", marginTop: 8 } }, aviso),
 
     ampliado && React.createElement(VisorComprobante, { src: ampliado, onClose: () => setAmpliado(null) })
@@ -15723,8 +15851,13 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
   const metodosUsados = variosPagos
     ? Object.keys(pagos).filter((k) => Number(pagos[k]) > 0)
     : [metodoPago];
-  // El número de operación sólo tiene sentido si entra una transferencia
-  const hayTransferencia = metodosUsados.includes("transferencia");
+  // El número de operación sólo tiene sentido si entra una transferencia.
+  // No se exige que el monto esté cargado: lo normal es agregar primero el
+  // comprobante — el escáner lee el monto de la foto — y que ese número
+  // complete después el campo de la transferencia, no al revés.
+  const hayTransferencia = variosPagos
+    ? true
+    : metodoPago === "transferencia";
   const NUNCA_MAYORISTA = ["tarjeta", "qr", "otro"];
   const listaDe = (m) => listaSegunPago(listas, m, unidadesRopa);
   const hayBloqueante = metodosUsados.some((m) => NUNCA_MAYORISTA.includes(m));
@@ -15993,15 +16126,28 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
     hayTransferencia && React.createElement(ListaComprobantes, {
       ventas,
       lista: comprobantes,
-      onCambiar: setComprobantes,
-      // En pago dividido mostramos contra qué método se carga cada uno
-      metodos: variosPagos
-        ? Object.keys(pagos).filter((k) => Number(pagos[k]) > 0).map((k) => ({ id: k, label: METODO_LABELS[k] || k }))
-        : [{ id: metodoPago, label: METODO_LABELS[metodoPago] || metodoPago }],
-      // Cuánto se espera por cada método, para avisar si lo cargado no cierra
-      esperado: variosPagos
-        ? Object.keys(pagos).reduce((a, k) => { const n = Number(pagos[k]) || 0; if (n > 0) a[k] = n; return a; }, {})
-        : { [metodoPago]: total }
+      onCambiar: (nueva) => {
+        setComprobantes(nueva);
+        // En pago dividido, lo que suman los comprobantes se copia al campo
+        // de la transferencia. Es el motivo de cargar el comprobante primero:
+        // el escáner lee el monto de la foto y no hay que tipearlo dos veces.
+        // Sólo se pisa si el campo está vacío o si tenía justo lo que sumaban
+        // los comprobantes anteriores, para no borrar un número puesto a mano.
+        if (!variosPagos) return;
+        const sumaAntes = (comprobantes || []).reduce((a, c) => a + (Number(c.monto) || 0), 0);
+        const sumaAhora = (nueva || []).reduce((a, c) => a + (Number(c.monto) || 0), 0);
+        const actual = Number(pagos.transferencia) || 0;
+        const vacio = pagos.transferencia == null || String(pagos.transferencia).trim() === "";
+        if (sumaAhora > 0 && (vacio || Math.abs(actual - sumaAntes) < 0.5)) {
+          setPagos({ ...pagos, transferencia: String(sumaAhora) });
+          setError("");
+        }
+      },
+      // Un comprobante es SIEMPRE de una transferencia: el efectivo, la
+      // tarjeta y la cuenta corriente no tienen comprobante que cargar. Antes
+      // se ofrecían todos los métodos y el comprobante podía terminar
+      // asignado al efectivo, que no tiene sentido.
+      esperado: variosPagos ? (Number(pagos.transferencia) || 0) : total
     }),
 
     error && React.createElement("p", { style: { color: "var(--rose)", fontSize: 13, marginTop: 12, textAlign: "center" } }, error),
