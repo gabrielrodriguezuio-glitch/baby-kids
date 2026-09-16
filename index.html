@@ -129,7 +129,27 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.954";
+const VERSION_APP = "9.955";
+// v9.955 (2026-09-15) — AVISO AL COBRAR + EL CUARTO TICKET
+// AVISO ANTES DE COBRAR
+// Si los comprobantes no cubren lo declarado de transferencia, ahora hay que
+// confirmarlo viendo los números: "Cargaste $70.000 de $100.000. Faltan
+// $30.000" con dos botones, Revisar y Cobrar igual. No frena la venta —a
+// veces el comprobante llega después— pero no deja cerrarla sin verlo.
+// Avisa también cuando no se cargó NINGUNO. No aparece con efectivo, tarjeta
+// ni cuenta corriente, ni cuando la diferencia es de centavos.
+// ARREGLO al escribirlo: el botón "Procesar Venta" tenía onClick: confirmar,
+// así que React le pasaba el evento del click como primer argumento — el
+// mismo que sirve para saltear el aviso. La venta se habría cerrado sin
+// preguntar nunca. Va envuelto en una función.
+//
+// EL CUARTO TICKET
+// El desglose de comprobantes de la v9.954 llegó a tres de los cuatro
+// tickets. Faltaba el que se ve en pantalla (TicketVenta), que además es el
+// que se imprime desde el navegador y el que se guarda en PDF — justo donde
+// el cliente mira si le tomaron las tres transferencias. Ahora los cuatro
+// muestran banco, monto, fecha y número de operación de cada uno.
+//
 // v9.954 (2026-09-15) — CADA COMPROBANTE POR SEPARADO EN EL TICKET
 // El ticket mostraba un solo renglón con el total de la transferencia. Si de
 // tres transferencias faltaba una, el papel no servía para señalar cuál.
@@ -16041,6 +16061,9 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
   const [extras, setExtras] = useState({ ...EXTRAS_VACIOS });
   const [comprobantes, setComprobantes] = useState([]);
   const [error, setError] = useState("");
+  // Aviso cuando los comprobantes no cubren lo declarado. Guarda los números
+  // para mostrarlos y que la decisión se tome viendo la diferencia.
+  const [avisoComp, setAvisoComp] = useState(null);
 
   // El precio depende de cómo pague: efectivo va mayorista siempre, y
   // transferencia también a partir de 2 prendas. En pago dividido sólo cuenta
@@ -16092,7 +16115,7 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
   const faltante = total - sumaPagos;
   const vuelto = (Number(montoEntregado) || 0) - total;
 
-  const confirmar = () => {
+  const confirmar = (saltarAvisoComp) => {
     // El modal ahora se abre con el carrito vacío para poder cobrar sólo el
     // saldo: hay que frenar la venta si no quedó nada que cobrar.
     if (lineas.length === 0) {
@@ -16109,6 +16132,23 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
       if (metodoPago === "cuenta_corriente" && !cliente) return setError("Elegí un cliente para cargar la venta a su cuenta corriente.");
       if (metodoPago === "efectivo" && montoEntregado !== "" && Number(montoEntregado) < total) return setError("El monto recibido es menor al total.");
     }
+    // Los comprobantes cargados contra lo que se declaró de transferencia.
+    // No frena la venta, pero la hace confirmar: se puede cerrar creyendo que
+    // hay respaldo de todo cuando hay de una parte, y eso recién se descubre
+    // cuando el cliente niega la diferencia.
+    const trDeclarado = variosPagos ? (Number(pagos.transferencia) || 0)
+                                    : (metodoPago === "transferencia" ? total : 0);
+    if (!saltarAvisoComp && trDeclarado > 0) {
+      const trCargado = (comprobantes || []).reduce((a, c) => a + (Number(c.monto) || 0), 0);
+      const dif = Math.round((trDeclarado - trCargado) * 100) / 100;
+      if (Math.abs(dif) > 0.5) {
+        return setAvisoComp({
+          declarado: trDeclarado, cargado: trCargado, dif,
+          sinNinguno: (comprobantes || []).length === 0
+        });
+      }
+    }
+    setAvisoComp(null);
     setError("");
     const detallePagos = variosPagos
       ? Object.keys(pagos).filter((k) => Number(pagos[k]) > 0).map((k) => ({ metodo: k, monto: Number(pagos[k]) }))
@@ -16356,6 +16396,52 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
 
     error && React.createElement("p", { style: { color: "var(--rose)", fontSize: 13, marginTop: 12, textAlign: "center" } }, error),
 
+    // Los comprobantes no cubren lo declarado: se pide confirmar viendo los
+    // números, en vez de dejar pasar la diferencia en silencio.
+    avisoComp && React.createElement(
+      "div",
+      {
+        style: {
+          marginTop: 14, padding: "14px 16px", borderRadius: 12,
+          background: "color-mix(in srgb, var(--mustard) 12%, transparent)",
+          border: "1px solid color-mix(in srgb, var(--mustard) 45%, transparent)"
+        }
+      },
+      React.createElement(
+        "div",
+        { style: { display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 12 } },
+        React.createElement(AlertTriangle, { size: 17, color: "var(--mustard)", style: { flexShrink: 0, marginTop: 1 } }),
+        React.createElement(
+          "div",
+          { style: { flex: 1, minWidth: 0 } },
+          React.createElement("div", { style: { fontSize: 13.5, fontWeight: 650, marginBottom: 5 } },
+            avisoComp.sinNinguno ? "No cargaste ningún comprobante" : "Los comprobantes no cubren la transferencia"),
+          React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", lineHeight: 1.5 } },
+            avisoComp.sinNinguno
+              ? ["Estás cobrando ", React.createElement("strong", { key: "d", style: { color: "var(--ink)" } }, money(avisoComp.declarado)),
+                 " por transferencia sin respaldo cargado."]
+              : ["Cargaste ", React.createElement("strong", { key: "c", style: { color: "var(--ink)" } }, money(avisoComp.cargado)),
+                 " de ", React.createElement("strong", { key: "d", style: { color: "var(--ink)" } }, money(avisoComp.declarado)),
+                 avisoComp.dif > 0
+                   ? [". Faltan ", React.createElement("strong", { key: "f", style: { color: "var(--mustard)" } }, money(avisoComp.dif)), "."]
+                   : [". Sobran ", React.createElement("strong", { key: "s", style: { color: "var(--rose)" } }, money(-avisoComp.dif)), "."]])
+        )
+      ),
+      React.createElement(
+        "div",
+        { style: { display: "flex", gap: 9, flexWrap: "wrap" } },
+        React.createElement(Button, {
+          tone: "ghost",
+          onClick: () => setAvisoComp(null),
+          style: { flex: "1 1 130px", padding: "11px 16px", justifyContent: "center" }
+        }, "Revisar"),
+        React.createElement(Button, {
+          onClick: () => { setAvisoComp(null); confirmar(true); },
+          style: { flex: "1 1 150px", padding: "11px 16px", justifyContent: "center" }
+        }, "Cobrar igual")
+      )
+    ),
+
     React.createElement(
       "div",
       { className: "ct-pie-fijo", style: { display: "flex", flexDirection: "column", gap: 10, marginTop: 18, paddingTop: 18, borderTop: "1px solid var(--line)", flexWrap: "wrap" } },
@@ -16380,7 +16466,10 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
         }, "Falta crear la lista Mayorista")
       ),
       React.createElement(Button, {
-        onClick: confirmar,
+        // Sin la función de por medio, React le pasa el evento del click como
+        // primer argumento y eso vale como "saltear el aviso": la venta se
+        // cerraría sin preguntar por los comprobantes que faltan.
+        onClick: () => confirmar(),
         style: { width: "100%", justifyContent: "center", padding: "16px 20px", fontSize: 15.5, fontWeight: 700 }
       }, React.createElement(CreditCard, { size: 17 }), " Procesar Venta"),
       React.createElement("span", { style: { fontSize: 12, color: "var(--muted)", textAlign: "center" } },
@@ -16592,9 +16681,44 @@ function TicketVenta({ data, venta }) {
       "div",
       null,
       React.createElement("div", { style: { fontSize: 10.5, color: gris, letterSpacing: "0.1em", fontWeight: 700, marginBottom: 7 } }, "PAGO"),
-      venta.pagos && venta.pagos.length > 1
-        ? venta.pagos.map((x, i) => fila(metodoPagoLabel[x.metodo] || x.metodo, money(x.monto), { arriba: i ? 4 : 0 }))
-        : fila(metodoPagoLabel[venta.metodoPago] || venta.metodoPago || "\u2014", money(venta.total)),
+      // Cada comprobante con SU banco, SU monto y SU fecha, debajo del método
+      // que le toca. Este ticket es el que se ve en pantalla y el que se
+      // manda por WhatsApp o se guarda en PDF: es donde el cliente mira si
+      // le tomaron las tres transferencias.
+      (() => {
+        const compsDe = (metodo) => (venta.comprobantes || []).filter((c) =>
+          (c.numero || c.banco || c.monto) && (c.metodo || "transferencia") === metodo);
+        const detalleComp = (c, k) => React.createElement(
+          "div",
+          { key: "c" + k, style: { marginTop: 5, paddingLeft: 12 } },
+          fila(
+            "\u00B7 " + (c.banco || (c.numero ? "Comprobante" : "Transferencia")),
+            (Number(c.monto) || 0) > 0 ? money(Number(c.monto)) : "",
+            { tam: 11.5, tenue: true }
+          ),
+          (c.fecha || c.numero) && React.createElement("div", {
+            style: { fontSize: 10.5, color: gris, marginTop: 2, fontFamily: mono }
+          }, [c.fecha || "", c.numero ? "Op " + c.numero : ""].filter(Boolean).join("  ")),
+          c.de && c.de !== venta.clienteNombre && React.createElement("div", {
+            style: { fontSize: 10.5, color: gris, marginTop: 1 }
+          }, "de " + c.de)
+        );
+        if (venta.pagos && venta.pagos.length > 1) {
+          return venta.pagos.map((x, i) => React.createElement(
+            "div",
+            { key: "p" + i, style: { marginTop: i ? 6 : 0 } },
+            fila(metodoPagoLabel[x.metodo] || x.metodo, money(x.monto)),
+            compsDe(x.metodo).map(detalleComp)
+          ));
+        }
+        const unico = venta.metodoPago || "\u2014";
+        return React.createElement(
+          "div",
+          null,
+          fila(metodoPagoLabel[unico] || unico, money(venta.total)),
+          compsDe(unico).map(detalleComp)
+        );
+      })(),
       venta.metodoPago === "efectivo" && venta.montoEntregado != null && React.createElement(
         "div",
         { style: { marginTop: 7, paddingTop: 7, borderTop: "1px dotted " + linea } },
