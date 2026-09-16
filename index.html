@@ -129,7 +129,39 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.958";
+const VERSION_APP = "9.959";
+// v9.959 (2026-09-16) — CUENTA CORRIENTE EN PAGO DIVIDIDO + FECHAS
+//
+// ARREGLO GRAVE · la parte fiada de un pago dividido
+// La venta quedaba guardada con el método del PRIMER monto tipeado. Si el
+// operador cargaba primero la casilla de cuenta corriente, la venta quedaba
+// marcada como fiada entera: el saldo del cliente cuenta como deuda la venta
+// completa cuando tiene ese método, así que una venta de $80.000 con sólo
+// $30.000 a cuenta sumaba $80.000 de deuda, y no se creaba el cargo del
+// tramo. El resultado dependía del orden en que se tocaban las casillas.
+// Arreglado en los dos lados:
+//  · la venta se guarda con el primer método que NO sea cuenta corriente, así
+//    nunca queda marcada como fiada entera si fue un pago mixto
+//  · la venta vale como deuda completa sólo si el tramo a cuenta cubre el
+//    total, no sólo por tener ese método
+// Probado con las dos combinaciones de dos medios y las dos de tres, en los
+// dos órdenes: 8 de 8 dan la deuda correcta sin importar cómo se cargue.
+//
+// FECHAS · el escáner no las leía
+// Faltaban justo los formatos más comunes:
+//  · "Hoy" y "Ayer", que es como lo muestran casi todas las billeteras cuando
+//    el comprobante es reciente — o sea, casi siempre que se carga uno
+//  · fecha sin año ("15/09", "15 de septiembre"): se completa con el año de
+//    ahora, que es lo que corresponde en un comprobante que se carga recién
+//  · separador con puntos ("15.09.2026"), que usan varios bancos
+// ARREGLO al escribirlo: al aceptar el punto en la fecha, "15.09.2026" se
+// leía ADEMÁS como las 15:09. La hora ahora pide dos puntos, salvo que venga
+// con "hs" detrás, que ahí no hay confusión.
+// De 6 formatos reconocidos pasó a 12, y los 5 textos tramposos (CBU, CUIT,
+// un importe, un mes 13) siguen devolviendo vacío en vez de inventar.
+// Los cuatro tickets ya imprimían la fecha del comprobante: no salía porque
+// no se estaba leyendo.
+//
 // v9.958 (2026-09-15) — BORRAR DESDE LA FICHA, BIEN
 // Los tres botones ya estaban, pero eran un ícono gris chico sin borde y
 // costaba encontrarlos. Ahora tienen recuadro y 34 px de lado, que es lo
@@ -5896,17 +5928,37 @@ const extraerFecha = (texto) => {
   const dosDig = (n) => String(n).padStart(2, "0");
   // El año de dos cifras se completa con 20xx: nadie carga comprobantes de 1999
   const anio4 = (a) => (String(a).length === 2 ? "20" + a : String(a));
+  const hoy = new Date();
   let dia = "", mes = "", anio = "";
 
+  // "Hoy" y "Ayer": es como lo muestran casi todas las billeteras cuando el
+  // comprobante es reciente, que es la mayoría de las veces que se carga uno.
+  // Sin esto, justo los comprobantes del día quedaban sin fecha.
+  if (/\bhoy\b/i.test(t)) {
+    dia = hoy.getDate(); mes = hoy.getMonth() + 1; anio = hoy.getFullYear();
+  } else if (/\bayer\b/i.test(t)) {
+    const a = new Date(hoy.getTime() - 864e5);
+    dia = a.getDate(); mes = a.getMonth() + 1; anio = a.getFullYear();
+  }
+
   // "15 de septiembre de 2026" · "15 sep 2026" · "15-sep-26"
-  let m = t.match(/\b(\d{1,2})\s*(?:de\s+)?[-\s]?([a-záéíóú]{3,10})\.?\s*(?:de\s+)?[-\s]?(\d{2,4})\b/i);
+  let m = dia ? null : t.match(/\b(\d{1,2})\s*(?:de\s+)?[-\s]?([a-záéíóú]{3,10})\.?\s*(?:de\s+)?[-\s]?(\d{2,4})\b/i);
   if (m) {
     const clave = m[2].toLowerCase().slice(0, 3);
     if (MESES_ES[clave]) { dia = m[1]; mes = MESES_ES[clave]; anio = m[3]; }
   }
-  // "15/09/2026" · "15-09-26" (formato de acá: día primero)
+  // Mes con nombre pero SIN año: "15 de septiembre", "3 mar"
   if (!dia) {
-    m = t.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/);
+    m = t.match(/\b(\d{1,2})\s*(?:de\s+)?[-\s]?([a-záéíóú]{3,10})\b(?!\s*[-\/.]?\s*\d)/i);
+    if (m) {
+      const clave = m[2].toLowerCase().slice(0, 3);
+      if (MESES_ES[clave]) { dia = m[1]; mes = MESES_ES[clave]; anio = hoy.getFullYear(); }
+    }
+  }
+  // "15/09/2026" · "15-09-26" · "15.09.2026" (formato de acá: día primero).
+  // El punto como separador lo usan varios bancos y antes no entraba.
+  if (!dia) {
+    m = t.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})\b/);
     if (m && Number(m[1]) <= 31 && Number(m[2]) <= 12) { dia = m[1]; mes = m[2]; anio = m[3]; }
   }
   // "2026-09-15" (formato de la base)
@@ -5914,11 +5966,22 @@ const extraerFecha = (texto) => {
     m = t.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
     if (m && Number(m[2]) <= 12 && Number(m[3]) <= 31) { anio = m[1]; mes = m[2]; dia = m[3]; }
   }
+  // Sólo día y mes: "15/09". Se completa con el año de ahora, que es lo que
+  // corresponde en un comprobante que se está cargando recién.
+  if (!dia) {
+    m = t.match(/\b(\d{1,2})[\/\-.](\d{1,2})\b(?![\/\-.]?\d)/);
+    if (m && Number(m[1]) >= 1 && Number(m[1]) <= 31 && Number(m[2]) >= 1 && Number(m[2]) <= 12) {
+      dia = m[1]; mes = m[2]; anio = hoy.getFullYear();
+    }
+  }
   if (!dia) return "";
 
   const fecha = dosDig(dia) + "/" + dosDig(mes) + "/" + anio4(anio);
-  // La hora, si está cerca. Se descartan las que vienen pegadas a un monto.
-  const h = t.match(/\b([01]?\d|2[0-3])[:.]([0-5]\d)(?:\s*(hs?|h))?\b/);
+  // La hora. El separador tiene que ser DOS PUNTOS: si se acepta el punto,
+  // una fecha escrita "15.09.2026" se lee además como las 15:09.
+  // El punto sólo vale cuando viene con "hs" detrás, que ahí no hay confusión.
+  let h = t.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+  if (!h) h = t.match(/\b([01]?\d|2[0-3])\.([0-5]\d)\s*hs?\b/i);
   return h ? fecha + " " + dosDig(h[1]) + ":" + h[2] : fecha;
 };
 
@@ -15075,7 +15138,12 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
     //     que el saldo no la vería. Ahí SÍ hay que crear el cargo, o el tramo
     //     fiado se pierde.
     const montoCC = montoPorMetodo("cuenta_corriente");
-    const ventaEsTodoCC = metodoPago === "cuenta_corriente";
+    // La venta vale como deuda entera SÓLO si todo el cobro fue a cuenta
+    // corriente. Antes alcanzaba con que el método de la venta fuera
+    // "cuenta_corriente", y en pago dividido ese método era el del primer
+    // monto tipeado: cargando primero la casilla de cuenta corriente, la
+    // venta quedaba marcada así y el saldo sumaba el total en vez del tramo.
+    const ventaEsTodoCC = metodoPago === "cuenta_corriente" && montoCC >= total - 0.5;
     if (montoCC > 0 && !ventaEsTodoCC && clienteId) {
       movimientosCC = [
         {
@@ -16361,8 +16429,17 @@ function CheckoutModal({ cart, itemKey, subtotal: subtotalBase, totalUnidades, c
     const detallePagos = variosPagos
       ? Object.keys(pagos).filter((k) => Number(pagos[k]) > 0).map((k) => ({ metodo: k, monto: Number(pagos[k]) }))
       : [{ metodo: metodoPago, monto: total }];
+    // Con qué método queda guardada la venta. En pago dividido se toma el
+    // primero que NO sea cuenta corriente: el saldo del cliente cuenta como
+    // deuda la venta ENTERA cuando está marcada "cuenta_corriente", así que
+    // si quedaba marcada así por haber tipeado esa casilla primero, la deuda
+    // salía por el total en vez de por el tramo fiado. La parte a cuenta va
+    // como cargo aparte, que es lo correcto.
+    const metodoGuardado = variosPagos
+      ? ((detallePagos.find((p) => p.metodo !== "cuenta_corriente") || detallePagos[0] || {}).metodo || "efectivo")
+      : metodoPago;
     onConfirmar({
-      metodoPago: variosPagos ? (detallePagos[0] ? detallePagos[0].metodo : "efectivo") : metodoPago,
+      metodoPago: metodoGuardado,
       pagos: detallePagos,
       variosPagos,
       // Las líneas ya vienen con el precio de la lista que corresponde al pago
