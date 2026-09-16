@@ -129,7 +129,43 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.952";
+const VERSION_APP = "9.954";
+// v9.954 (2026-09-15) — CADA COMPROBANTE POR SEPARADO EN EL TICKET
+// El ticket mostraba un solo renglón con el total de la transferencia. Si de
+// tres transferencias faltaba una, el papel no servía para señalar cuál.
+// Ahora cada comprobante sale con SU banco, SU monto, SU fecha y SU número de
+// operación, debajo del método que le toca. El renglón del método queda como
+// subtotal, así sigue cerrando a la vista.
+// Aplicado a los TRES formatos: el térmico ESC/POS, el gráfico (el que se
+// imprime como imagen y va al PDF) y el de texto para WhatsApp.
+// - En el térmico, de 32 columnas, se saca el año de la fecha: ya está en el
+//   encabezado del ticket y son cuatro caracteres que le hacen falta al
+//   número de operación. Si aun así no entran juntos, el número se va solo a
+//   su renglón: cortarlo deja el ticket inservible para reclamar, que es
+//   justo para lo que se guarda.
+// - Se imprime también quién mandó la plata, cuando no es el cliente de la
+//   venta: pasa seguido que paga un familiar.
+// - Los comprobantes viejos, sin banco ni monto, salen igual con su número.
+//
+// v9.953 (2026-09-15) — EL ESCÁNER LEE FECHA, QUIÉN ENVIÓ Y QUIÉN RECIBIÓ
+// Del mismo texto que ya se leía salen ahora tres datos más:
+// - FECHA del comprobante. Entiende "15 de septiembre de 2026", "15/09/2026",
+//   "28-ago-26" y "2026-09-15", con la hora si está. Si no es de hoy, la app
+//   lo dice en el momento ("Este comprobante es de hace 6 días"): es como se
+//   pesca al que vuelve a mandar una transferencia de la semana pasada.
+// - QUIÉN LO ENVIÓ y A QUIÉN. Sirve cuando el titular de la cuenta no es el
+//   cliente que está en el mostrador.
+// Los nombres son texto libre, así que se leen sólo con rótulos conocidos
+// (titular, ordenante, destinatario, beneficiario, destino, "transferiste a")
+// y se descarta lo que sea un CBU, un CUIT, un importe o quede muy corto:
+// antes que inventar un nombre, se deja vacío.
+// ARREGLO al escribirlo: el patrón de "De" en su propio renglón matcheaba
+// "Destino:" y "Destinatario:", y devolvía "stino" y "stinatario" como si
+// fueran el remitente. Faltaba el límite de palabra.
+// Probado contra comprobantes de Mercado Pago, Galicia, Ualá, Cuenta DNI y
+// formato ISO: 18 de 18 campos correctos, y 10 de 10 textos tramposos
+// devuelven vacío en lugar de inventar.
+//
 // v9.952 (2026-09-15) — EL COMPROBANTE ES SÓLO DE TRANSFERENCIA
 // - El botón "Agregar comprobante" aparece apenas entra una transferencia,
 //   SIN esperar a que se cargue el monto. Era al revés de como se trabaja:
@@ -5754,6 +5790,101 @@ const extraerBanco = (texto) => {
   return "";
 };
 
+// Saca la FECHA en que se hizo la transferencia. Sirve para detectar el
+// comprobante viejo que alguien manda de nuevo como si fuera de hoy.
+// Devuelve "DD/MM/AAAA" o "DD/MM/AAAA HH:MM" si también encuentra la hora.
+const MESES_ES = {
+  ene: 1, feb: 2, mar: 3, abr: 4, may: 5, jun: 6,
+  jul: 7, ago: 8, sep: 9, set: 9, oct: 10, nov: 11, dic: 12
+};
+const extraerFecha = (texto) => {
+  const t = String(texto || "");
+  if (t.length < 8) return "";
+  const dosDig = (n) => String(n).padStart(2, "0");
+  // El año de dos cifras se completa con 20xx: nadie carga comprobantes de 1999
+  const anio4 = (a) => (String(a).length === 2 ? "20" + a : String(a));
+  let dia = "", mes = "", anio = "";
+
+  // "15 de septiembre de 2026" · "15 sep 2026" · "15-sep-26"
+  let m = t.match(/\b(\d{1,2})\s*(?:de\s+)?[-\s]?([a-záéíóú]{3,10})\.?\s*(?:de\s+)?[-\s]?(\d{2,4})\b/i);
+  if (m) {
+    const clave = m[2].toLowerCase().slice(0, 3);
+    if (MESES_ES[clave]) { dia = m[1]; mes = MESES_ES[clave]; anio = m[3]; }
+  }
+  // "15/09/2026" · "15-09-26" (formato de acá: día primero)
+  if (!dia) {
+    m = t.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/);
+    if (m && Number(m[1]) <= 31 && Number(m[2]) <= 12) { dia = m[1]; mes = m[2]; anio = m[3]; }
+  }
+  // "2026-09-15" (formato de la base)
+  if (!dia) {
+    m = t.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+    if (m && Number(m[2]) <= 12 && Number(m[3]) <= 31) { anio = m[1]; mes = m[2]; dia = m[3]; }
+  }
+  if (!dia) return "";
+
+  const fecha = dosDig(dia) + "/" + dosDig(mes) + "/" + anio4(anio);
+  // La hora, si está cerca. Se descartan las que vienen pegadas a un monto.
+  const h = t.match(/\b([01]?\d|2[0-3])[:.]([0-5]\d)(?:\s*(hs?|h))?\b/);
+  return h ? fecha + " " + dosDig(h[1]) + ":" + h[2] : fecha;
+};
+
+// Limpia un nombre leído: corta en el salto de línea, saca el rótulo que
+// haya quedado pegado y descarta lo que sea un CBU, un CUIT o un importe.
+const limpiarNombre = (bruto) => {
+  let n = String(bruto || "").split(/\n/)[0].trim();
+  n = n.replace(/^[:\-–\s]+/, "").replace(/[.,;:\s]+$/, "");
+  // Si arrastra un dato numérico detrás, se corta ahí
+  n = n.split(/\s{2,}|\s*(?:CBU|CVU|CUIT|CUIL|ALIAS|DNI)\b/i)[0].trim();
+  if (n.length < 3 || n.length > 44) return "";
+  // Puro número o casi: no es un nombre
+  if (/^[\d\s.,$-]+$/.test(n)) return "";
+  // Que tenga al menos tres letras seguidas
+  if (!/[A-Za-zÁÉÍÓÚÑáéíóúñ]{3}/.test(n)) return "";
+  return n;
+};
+
+// QUIÉN MANDÓ la transferencia
+const extraerDe = (texto) => {
+  const t = String(texto || "");
+  const rotulos = [
+    /\b(?:enviado\s+por|remitente|ordenante)\s*:?\s*([^\n]{3,50})/i,
+    /\b(?:origen|desde)\s*:?\s*([^\n]{3,50})/i,
+    /\bde\s+la\s+cuenta\s+de\s*:?\s*([^\n]{3,50})/i,
+    /\bcuenta\s+(?:de\s+)?origen\s*:?\s*([^\n]{3,50})/i,
+    /\btitular\s*:?\s*([^\n]{3,50})/i,
+    // "De" en su propio renglón, con el nombre al lado. El \b es necesario:
+    // sin él, "Destino:" y "Destinatario:" entraban por acá y devolvían
+    // "stino" y "stinatario" como si fueran el nombre del remitente.
+    /^\s*de\b\s*:?\s*([^\n]{3,50})$/im
+  ];
+  for (const r of rotulos) {
+    const m = t.match(r);
+    if (m) { const n = limpiarNombre(m[1]); if (n) return n; }
+  }
+  return "";
+};
+
+// A QUIÉN se le mandó
+const extraerPara = (texto) => {
+  const t = String(texto || "");
+  const rotulos = [
+    /\b(?:destinatario|beneficiario)\s*:?\s*([^\n]{3,50})/i,
+    /\bcuenta\s+(?:de\s+)?destino\s*:?\s*([^\n]{3,50})/i,
+    /\b(?:destino)\s*:?\s*([^\n]{3,50})/i,
+    /\ba\s+nombre\s+de\s*:?\s*([^\n]{3,50})/i,
+    // "Transferiste $8.500 a Modas Sol" — el nombre va después del importe
+    /(?:transferiste|enviaste|pagaste)[^\n]*?\s+a\s+([^\n]{3,50})/i,
+    // "Para" en su propio renglón, con el mismo cuidado que arriba
+    /^\s*para\b\s*:?\s*([^\n]{3,50})$/im
+  ];
+  for (const r of rotulos) {
+    const m = t.match(r);
+    if (m) { const n = limpiarNombre(m[1]); if (n) return n; }
+  }
+  return "";
+};
+
 // Busca ese número entre las ventas ya cobradas
 const comprobanteRepetido = (ventas, numero) => {
   const n = soloNumeroOp(numero);
@@ -5973,6 +6104,9 @@ const deLaNube = {
           metodo: c.metodo || "",
           monto: c.monto == null ? "" : c.monto,
           banco: c.banco || "",
+          fecha: c.fecha || "",
+          de: c.de || "",
+          para: c.para || "",
           nota: c.nota || ""
         })),
       comprobante: v.comprobante || "",
@@ -8280,6 +8414,9 @@ function ListaComprobantes({ ventas, lista, onCambiar, esperado }) {
       // Sacarlos no agrega ni un milisegundo de lectura.
       let montoLeido = null;
       let bancoLeido = "";
+      let fechaLeida = "";
+      let deLeido = "";
+      let paraLeido = "";
       try {
         const esPDF = /pdf/i.test(file.type) || /\.pdf$/i.test(file.name);
         let texto = "";
@@ -8293,6 +8430,9 @@ function ListaComprobantes({ ventas, lista, onCambiar, esperado }) {
         numero = extraerNumeroOp(texto) || "";
         montoLeido = extraerMonto(texto);
         bancoLeido = extraerBanco(texto);
+        fechaLeida = extraerFecha(texto);
+        deLeido = extraerDe(texto);
+        paraLeido = extraerPara(texto);
       } catch (err) {
         // Se muestra el error tal cual: los mensajes genéricos hacen buscar
         // el problema donde no está.
@@ -8314,9 +8454,15 @@ function ListaComprobantes({ ventas, lista, onCambiar, esperado }) {
         metodo: "transferencia",
         monto: montoLeido != null ? String(montoLeido) : "",
         banco: bancoLeido,
+        fecha: fechaLeida,
+        de: deLeido,
+        para: paraLeido,
         // Queda marcado qué se leyó solo, para avisar que hay que revisarlo:
         // el reconocimiento de una foto puede confundir un dígito.
-        leido: { monto: montoLeido != null, banco: !!bancoLeido },
+        leido: {
+          monto: montoLeido != null, banco: !!bancoLeido,
+          fecha: !!fechaLeida, de: !!deLeido, para: !!paraLeido
+        },
         nota: ""
       });
     }
@@ -8434,12 +8580,70 @@ function ListaComprobantes({ ventas, lista, onCambiar, esperado }) {
         })
       ),
 
+      // Tercera fila: cuándo se hizo y entre quiénes. La fecha sirve para
+      // pescar el comprobante viejo que alguien manda de nuevo, y los nombres
+      // para saber quién pagó cuando el titular de la cuenta no es el cliente.
+      React.createElement(
+        "div",
+        { style: { display: "flex", gap: 7, marginTop: 7, flexWrap: "wrap", alignItems: "center" } },
+        React.createElement("input", {
+          value: c.fecha || "",
+          onChange: (e) => fijar(c.id, "fecha", e.target.value),
+          placeholder: "Fecha del comprobante",
+          title: (c.leido && c.leido.fecha) ? "Lo leyó el escáner: revisalo" : "",
+          style: {
+            background: "var(--surface)", borderRadius: 8,
+            border: "1px solid " + ((c.leido && c.leido.fecha) ? "var(--mustard)" : "var(--line)"),
+            color: "var(--ink)", fontSize: 12.5, padding: "7px 9px",
+            fontFamily: "'IBM Plex Mono', monospace", flex: "1 1 128px", minWidth: 0, outline: "none"
+          }
+        }),
+        React.createElement("input", {
+          value: c.de || "",
+          onChange: (e) => fijar(c.id, "de", e.target.value),
+          placeholder: "Lo envió",
+          title: (c.leido && c.leido.de) ? "Lo leyó el escáner: revisalo" : "",
+          style: {
+            background: "var(--surface)", borderRadius: 8,
+            border: "1px solid " + ((c.leido && c.leido.de) ? "var(--mustard)" : "var(--line)"),
+            color: "var(--ink)", fontSize: 12.5, padding: "7px 9px",
+            fontFamily: "'Inter', sans-serif", flex: "1 1 120px", minWidth: 0, outline: "none"
+          }
+        }),
+        React.createElement("input", {
+          value: c.para || "",
+          onChange: (e) => fijar(c.id, "para", e.target.value),
+          placeholder: "Lo recibió",
+          title: (c.leido && c.leido.para) ? "Lo leyó el escáner: revisalo" : "",
+          style: {
+            background: "var(--surface)", borderRadius: 8,
+            border: "1px solid " + ((c.leido && c.leido.para) ? "var(--mustard)" : "var(--line)"),
+            color: "var(--ink)", fontSize: 12.5, padding: "7px 9px",
+            fontFamily: "'Inter', sans-serif", flex: "1 1 120px", minWidth: 0, outline: "none"
+          }
+        })
+      ),
+
+      // Si la fecha del comprobante no es de hoy, se avisa: el caso típico es
+      // el cliente que vuelve a mandar una transferencia de la semana pasada.
+      (() => {
+        const f = String(c.fecha || "").slice(0, 10);
+        if (!/^\d{2}\/\d{2}\/\d{4}$/.test(f)) return null;
+        const [d, m, a] = f.split("/");
+        const hoy = todayISO();
+        const suya = a + "-" + m + "-" + d;
+        if (suya === hoy) return null;
+        const dias = Math.round((new Date(hoy + "T00:00:00") - new Date(suya + "T00:00:00")) / 864e5);
+        if (dias <= 0) return null;
+        return React.createElement("div", {
+          style: { fontSize: 11, color: "var(--mustard)", marginTop: 6, fontWeight: 650 }
+        }, dias === 1 ? "Este comprobante es de ayer" : "Este comprobante es de hace " + dias + " días");
+      })(),
+
       // Aviso de lo que completó el escáner, para que se revise antes de cerrar
-      (c.leido && (c.leido.monto || c.leido.banco)) && React.createElement("div", {
-        style: { fontSize: 11, color: "var(--mustard)", marginTop: 6 }
-      }, "El escáner completó " +
-         [c.leido.monto && "el monto", c.leido.banco && "el banco"].filter(Boolean).join(" y ") +
-         ". Revisalo contra la foto.")
+      (c.leido && (c.leido.monto || c.leido.banco || c.leido.fecha || c.leido.de || c.leido.para)) && React.createElement("div", {
+        style: { fontSize: 11, color: "var(--muted)", marginTop: 6 }
+      }, "Lo marcado en ámbar lo leyó el escáner. Revisalo contra la foto.")
     );
     }),
 
@@ -16589,6 +16793,17 @@ function ticketParaChat(data, venta) {
   L.push("Pago:");
   pagos.forEach((p) => {
     L.push("   " + (METODO_LABELS[p.metodo] || p.metodo || "—") + "   " + money(p.monto));
+    // Cada comprobante con su monto y su fecha, no todos sumados: si de tres
+    // transferencias falta una, el cliente tiene en el chat cuál fue.
+    (venta.comprobantes || [])
+      .filter((c) => (c.numero || c.banco || c.monto) && (c.metodo || "transferencia") === p.metodo)
+      .forEach((c) => {
+        const cab = [c.banco || "Comprobante",
+                     (Number(c.monto) || 0) > 0 ? money(Number(c.monto)) : ""].filter(Boolean).join("   ");
+        L.push("      · " + cab);
+        const det = [c.fecha || "", c.numero ? "Op " + c.numero : ""].filter(Boolean).join("   ");
+        if (det) L.push("        " + det);
+      });
   });
   if (venta.vuelto > 0) L.push("   Vuelto   " + money(venta.vuelto));
 
@@ -16677,25 +16892,50 @@ function construirTicketTexto(data, venta) {
   out.push(dashes);
 
   out.push(NEGRITA + "PAGO" + NORMAL);
+  // Cada comprobante va con SU monto y SU fecha, uno abajo del otro. Sumarlos
+  // en un solo renglón de "Transferencia" no sirve para reclamar: si de tres
+  // transferencias falta una, hay que poder señalar cuál.
+  const compsDe = (metodo) => (venta.comprobantes || []).filter((c) => {
+    if (!(c.numero || c.banco || c.monto)) return false;
+    // Los comprobantes viejos no tienen método: se asumen de la transferencia
+    return (c.metodo || "transferencia") === metodo;
+  });
+  // Imprime un comprobante en dos renglones: banco con monto, y debajo la
+  // fecha con el número de operación.
+  const ponerComprobante = (c) => {
+    const banco = (c.banco || (c.numero ? "Comprobante" : "Transferencia")).slice(0, 18);
+    const monto = (Number(c.monto) || 0) > 0 ? money(Number(c.monto)) : "";
+    out.push(linea("   - " + banco, monto));
+    // El año se saca de la fecha: ya está arriba, en el encabezado del ticket,
+    // y son cuatro caracteres que le hacen falta al número de operación.
+    const f = String(c.fecha || "").replace(/^(\d{2}\/\d{2})\/\d{4}/, "$1");
+    const op = c.numero ? "Op " + c.numero : "";
+    const juntos = [f, op].filter(Boolean).join("  ");
+    if (juntos.length <= ANCHO - 5) {
+      if (juntos) out.push("     " + juntos);
+    } else {
+      // No entran en un renglón: el número de operación va solo y ENTERO.
+      // Cortarlo deja el ticket inservible para reclamar, que es justamente
+      // para lo que se lo guarda.
+      if (f) out.push("     " + f);
+      if (op) out.push("     " + op);
+    }
+    // Quién mandó la plata, cuando no es el cliente de la venta
+    if (c.de && c.de !== venta.clienteNombre) out.push("     de " + String(c.de).slice(0, ANCHO - 8));
+  };
+
   if (venta.pagos && venta.pagos.length > 1) {
     venta.pagos.forEach((x) => {
       out.push(linea("  " + (metodoPagoLabel[x.metodo] || x.metodo), money(x.monto)));
-      // Los comprobantes de ese método, debajo del renglón que les toca: con
-      // tres transferencias de bancos distintos, el ticket tiene que decir
-      // cuál es cuál o no sirve para reclamar.
-      (venta.comprobantes || [])
-        .filter((c) => (c.metodo || venta.pagos[0].metodo) === x.metodo && (c.numero || c.banco))
-        .forEach((c) => {
-          const det = [c.banco, c.numero].filter(Boolean).join(" ");
-          if (det) out.push("    " + det.slice(0, 30));
-        });
+      compsDe(x.metodo).forEach(ponerComprobante);
     });
   } else {
-    out.push(linea("  " + (metodoPagoLabel[venta.metodoPago] || venta.metodoPago || "-"), money(venta.total)));
-    (venta.comprobantes || []).filter((c) => c.numero || c.banco).forEach((c) => {
-      const det = [c.banco, c.numero].filter(Boolean).join(" ");
-      if (det) out.push("    " + det.slice(0, 30));
-    });
+    const unico = venta.metodoPago || "-";
+    const comps = compsDe(unico);
+    // Con varios comprobantes de un mismo método, el renglón del método queda
+    // como subtotal y cada comprobante se detalla debajo.
+    out.push(linea("  " + (metodoPagoLabel[unico] || unico), money(venta.total)));
+    if (comps.length) comps.forEach(ponerComprobante);
   }
   if (venta.metodoPago === "efectivo" && venta.montoEntregado != null) {
     out.push(linea("  Pago con", money(venta.montoEntregado)));
@@ -16949,11 +17189,32 @@ function dibujarTicket(data, venta, fuente) {
   raya();
 
   // --- Pago ---
+  // Cada comprobante con SU monto y SU fecha, uno abajo del otro: si de tres
+  // transferencias falta una, hay que poder señalar cuál en el papel.
   escribir("PAGO", { tam: 16, negrita: true, aire: 7 });
+  const compsDeG = (metodo) => (venta.comprobantes || []).filter((c) =>
+    (c.numero || c.banco || c.monto) && (c.metodo || "transferencia") === metodo);
+  const ponerCompG = (c) => {
+    // El nombre del banco se recorta: con uno largo, el texto de la izquierda
+    // y el importe de la derecha se encontraban en el medio del renglón.
+    const banco = String(c.banco || (c.numero ? "Comprobante" : "Transferencia")).slice(0, 20);
+    const monto = (Number(c.monto) || 0) > 0 ? money(Number(c.monto)) : "";
+    renglon("   \u00B7 " + banco, monto, { tam: 16 });
+    // El año se saca: ya está en el encabezado del ticket
+    const f = String(c.fecha || "").replace(/^(\d{2}\/\d{2})\/\d{4}/, "$1");
+    const det = [f, c.numero ? "Op " + c.numero : ""].filter(Boolean).join("  ");
+    if (det) escribir("     " + det, { tam: 15 });
+    if (c.de && c.de !== venta.clienteNombre) escribir("     de " + String(c.de).slice(0, 26), { tam: 15 });
+  };
   if (venta.pagos && venta.pagos.length > 1) {
-    venta.pagos.forEach((x) => renglon("  " + (metodoPagoLabel[x.metodo] || x.metodo), money(x.monto), { tam: 18 }));
+    venta.pagos.forEach((x) => {
+      renglon("  " + (metodoPagoLabel[x.metodo] || x.metodo), money(x.monto), { tam: 18 });
+      compsDeG(x.metodo).forEach(ponerCompG);
+    });
   } else {
-    renglon("  " + (metodoPagoLabel[venta.metodoPago] || venta.metodoPago || "\u2014"), money(venta.total), { tam: 18 });
+    const unicoG = venta.metodoPago || "\u2014";
+    renglon("  " + (metodoPagoLabel[unicoG] || unicoG), money(venta.total), { tam: 18 });
+    compsDeG(unicoG).forEach(ponerCompG);
   }
   if (venta.metodoPago === "efectivo" && venta.montoEntregado != null) {
     renglon("  Pag\u00F3 con", money(venta.montoEntregado), { tam: 18 });
