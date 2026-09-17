@@ -129,7 +129,21 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.964";
+const VERSION_APP = "9.965";
+// v9.965 (2026-09-16) — VER MERCADERÍA E IMPRIMIR TICKET EN TRES LUGARES
+// La mercadería que se llevó un cliente y la reimpresión del ticket estaban
+// sólo al momento de la venta. Ahora se llega desde tres lados, todos con el
+// MISMO modal de ticket que usa el POS (imprime por Bluetooth y manda por
+// WhatsApp igual, sin lógica duplicada):
+//  · Ficha del cliente: cada fila tiene un menú de 3 puntos con "Ver
+//    mercadería", "Imprimir ticket" y "Eliminar". Reemplaza al botón de
+//    borrar suelto que había.
+//  · Movimientos y Cierre: botón de ticket junto al de borrar, en cada venta
+//    del turno.
+//  · Reportes › actividad: botón de ticket en cada fila que es una venta.
+// Rendimiento: sin consultas nuevas. La venta ya está en memoria; en el
+// reporte sólo se adjunta al evento que ya se armaba.
+//
 // v9.964 (2026-09-16) — EL ESCÁNER LEE EL FORMATO "ORIGEN Y DESTINO"
 // Los comprobantes de Mercado Pago y Naranja X con el bloque "Origen y
 // destino" no traen rótulos "De:"/"Para:": los nombres van en líneas sueltas
@@ -19842,6 +19856,9 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
   const [verCuenta, setVerCuenta] = useState(false);
   const [movForm, setMovForm] = useState({ tipo: "pago", monto: "", concepto: "", metodo: "Efectivo" });
   const [movError, setMovError] = useState("");
+  // Menú de 3 puntos por fila y el ticket que se abre desde ahí
+  const [menuFila, setMenuFila] = useState(null);
+  const [ticketFicha, setTicketFicha] = useState(null);
 
   // Los cargos "Venta en cuenta corriente" son duplicados de la venta: la
   // venta ya aparece como "Fiado" en la línea de tiempo, y este movimiento
@@ -20286,28 +20303,42 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
                   React.createElement("td", {
                     style: { textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: saldos[f.id] > 0 ? "var(--ink)" : "var(--muted)" }
                   }, saldos[f.id] > 0 ? money(saldos[f.id]) : "—"),
-                  React.createElement("td", { style: { textAlign: "right" } },
-                    // Eliminar pagos, fiados y ventas: Propietario, o el dueño
-                    // cuando la app no pudo identificar su sesión (ver
-                    // puedeEliminarMovimientos). Un empleado identificado no.
-                    !puedeEliminarMovimientos(data)
+                  React.createElement("td", { style: { textAlign: "right", position: "relative" } },
+                    // Menú de 3 puntos por fila: ver la mercadería que se
+                    // llevó, imprimir el ticket y eliminar. Antes había sólo un
+                    // botón de borrar suelto.
+                    !puedeEliminarMovimientos(data) && !f.venta
                       ? null
                       : React.createElement("button", {
-                          onClick: () => f.esMovimiento ? borrarMovimiento(f.id) : (f.venta ? borrarVenta(f.venta) : null),
-                          title: f.esMovimiento
-                            ? (f.clase === "venta" ? "Eliminar este fiado" : "Eliminar este pago")
-                            : "Eliminar la venta y devolver el stock",
+                          onClick: (e) => setMenuFila(menuFila && menuFila.id === f.id ? null : { id: f.id, rect: e.currentTarget.getBoundingClientRect() }),
+                          title: "Acciones",
                           style: {
-                            background: "none",
-                            // Un borde tenue: el ícono suelto sobre el fondo no
-                            // se leía como botón y no se encontraba.
-                            border: "1px solid color-mix(in srgb, var(--line) 80%, transparent)",
+                            background: "none", border: "1px solid color-mix(in srgb, var(--line) 80%, transparent)",
                             borderRadius: 8, cursor: "pointer", color: "var(--muted)",
-                            display: "inline-flex", alignItems: "center", justifyContent: "center",
-                            // 34 px: lo mínimo para acertarle con el dedo
-                            width: 34, height: 34
+                            display: "inline-flex", alignItems: "center", justifyContent: "center", width: 34, height: 34
                           }
-                        }, React.createElement(Trash2, { size: 15 })))
+                        }, React.createElement(MoreHorizontal, { size: 17 })),
+                    menuFila && menuFila.id === f.id && React.createElement(
+                      MenuFila,
+                      { ancla: menuFila.rect, onClose: () => setMenuFila(null) },
+                      [
+                        // Ver detalle e imprimir sólo tienen sentido si la fila
+                        // es una venta (los pagos y fiados sueltos no tienen
+                        // productos ni ticket).
+                        f.venta && ["Ver mercadería", () => { setTicketFicha(f.venta); setMenuFila(null); }, false],
+                        f.venta && ["Imprimir ticket", () => { setTicketFicha(f.venta); setMenuFila(null); }, false],
+                        puedeEliminarMovimientos(data) && [
+                          f.esMovimiento ? (f.clase === "venta" ? "Eliminar fiado" : "Eliminar pago") : "Eliminar venta",
+                          () => { setMenuFila(null); f.esMovimiento ? borrarMovimiento(f.id) : (f.venta ? borrarVenta(f.venta) : null); },
+                          true
+                        ]
+                      ].filter(Boolean).map(([texto, fn, peligro]) => React.createElement("button", {
+                        key: texto,
+                        onClick: fn,
+                        style: { display: "block", width: "100%", textAlign: "left", padding: "10px 15px", border: "none", background: "none", cursor: "pointer", fontSize: 13, fontFamily: "'Inter', sans-serif", color: peligro ? "var(--rose)" : "var(--ink)" }
+                      }, texto))
+                    )
+                  )
                 );
               })
             )
@@ -20322,6 +20353,13 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       texto: textoEstadoCuenta(data, cliente, (data.negocio && data.negocio.nombre) || ""),
       sugerido: cliente.telefono || "",
       onClose: () => setEnviarCuenta(false)
+    }),
+
+    // Ver la mercadería e imprimir el ticket de una venta, desde el menú de
+    // 3 puntos de su fila. Reusa el mismo modal que muestra el ticket recién
+    // hecho, así imprime igual y no duplica lógica.
+    ticketFicha && React.createElement(TicketModal, {
+      data, venta: ticketFicha, onClose: () => setTicketFicha(null)
     })
   );
 }
@@ -20949,6 +20987,7 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
   const [detalle, setDetalle] = useState(null);
   const [pestana, setPestana] = useState("turno");
   const [ampliada, setAmpliada] = useState(null);
+  const [ticket, setTicket] = useState(null);
   const movs = caja.movimientos || [];
 
   // Eliminar una venta mal cargada desde acá: es donde el vendedor la ve al
@@ -21208,6 +21247,16 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
                   React.createElement("span", {
                     style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, flexShrink: 0 }
                   }, money(v.total)),
+                  // Imprimir el ticket de esta venta con la impresora Bluetooth
+                  React.createElement("button", {
+                    onClick: () => setTicket(v),
+                    title: "Imprimir el ticket de esta venta",
+                    style: {
+                      background: "none", border: "none", cursor: "pointer", flexShrink: 0,
+                      color: "var(--muted)", display: "flex", alignItems: "center",
+                      padding: 5, borderRadius: 7
+                    }
+                  }, React.createElement(Receipt, { size: 14 })),
                   React.createElement("button", {
                     onClick: () => borrarVenta(v),
                     title: "Eliminar la venta y devolver el stock",
@@ -21412,6 +21461,10 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
             )),
 
     detalle && React.createElement(DetalleCierreModal, { cierre: detalle, data, onClose: () => setDetalle(null) }),
+
+    // Imprimir el ticket de una venta del historial, con el mismo modal que
+    // usa el POS al cerrar una venta.
+    ticket && React.createElement(TicketModal, { data, venta: ticket, onClose: () => setTicket(null) }),
 
     React.createElement(Button, { tone: "ghost", onClick: onVolver, style: { width: "100%", justifyContent: "center", marginTop: 16 } }, "Volver")
   );
@@ -29628,7 +29681,9 @@ const lineaDeTiempo = (data, negocioId) => {
       tono: dev ? "mustard" : "sage", icono: dev ? ArrowRightLeft : ShoppingBag,
       titulo: (dev ? "Devoluci\u00F3n" : "Venta") + " de " + Math.abs(u) + " u \u00B7 " + (v.clienteNombre || "Consumidor final"),
       detalle: resumenItems(v.items) + (v.metodoPago ? " \u00B7 " + (METODO_LABELS[v.metodoPago] || v.metodoPago) : ""),
-      monto: v.total, usuario: v.usuarioNombre || ""
+      monto: v.total, usuario: v.usuarioNombre || "",
+      // La venta completa, para poder imprimir su ticket desde el reporte
+      venta: v
     });
   });
 
@@ -29855,6 +29910,7 @@ function ActividadView({ data, persist, senalMovimiento }) {
   const [filtro, setFiltro] = useState("");
   const [quien, setQuien] = useState("");
   const [cuantos, setCuantos] = useState(60);
+  const [ticket, setTicket] = useState(null);
   // Registrar un ajuste vive acá: antes había una pantalla aparte que mostraba
   // lo mismo que esta, y no se sabía cuál abrir para ver qué pasó.
   const [registrando, setRegistrando] = useState(false);
@@ -30028,7 +30084,17 @@ function ActividadView({ data, persist, senalMovimiento }) {
                   e.monto != null && React.createElement("span", {
                     style: { display: "block", fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 600 }
                   }, money(e.monto)),
-                  React.createElement("span", { style: { display: "block", fontSize: 11.5, color: "var(--muted)", marginTop: 2 } }, e.hora || "")
+                  React.createElement("span", { style: { display: "block", fontSize: 11.5, color: "var(--muted)", marginTop: 2 } }, e.hora || ""),
+                  // Imprimir el ticket, sólo en las filas que son una venta
+                  e.venta && React.createElement("button", {
+                    onClick: () => setTicket(e.venta),
+                    title: "Imprimir el ticket de esta venta",
+                    style: {
+                      background: "none", border: "1px solid color-mix(in srgb, var(--line) 80%, transparent)",
+                      borderRadius: 8, cursor: "pointer", color: "var(--muted)", marginTop: 6,
+                      display: "inline-flex", alignItems: "center", justifyContent: "center", width: 30, height: 30
+                    }
+                  }, React.createElement(Receipt, { size: 14 }))
                 )
               ))
             )),
@@ -30045,7 +30111,10 @@ function ActividadView({ data, persist, senalMovimiento }) {
       negocioId: negocioActivo(data).id,
       onGuardar: registrarAjuste,
       onClose: () => setRegistrando(false)
-    })
+    }),
+
+    // Imprimir el ticket de una venta desde el reporte de actividad
+    ticket && React.createElement(TicketModal, { data, venta: ticket, onClose: () => setTicket(null) })
   );
 }
 
