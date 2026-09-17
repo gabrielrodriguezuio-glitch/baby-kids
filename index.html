@@ -129,7 +129,36 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.965";
+const VERSION_APP = "9.967";
+// v9.967 (2026-09-16) — IMPRIMIR UN CIERRE PASADO POR BLUETOOTH
+// En el HISTORIAL de cierres, "Imprimir el cierre" abría una ventana del
+// navegador, que no llega a la impresora térmica. Ahora imprime por Bluetooth
+// el mismo ticket completo que el arqueo del día (v9.966): efectivo con
+// esperado/contado/diferencia, lo cobrado por cada medio, y las cuentas de
+// cada cliente del turno con saldo anterior, lo que pagó y lo que queda.
+// Reusa construirTicketCierre, que ahora acepta un cierre guardado: se le
+// pasan las ventas del turno ya acotadas (por apertura Y cierre, del mismo
+// local) y el efectivo esperado/contado tal como quedaron registrados, en vez
+// de recalcularlos. Las dos llamadas (menú del historial y botón del detalle)
+// pasan `data` para poder armar ese detalle.
+// Sin consultas nuevas: todo sale de lo que ya está en memoria.
+//
+// v9.966 (2026-09-16) — TICKET DE CIERRE DE CAJA POR BLUETOOTH
+// En la pantalla de cerrar caja hay ahora un botón "Imprimir arqueo por
+// Bluetooth". Sale por la misma impresora térmica de 58 mm, con el mismo
+// patrón de reconexión que el ticket de venta. Se puede imprimir para
+// revisarlo ANTES de confirmar el cierre, y también sin haber contado (sale
+// sin la línea de diferencia).
+// El ticket incluye:
+//  · Efectivo: apertura, ventas en efectivo, ingresos y egresos manuales,
+//    esperado, y si se contó, el contado y si cuadra/sobra/falta
+//  · Cobrado por cada medio de pago (efectivo, transferencia, tarjeta, QR,
+//    cuenta corriente) y el total vendido del turno
+//  · Cuentas del turno, por cliente: saldo anterior, lo que se llevó fiado,
+//    lo que pagó ese día y el saldo que le queda. El saldo anterior se
+//    reconstruye desde el saldo actual (no se rompe con el fix de duplicados)
+// Todo se calcula de lo que ya está en memoria: sin consultas nuevas.
+//
 // v9.965 (2026-09-16) — VER MERCADERÍA E IMPRIMIR TICKET EN TRES LUGARES
 // La mercadería que se llevó un cliente y la reimpresión del ticket estaban
 // sólo al momento de la venta. Ahora se llega desde tres lados, todos con el
@@ -17664,8 +17693,124 @@ function construirTicketTexto(data, venta) {
   return escposEncode(out.join("\n"));
 }
 
-// ===== Remito de transferencia para la impresora térmica =====
-// Mismo documento que el remito en papel pero sin fotos: en 58 mm una foto
+// ===== Ticket de CIERRE DE CAJA para la impresora térmica =====
+// Es el arqueo del turno, no una venta. Resume la plata (efectivo esperado,
+// ingresos y egresos manuales, y lo cobrado por cada medio de pago) y, si
+// hubo ventas fiadas en el turno, lista por cliente el saldo anterior, lo que
+// pagó ese día y lo que le queda. `contado` y `diferencia` vienen del arqueo
+// que se acaba de hacer; pueden faltar si se imprime sin contar.
+function construirTicketCierre(data, caja, extra) {
+  const ANCHO = 32;
+  const negocio = data.negocio || {};
+  const info = extra || {};
+  const linea = (izq, der) => {
+    izq = izq || ""; der = der || "";
+    const espacio = Math.max(1, ANCHO - izq.length - der.length);
+    return izq + " ".repeat(espacio) + der;
+  };
+  const dashes = SUBRAYADO + " ".repeat(ANCHO) + SIN_SUBRAYADO;
+
+  // Las ventas del turno. Si quien llama ya las calculó (el detalle de un
+  // cierre pasado, que acota por apertura Y cierre) se usan esas; si no, se
+  // toman las de la caja viva, desde que se abrió.
+  const ventas = info.ventas || ventasDelTurno(data, caja);
+  const porMetodo = ingresosPorMetodo(ventas);
+  const movs = caja.movimientos || [];
+  const suma = (tipo) => movs.filter((m) => m.tipo === tipo).reduce((a, m) => a + m.monto, 0);
+  const ingresosManuales = suma("ingreso");
+  const egresos = suma("retiro") + suma("devolucion") + suma("egreso");
+  // El efectivo esperado: el del cierre guardado si viene, o el de la caja viva
+  const esperado = info.esperado != null ? info.esperado : efectivoEnCaja(caja);
+  const contado = info.contado;
+  const diferencia = info.diferencia;
+
+  // Fiados del turno, por cliente: saldo anterior, lo que pagó hoy y el que
+  // queda. El saldo actual sale de la cuenta; el anterior se reconstruye
+  // sumándole lo que pagó en el turno y restándole lo que se le fió hoy.
+  const desde = caja.abiertaEn ? new Date(caja.abiertaEn).getTime() : 0;
+  const enTurno = (m) => {
+    if (!m.fecha) return false;
+    const t = new Date(String(m.fecha).length > 10 ? m.fecha : m.fecha + "T12:00:00").getTime();
+    return t >= desde;
+  };
+  const porCliente = {};
+  (data.movimientosCC || []).forEach((m) => {
+    if (esCargoDuplicado(m) || !enTurno(m)) return;
+    const c = porCliente[m.clienteId] || (porCliente[m.clienteId] = { pago: 0, fiado: 0 });
+    if (m.tipo === "cargo") c.fiado += m.monto || 0; else c.pago += m.monto || 0;
+  });
+  // Las ventas 100% a cuenta del turno también son fiado del día
+  ventas.forEach((v) => {
+    if (v.metodoPago === "cuenta_corriente" && v.clienteId) {
+      const c = porCliente[v.clienteId] || (porCliente[v.clienteId] = { pago: 0, fiado: 0 });
+      c.fiado += v.total || 0;
+    }
+  });
+
+  const out = [];
+  out.push(CURSIVA + NEGRITA);
+  out.push(CENTRO + GRANDE + NEGRITA + (negocio.nombre || "Mi negocio").toUpperCase() + NORMAL + SIN_NEGRITA);
+  out.push(CENTRO + ALTO + "CIERRE DE CAJA" + NORMAL);
+  out.push(IZQ + dashes);
+
+  const abrio = (info.abiertaEn || caja.abiertaEn) ? fechaHoraLabel(info.abiertaEn || caja.abiertaEn) : "";
+  const cierra = fechaHoraLabel(info.cerradaEn || (/* @__PURE__ */ new Date()).toISOString());
+  if (abrio) out.push(linea("Apertura", abrio));
+  out.push(linea("Cierre", cierra));
+  if (info.usuario) out.push(linea("Cajero", String(info.usuario).slice(0, 20)));
+  out.push(dashes);
+
+  // Efectivo
+  out.push(NEGRITA + "EFECTIVO" + NORMAL);
+  out.push(linea("  Apertura", money(caja.montoInicial || 0)));
+  out.push(linea("  Ventas en efectivo", money(suma("venta"))));
+  if (ingresosManuales > 0) out.push(linea("  Ingresos", money(ingresosManuales)));
+  if (egresos > 0) out.push(linea("  Egresos", "- " + money(egresos)));
+  out.push(ALTO + linea("  Esperado", money(esperado)) + NORMAL);
+  if (contado != null) {
+    out.push(linea("  Contado", money(contado)));
+    out.push(ALTO + linea(
+      diferencia === 0 ? "  Cuadra" : diferencia > 0 ? "  Sobra" : "  Falta",
+      diferencia === 0 ? "OK" : money(Math.abs(diferencia))) + NORMAL);
+  }
+  out.push(dashes);
+
+  // Lo cobrado por cada medio de pago
+  out.push(NEGRITA + "COBRADO POR MEDIO" + NORMAL);
+  if (porMetodo.length === 0) {
+    out.push("  Sin ventas en el turno");
+  } else {
+    porMetodo.forEach((m) => out.push(linea("  " + m.label, money(m.monto))));
+    const totalCobrado = porMetodo.reduce((a, m) => a + m.monto, 0);
+    out.push(ALTO + linea("  Total vendido", money(totalCobrado)) + NORMAL);
+  }
+  out.push(dashes);
+
+  // Cuentas corrientes movidas en el turno
+  const filasCC = Object.entries(porCliente).filter(([, c]) => c.pago > 0 || c.fiado > 0);
+  if (filasCC.length) {
+    out.push(NEGRITA + "CUENTAS DEL TURNO" + NORMAL);
+    filasCC.forEach(([id, c]) => {
+      const cli = (data.clientes || []).find((x) => x.id === id);
+      const saldoActual = saldoDeCliente(data, id);
+      // Saldo antes del turno = saldo de ahora - lo que se fió hoy + lo que pagó hoy
+      const saldoAnterior = Math.max(0, saldoActual - c.fiado + c.pago);
+      out.push(NEGRITA + (cli ? cli.nombre : "Cliente").slice(0, ANCHO) + NORMAL);
+      if (saldoAnterior > 0) out.push(linea("  Saldo anterior", money(saldoAnterior)));
+      if (c.fiado > 0) out.push(linea("  Se llevó fiado", money(c.fiado)));
+      if (c.pago > 0) out.push(linea("  Pagó hoy", "- " + money(c.pago)));
+      out.push(linea("  Saldo actual", money(saldoActual)));
+    });
+    out.push(dashes);
+  }
+
+  out.push(CENTRO + "Arqueo de " + (negocio.nombre || ""));
+  out.push(IZQ + SIN_CURSIVA + ESC + "!" + "\x00" + GS + "!" + "\x00");
+  out.push("");
+  out.push("");
+  return escposEncode(out.join("\n"));
+}
+
 // no se distingue y hace lentísima la impresión. Va todo lo que hace falta
 // para controlar el bulto al recibirlo: nombre, código, talle, color y
 // cantidad de cada renglón, más el origen, el destino y las observaciones.
@@ -20674,8 +20819,10 @@ const sugerirBilletes = (monto) => {
 const totalBilletes = (conteo) =>
   DENOMINACIONES.reduce((a, d) => a + d * (Number(conteo[d]) || 0), 0);
 
-function CerrarCajaModal({ caja, onCerrar, onClose }) {
+function CerrarCajaModal({ data, caja, onCerrar, onClose }) {
   const esperado = efectivoEnCaja(caja);
+  const [impMensaje, setImpMensaje] = useState("");
+  const [impEstado, setImpEstado] = useState("idle");
   // Se escribe el total contado: la planilla de billetes agregaba pasos y en
   // el mostrador se cuenta con la mano, no con el teléfono.
   const [modo, setModo] = useState("manual");
@@ -20809,7 +20956,45 @@ function CerrarCajaModal({ caja, onCerrar, onClose }) {
         style: { flex: 1, justifyContent: "center" }
       }, "Confirmar cierre"),
       React.createElement(Button, { tone: "ghost", onClick: onClose, style: { flex: 1, justifyContent: "center" } }, "Cancelar")
-    )
+    ),
+
+    // Imprimir el arqueo por Bluetooth. Va aparte del cierre: se puede sacar
+    // el ticket para revisarlo ANTES de confirmar, y también sin contar (sale
+    // sin la línea de diferencia). Mismo patrón de reconexión que el ticket
+    // de venta: si ya se emparejó, conecta sola.
+    React.createElement(Button, {
+      tone: "ghost",
+      disabled: impEstado === "conectando" || impEstado === "imprimiendo",
+      onClick: async () => {
+        setImpMensaje("");
+        try {
+          if (!window.__blePrinter || !window.__blePrinter.device) {
+            setImpEstado("conectando");
+            const nombre = await conectarImpresoraBLE();
+            setImpMensaje("Conectado a " + nombre + ". Imprimiendo\u2026");
+          } else if (!window.__blePrinter.device.gatt.connected) {
+            setImpEstado("conectando");
+            setImpMensaje("Reconectando con la impresora\u2026");
+            await caracteristicaImpresora();
+          }
+          setImpEstado("imprimiendo");
+          await imprimirEscPos(construirTicketCierre(data, caja, {
+            contado, diferencia, usuario: usuarioActivo(data)
+          }));
+          setImpEstado("ok");
+          setImpMensaje("Arqueo enviado a la impresora.");
+        } catch (e) {
+          setImpEstado("error");
+          setImpMensaje(e && e.message ? e.message : "No se pudo imprimir.");
+        }
+      },
+      style: { width: "100%", justifyContent: "center", marginTop: 10 }
+    },
+      React.createElement(Receipt, { size: 14 }),
+      impEstado === "conectando" ? "Conectando\u2026" : impEstado === "imprimiendo" ? "Imprimiendo\u2026" : "Imprimir arqueo por Bluetooth"),
+    impMensaje && React.createElement("p", {
+      style: { fontSize: 12, marginTop: 8, textAlign: "center", color: impEstado === "error" ? "var(--rose)" : "var(--muted)" }
+    }, impMensaje)
   );
 }
 // Ventas que entran dentro del turno de caja abierto
@@ -21503,7 +21688,7 @@ function GestionarCajaModal({ data, persist, caja, onIngresar, onRetirar, onCerr
     onVolver: () => setVista("menu"),
     onClose
   });
-  if (vista === "cierre") return /* @__PURE__ */ React.createElement(CerrarCajaModal, { caja, onCerrar, onClose: () => setVista("resumen") });
+  if (vista === "cierre") return /* @__PURE__ */ React.createElement(CerrarCajaModal, { data, caja, onCerrar, onClose: () => setVista("resumen") });
   // Corregir el monto con el que se abrió (se equivocó al tipearlo)
   if (vista === "corregir") return React.createElement(
     ModalOverlay, { width: 400 },
@@ -34891,7 +35076,7 @@ function CajaReportes({ data, rango, persist, dataReal }) {
                       { ancla: menu.rect, onClose: () => setMenu(null) },
                       [
                         ["Ver el detalle", () => { setDetalle(c); setMenu(null); }, Search],
-                        ["Imprimir el cierre", () => { imprimirCierre(c); setMenu(null); }, Receipt],
+                        ["Imprimir el cierre", () => { imprimirCierre(c, data); setMenu(null); }, Receipt],
                         // S\u00F3lo el due\u00F1o puede borrar un cierre (uno duplicado, de prueba o mal hecho)
                         ...(persist && esPropietario(real) ? [["Eliminar cierre", () => { setMenu(null); eliminarCierre(c); }, Trash2, true]] : [])
                       ].map(([texto, fn, Icono, peligro]) => React.createElement("button", {
@@ -34937,32 +35122,43 @@ function CajaReportes({ data, rango, persist, dataReal }) {
 }
 
 // Comprobante del cierre, para archivar o entregar
-const imprimirCierre = (c) => {
-  const estilos =
-    "body{max-width:520px;margin:0 auto}" +
-    "h1{font-size:17pt;margin:0 0 4px}" +
-    ".sub{color:#666;font-size:9.5pt;margin-bottom:18px}" +
-    "table{width:100%;border-collapse:collapse;font-size:10.5pt}" +
-    "td{padding:8px 0;border-bottom:1px solid #eee}" +
-    "td:last-child{text-align:right;font-family:'IBM Plex Mono',monospace}" +
-    ".tot td{font-weight:700;font-size:12pt;border-bottom:none;padding-top:14px}" +
-    ".firma{margin-top:46px;border-top:1px solid #999;padding-top:6px;font-size:9pt;color:#666;width:60%}";
-  const fila = (k, v) => "<tr><td>" + escaparHTML(k) + "</td><td>" + v + "</td></tr>";
-  const dif = Number(c.diferencia) || 0;
-  const cuerpo =
-    "<h1>Cierre de caja</h1>" +
-    "<div class='sub'>" + escaparHTML(c.usuarioNombre || "") +
-      (c.negocioNombre ? " \u00B7 " + escaparHTML(c.negocioNombre) : "") + "</div>" +
-    "<table>" +
-    fila("Apertura", c.abiertaEn ? fechaHoraLargaISO(c.abiertaEn) : "\u2014") +
-    fila("Cierre", c.cerradaEn ? fechaHoraLargaISO(c.cerradaEn) : "\u2014") +
-    fila("Monto inicial", money(c.montoInicial)) +
-    fila("Efectivo esperado", money(c.efectivoEsperado)) +
-    fila("Efectivo contado", money(c.efectivoContado)) +
-    "<tr class='tot'><td>Diferencia</td><td>" + (dif > 0 ? "+" : "") + money(dif) + "</td></tr>" +
-    "</table>" +
-    "<div class='firma'>Firma de quien cierra</div>";
-  abrirImpresion("Cierre de caja", estilos, cuerpo);
+// Imprime un cierre pasado del historial por Bluetooth, con el mismo ticket
+// que el arqueo del día. Antes abría una ventana del navegador, que no llega
+// a la impresora térmica. Recibe `data` para poder listar las ventas del
+// turno y las cuentas de cada cliente. El aviso va por alert simple porque
+// esto es una función suelta, no un componente con estado.
+const imprimirCierre = async (c, data) => {
+  try {
+    if (!window.__blePrinter || !window.__blePrinter.device) {
+      await conectarImpresoraBLE();
+    } else if (!window.__blePrinter.device.gatt.connected) {
+      await caracteristicaImpresora();
+    }
+    // Se reconstruye una "caja" desde el cierre guardado: construirTicketCierre
+    // espera los movimientos ahí, y el resto (esperado, contado, fechas,
+    // ventas del turno) se le pasa en el tercer argumento ya calculado.
+    const cajaDesdeCierre = { movimientos: c.movimientos || [], montoInicial: c.montoInicial || 0, abiertaEn: c.abiertaEn };
+    const desde = c.abiertaEn ? new Date(c.abiertaEn).getTime() : 0;
+    const hasta = c.cerradaEn ? new Date(c.cerradaEn).getTime() : Date.now();
+    const ventasTurno = (data && data.ventas || []).filter((v) => {
+      if (esDevolucion(v)) return false;
+      if (c.negocioId && v.negocioId && v.negocioId !== c.negocioId) return false;
+      const cuando = momentoDeVenta(v);
+      if (cuando == null) return v.fecha === diaLocal(c.abiertaEn) || v.fecha === diaLocal(c.cerradaEn);
+      return cuando >= desde - 60000 && cuando <= hasta + 60000;
+    });
+    await imprimirEscPos(construirTicketCierre(data || {}, cajaDesdeCierre, {
+      ventas: ventasTurno,
+      esperado: c.efectivoEsperado,
+      contado: c.efectivoContado,
+      diferencia: Number(c.diferencia) || 0,
+      abiertaEn: c.abiertaEn,
+      cerradaEn: c.cerradaEn,
+      usuario: c.usuarioNombre || ""
+    }));
+  } catch (e) {
+    alert(e && e.message ? e.message : "No se pudo imprimir el cierre.");
+  }
 };
 
 // La hora del ticket viene como "08:22 p. m.", que no sirve para armar una
@@ -35210,7 +35406,7 @@ function DetalleCierreModal({ cierre, onClose, data }) {
     React.createElement(
       "div",
       { style: { display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 20 } },
-      React.createElement(Button, { tone: "ghost", onClick: () => imprimirCierre(cierre), style: { padding: "12px 20px" } },
+      React.createElement(Button, { tone: "ghost", onClick: () => imprimirCierre(cierre, data), style: { padding: "12px 20px" } },
         React.createElement(Receipt, { size: 15 }), " Imprimir"),
       React.createElement(Button, { onClick: onClose, style: { padding: "12px 24px" } }, "Cerrar")
     )
