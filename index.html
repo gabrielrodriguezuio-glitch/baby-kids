@@ -129,7 +129,30 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.967";
+const VERSION_APP = "9.969";
+// v9.969 (2026-09-16) — ELIMINAR INGRESOS Y RETIROS DE CAJA MAL CARGADOS
+// En Movimientos y Cierre, cada ingreso o retiro manual tiene ahora un botón
+// para eliminarlo. Al borrarlo, el efectivo en caja se recalcula solo: sacar
+// un ingreso lo baja, sacar un retiro lo sube. Pide confirmación mostrando
+// cómo queda y se puede deshacer.
+// IMPORTANTE: sólo se pueden borrar los ingresos y retiros MANUALES. Los
+// movimientos de tipo "venta" NO tienen este botón: vienen de una venta real,
+// y borrarlos sueltos dejaría la venta sin su efectivo. Esos se corrigen
+// eliminando la venta (botón que ya existe), que además devuelve el stock.
+// Requiere permiso de propietario y la caja abierta: un cierre pasado no se
+// toca.
+//
+// v9.968 (2026-09-16) — IMPRIMIR LA MERCADERÍA VENDIDA POR BLUETOOTH
+// Botón "Imprimir mercadería" en los dos lugares donde ya se ve la lista:
+//  · Movimientos y Cierre (el bloque "Mercadería vendida" del turno)
+//  · El detalle de un cierre pasado del historial
+// El ticket lista cada producto con su talle, color, cantidad, precio
+// unitario y subtotal, ordenado de más a menos vendido, con el total de
+// unidades y plata al pie. Sirve para controlar contra la góndola qué salió.
+// Reusa la lista de artículos que cada pantalla ya arma (mismo producto+talle+
+// color agrupado); sale por la misma impresora térmica con la misma
+// reconexión que los demás tickets. Sin consultas nuevas.
+//
 // v9.967 (2026-09-16) — IMPRIMIR UN CIERRE PASADO POR BLUETOOTH
 // En el HISTORIAL de cierres, "Imprimir el cierre" abría una ventana del
 // navegador, que no llega a la impresora térmica. Ahora imprime por Bluetooth
@@ -17811,6 +17834,61 @@ function construirTicketCierre(data, caja, extra) {
   return escposEncode(out.join("\n"));
 }
 
+// ===== Ticket de MERCADERÍA VENDIDA para la impresora térmica =====
+// Lista lo que salió en el turno: cada producto con su talle, color, cantidad
+// y subtotal, ordenado de más a menos vendido. Sirve para controlar contra la
+// góndola qué se movió. `articulos` ya viene agrupado (mismo producto+talle+
+// color sumado) desde el cierre o desde Movimientos y Cierre.
+function construirTicketMercaderia(data, articulos, extra) {
+  const ANCHO = 32;
+  const negocio = data.negocio || {};
+  const info = extra || {};
+  const linea = (izq, der) => {
+    izq = izq || ""; der = der || "";
+    const espacio = Math.max(1, ANCHO - izq.length - der.length);
+    return izq + " ".repeat(espacio) + der;
+  };
+  const dashes = SUBRAYADO + " ".repeat(ANCHO) + SIN_SUBRAYADO;
+  const lista = (articulos || []).slice().sort((a, b) => b.cantidad - a.cantidad);
+  const unidades = lista.reduce((a, x) => a + (x.cantidad || 0), 0);
+  const total = lista.reduce((a, x) => a + (x.monto || 0), 0);
+
+  const out = [];
+  out.push(CURSIVA + NEGRITA);
+  out.push(CENTRO + GRANDE + NEGRITA + (negocio.nombre || "Mi negocio").toUpperCase() + NORMAL + SIN_NEGRITA);
+  out.push(CENTRO + ALTO + "MERCADERIA VENDIDA" + NORMAL);
+  out.push(IZQ + dashes);
+
+  if (info.abiertaEn || info.cerradaEn) {
+    if (info.abiertaEn) out.push(linea("Desde", fechaHoraLabel(info.abiertaEn)));
+    out.push(linea("Hasta", fechaHoraLabel(info.cerradaEn || (/* @__PURE__ */ new Date()).toISOString())));
+    out.push(dashes);
+  }
+
+  if (lista.length === 0) {
+    out.push(CENTRO + "Sin ventas en el turno" + IZQ);
+  } else {
+    lista.forEach((a) => {
+      // Nombre (con talle y color pegados si entran) en un renglón, y debajo
+      // cantidad x precio unitario con el subtotal a la derecha.
+      const etiqueta = [a.talle, a.color].filter(Boolean).join(" ");
+      const titulo = (a.nombre + (etiqueta ? " " + etiqueta : "")).slice(0, ANCHO);
+      out.push(NEGRITA + titulo + NORMAL);
+      const unit = a.cantidad > 0 ? Math.round((a.monto || 0) / a.cantidad) : 0;
+      out.push(linea("  " + a.cantidad + " x " + money(unit), money(a.monto || 0)));
+    });
+    out.push(dashes);
+    out.push(ALTO + linea("TOTAL " + unidades + " u", money(total)) + NORMAL);
+  }
+
+  out.push(dashes);
+  out.push(CENTRO + (negocio.nombre || ""));
+  out.push(IZQ + SIN_CURSIVA + ESC + "!" + "\x00" + GS + "!" + "\x00");
+  out.push("");
+  out.push("");
+  return escposEncode(out.join("\n"));
+}
+
 // no se distingue y hace lentísima la impresión. Va todo lo que hace falta
 // para controlar el bulto al recibirlo: nombre, código, talle, color y
 // cantidad de cada renglón, más el origen, el destino y las observaciones.
@@ -21173,7 +21251,27 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
   const [pestana, setPestana] = useState("turno");
   const [ampliada, setAmpliada] = useState(null);
   const [ticket, setTicket] = useState(null);
+  const [impMerc, setImpMerc] = useState("");
   const movs = caja.movimientos || [];
+
+  // Eliminar un ingreso o retiro cargado por error (un "pago mal hecho" en
+  // efectivo). Sólo ingresos y retiros manuales: los de venta se corrigen
+  // borrando la venta. Saca el movimiento de la caja abierta y deja deshacer.
+  const borrarMovCaja = (mov) => {
+    if (!persist) return;
+    const sale = mov.tipo === "retiro";
+    if (!window.confirm(
+      "¿Eliminar este " + (sale ? "retiro" : "ingreso") + " de " + money(mov.monto) + "?\n\n" +
+      (mov.concepto ? "\u201C" + mov.concepto + "\u201D\n\n" : "") +
+      "El efectivo en caja " + (sale ? "sube" : "baja") + " " + money(mov.monto) + ". Se puede deshacer."
+    )) return;
+    const anterior = data;
+    const miId = usuarioActualId(data);
+    const negId = negocioActivo(data).id;
+    const cajaSinMov = { ...caja, movimientos: (caja.movimientos || []).filter((x) => x.id !== mov.id) };
+    persist(guardarCaja(data, miId, cajaSinMov, negId));
+    avisar((sale ? "Retiro" : "Ingreso") + " eliminado", { deshacer: () => persist(anterior) });
+  };
 
   // Eliminar una venta mal cargada desde acá: es donde el vendedor la ve al
   // cerrar la caja y se da cuenta del error. Devuelve el stock y deja
@@ -21479,7 +21577,24 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
                 React.createElement("span", {
                   style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, flexShrink: 0 }
                 }, money(a2.monto))
-              ))
+              )),
+              // Imprimir la mercadería vendida por Bluetooth
+              React.createElement(Button, {
+                tone: "ghost",
+                onClick: async () => {
+                  setImpMerc("");
+                  try {
+                    if (!window.__blePrinter || !window.__blePrinter.device) await conectarImpresoraBLE();
+                    else if (!window.__blePrinter.device.gatt.connected) await caracteristicaImpresora();
+                    await imprimirEscPos(construirTicketMercaderia(data, listaArticulos, {
+                      abiertaEn: caja.abiertaEn, cerradaEn: caja.cerradaEn
+                    }));
+                    setImpMerc("Enviado a la impresora.");
+                  } catch (e) { setImpMerc(e && e.message ? e.message : "No se pudo imprimir."); }
+                },
+                style: { width: "100%", justifyContent: "center", marginTop: 12 }
+              }, React.createElement(Receipt, { size: 14 }), " Imprimir mercadería"),
+              impMerc && React.createElement("p", { style: { fontSize: 11.5, color: "var(--muted)", textAlign: "center", marginTop: 6 } }, impMerc)
             )
           ),
 
@@ -21525,7 +21640,20 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
                   ),
                   React.createElement("span", {
                     style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, flexShrink: 0, color: sale ? "var(--rose)" : "var(--sage)", paddingTop: 1 }
-                  }, (sale ? "− " : "+ ") + money(m.monto))
+                  }, (sale ? "− " : "+ ") + money(m.monto)),
+                  // Sólo los ingresos y retiros MANUALES se pueden borrar acá:
+                  // un movimiento de "venta" viene de una venta real y se
+                  // corrige eliminando esa venta (así vuelve el stock también);
+                  // borrarlo suelto dejaría la venta sin su efectivo. Pide
+                  // permiso de propietario y caja abierta.
+                  (m.tipo === "ingreso" || m.tipo === "retiro") && puedeEliminarMovimientos(data) && caja.abierta && React.createElement("button", {
+                    onClick: () => borrarMovCaja(m),
+                    title: "Eliminar este movimiento",
+                    style: {
+                      background: "none", border: "none", cursor: "pointer", flexShrink: 0,
+                      color: "var(--muted)", display: "flex", alignItems: "center", padding: 4, marginTop: 1, marginLeft: 2
+                    }
+                  }, React.createElement(Trash2, { size: 14 }))
                 );
               }),
               // El total, para poder contar la plata contra este número
@@ -35186,6 +35314,7 @@ function DetalleCierreModal({ cierre, onClose, data }) {
   const movs = cierre.movimientos || [];
   const [ampliado, setAmpliado] = useState(null);
   const [verTodo, setVerTodo] = useState(false);
+  const [impMerc, setImpMerc] = useState("");
 
   // Las ventas del turno: las de ese local entre que se abrió y se cerró la
   // caja. Sin esto el cierre sólo mostraba el efectivo, que es una parte.
@@ -35351,7 +35480,24 @@ function DetalleCierreModal({ cierre, onClose, data }) {
       listaArticulos.length > 8 && !verTodo && React.createElement("button", {
         onClick: () => setVerTodo(true),
         style: { background: "none", border: "none", cursor: "pointer", color: "var(--denim-light)", fontSize: 12.5, padding: "10px 0", fontFamily: "'Inter', sans-serif" }
-      }, "Ver los " + listaArticulos.length + " artículos")
+      }, "Ver los " + listaArticulos.length + " artículos"),
+      // Imprimir la mercadería de este cierre por Bluetooth
+      React.createElement(Button, {
+        tone: "ghost",
+        onClick: async () => {
+          setImpMerc("");
+          try {
+            if (!window.__blePrinter || !window.__blePrinter.device) await conectarImpresoraBLE();
+            else if (!window.__blePrinter.device.gatt.connected) await caracteristicaImpresora();
+            await imprimirEscPos(construirTicketMercaderia(data || {}, listaArticulos, {
+              abiertaEn: cierre.abiertaEn, cerradaEn: cierre.cerradaEn
+            }));
+            setImpMerc("Enviado a la impresora.");
+          } catch (e) { setImpMerc(e && e.message ? e.message : "No se pudo imprimir."); }
+        },
+        style: { width: "100%", justifyContent: "center", marginTop: 12 }
+      }, React.createElement(Receipt, { size: 14 }), " Imprimir mercadería"),
+      impMerc && React.createElement("p", { style: { fontSize: 11.5, color: "var(--muted)", textAlign: "center", marginTop: 6 } }, impMerc)
     ),
 
     // Los comprobantes de transferencia, con su foto
