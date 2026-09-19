@@ -129,7 +129,54 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.973";
+const VERSION_APP = "9.974";
+// v9.974 (2026-09-19) — UNA VENTA, UN RENGLÓN EN LA CUENTA DEL CLIENTE
+// Etapa 3 de la tanda, y el arreglo del "Pago recibido" que nadie recibió.
+//
+// EL PROBLEMA
+// Una sola venta podía dejar TRES renglones en la cuenta del cliente:
+//   · la venta,
+//   · "Parte a cuenta corriente de una venta" (el tramo que quedó fiado),
+//   · "Pago recibido" (el saldo viejo que esa misma venta cobró, con el
+//     botón "Debe $X · Cobrar saldo" del Punto de Venta).
+// Se leían como tres operaciones distintas. El peor era el tercero: desde la
+// v9.972 el renglón que decía de dónde venía el pago dejó de dibujarse, así
+// que quedaba un "Pago recibido" de $5.000.000 sin ninguna explicación, como
+// si hubiera entrado plata de la nada.
+//
+// QUÉ CAMBIA
+// · Los movimientos que nacieron de una venta ya NO salen como renglón
+//   aparte: se ven adentro de "Ver mercadería" de esa venta, en el bloque
+//   "EN LA CUENTA DE <cliente>", con su monto y su color (rojo lo que suma
+//   deuda, verde lo que la baja). Una venta, un renglón.
+// · Para saber de qué venta es cada movimiento, ahora se le guarda el id
+//   corto de la venta al final del concepto ("… #a1b2c3"), igual que ya
+//   hacían las devoluciones. Los movimientos ANTERIORES no lo tienen: se
+//   enganchan por misma fecha y monto, y sólo si hay una única venta
+//   candidata. Si hay dos iguales el mismo día, el movimiento queda suelto
+//   como hasta ahora: es preferible a colgarlo de la venta equivocada.
+// · Los pagos y fiados que SÍ son sueltos (una devolución, un fiado a mano)
+//   recuperan el renglón que dice de dónde salen. Se había perdido en la
+//   v9.972 al sacar el detalle de la columna Concepto.
+// · El saldo de la cabecera pasa a salir de saldoDeCliente(), la misma
+//   función que usan el listado, el Punto de Venta y el ticket. Antes se
+//   recalculaba sumando los renglones de la pantalla, y agrupar renglones
+//   lo habría roto. Ahora cambiar cómo se AGRUPA no puede mover el saldo.
+// · El lápiz de "Editar cliente" sale de la cabecera de la cuenta. Editar
+//   sigue estando en el menú de 3 puntos de la fila del cliente.
+//
+// ERROR QUE YA ESTABA Y SE ARREGLA ACÁ
+// Al eliminar una venta, el código intentaba borrar sus movimientos de
+// cuenta filtrando por `m.ventaId`, un campo que NINGÚN movimiento guarda.
+// Nunca borró nada: una venta con parte fiada se podía eliminar y el cargo
+// quedaba, con el cliente debiendo por una venta que ya no existía. Ahora se
+// usa la misma referencia que arma "Ver mercadería", y el cartel de
+// confirmación lista uno por uno los movimientos que se van y cuánto le
+// mueven la deuda al cliente.
+//
+// NO REQUIERE SQL: el id de la venta viaja dentro de `concepto`, que ya es
+// una columna de texto que sincroniza en las dos direcciones.
+//
 // v9.973 (2026-09-19) — CÓMO SE PAGÓ, DENTRO DE "VER MERCADERÍA"
 // Etapa 2 de la tanda. Al entrar por los 3 puntos → "Ver mercadería", ARRIBA
 // del ticket aparece ahora "CÓMO SE PAGÓ":
@@ -2616,6 +2663,84 @@ const resumenMovimientos = (data, desde, hasta) => {
 // Una devolución se guarda como una venta en negativo (nota de crédito)
 // enlazada a la venta original, así todos los reportes netean solos.
 const esDevolucion = (v) => v && v.tipo === "devolucion";
+
+// ===== MOVIMIENTOS DE CUENTA QUE NACIERON DE UNA VENTA (v9.974) ==========
+// Una sola venta puede dejar hasta DOS movimientos de cuenta corriente:
+//   · el tramo que quedó fiado  → "Parte a cuenta corriente de una venta"
+//   · el saldo viejo que se cobró con ella → "Saldo cobrado con una venta"
+// Hasta la v9.973 cada uno salía como un renglón suelto en la cuenta del
+// cliente: UNA operación se leía como TRES, y el saldo cobrado aparecía como
+// "Pago recibido" de la nada, sin decir de dónde salía. Desde la v9.974 se
+// muestran adentro de "Ver mercadería" de su venta.
+//
+// Cómo se sabe de qué venta es cada uno: el movimiento guarda el id corto de
+// la venta al final del concepto ("… #a1b2c3"), igual que ya hacían las
+// devoluciones. Los movimientos anteriores a la v9.974 no lo tienen, así que
+// se enganchan por misma fecha y monto, y SÓLO si hay una única venta
+// candidata: con dos iguales el mismo día no hay forma de saber cuál fue, y
+// es preferible dejarlo suelto antes que colgarlo de la venta equivocada.
+const CONCEPTO_TRAMO_CC = "Parte a cuenta corriente de una venta";
+const CONCEPTO_SALDO_COBRADO = "Saldo cobrado con una venta";
+const refDeVenta = (v) => String((v && v.id) || "").slice(-6).toLowerCase();
+const refEnConcepto = (m) => {
+  const r = /#([0-9a-z-]{4,})\s*$/i.exec(String((m && m.concepto) || "").trim());
+  return r ? r[1].toLowerCase() : "";
+};
+// El concepto sin la referencia, que es lo que se muestra en pantalla
+const conceptoLimpio = (m) => String((m && m.concepto) || "").replace(/\s*#[0-9a-z-]{4,}\s*$/i, "").trim();
+// Cuánto de la venta fue a cuenta corriente
+const tramoCCdeVenta = (v) => (v.pagos || [])
+  .filter((p) => p.metodo === "cuenta_corriente")
+  .reduce((a, p) => a + (Number(p.monto) || 0), 0);
+// Cuánto saldo viejo cobró la venta: la línea del carrito que no es
+// mercadería sino la deuda del cliente (la que agrega "Cobrar saldo").
+const saldoCobradoEnVenta = (v) => (v.items || [])
+  .filter((it) => !it.productoId && /^Saldo pendiente de /i.test(String(it.nombre || "")))
+  .reduce((a, it) => a + (Number(it.precioUnit) || 0) * (Number(it.cantidad) || 0), 0);
+
+// Reparte los movimientos entre las ventas que los generaron.
+// Devuelve { porVenta: { ventaId: [movs] }, absorbidos: { movId: true } }.
+const anexarMovimientosAVentas = (ventas, movimientos) => {
+  const porVenta = {};
+  const absorbidos = {};
+  const anexar = (v, m) => {
+    (porVenta[v.id] = porVenta[v.id] || []).push(m);
+    absorbidos[m.id] = true;
+  };
+  const sinRef = [];
+  (movimientos || []).forEach((m) => {
+    const ref = refEnConcepto(m);
+    if (!ref) return sinRef.push(m);
+    const v = (ventas || []).find((x) => refDeVenta(x) === ref);
+    // Si la venta se borró, el movimiento queda suelto a propósito: sigue
+    // moviendo el saldo, así que tiene que verse y poder eliminarse.
+    if (v) anexar(v, m);
+  });
+  sinRef.forEach((m) => {
+    const limpio = conceptoLimpio(m);
+    const monto = Number(m.monto) || 0;
+    let cand = [];
+    if (m.tipo === "cargo" && limpio === CONCEPTO_TRAMO_CC) {
+      cand = (ventas || []).filter((v) => v.fecha === m.fecha && Math.abs(tramoCCdeVenta(v) - monto) < 0.5);
+    } else if (m.tipo !== "cargo" && limpio === CONCEPTO_SALDO_COBRADO) {
+      cand = (ventas || []).filter((v) => v.fecha === m.fecha && Math.abs(saldoCobradoEnVenta(v) - monto) < 0.5);
+    }
+    // Una venta que ya tiene un movimiento de ese mismo concepto no puede
+    // recibir otro: si no, dos cargos iguales del mismo día caían los dos
+    // en la primera venta.
+    const libres = cand.filter((v) => !(porVenta[v.id] || []).some((x) => conceptoLimpio(x) === limpio));
+    if (libres.length === 1) anexar(libres[0], m);
+  });
+  return { porVenta, absorbidos };
+};
+
+// Los movimientos de UNA venta, para mostrarlos en "Ver mercadería".
+const movimientosDeVenta = (data, venta) => {
+  if (!venta || !venta.clienteId) return [];
+  const ventas = (data.ventas || []).filter((v) => v.clienteId === venta.clienteId && !esDevolucion(v));
+  const movs = (data.movimientosCC || []).filter((m) => m.clienteId === venta.clienteId && !esCargoDuplicado(m));
+  return anexarMovimientosAVentas(ventas, movs).porVenta[venta.id] || [];
+};
 const ventasNetas = (ventas) => (ventas || []).filter((v) => !esDevolucion(v));
 const devueltoDeVenta = (data, ventaId) => {
   const acc = {};
@@ -11059,7 +11184,7 @@ const informeCompleto = (data, desde, hasta, negocioId, negocioNombre) => {
     .map((m) => {
       const cli = (data.clientes || []).find((c) => c.id === m.clienteId);
       return "<tr><td>" + fmtF(m.fecha) + "</td><td>" + escaparHTML(cli ? cli.nombre : "—") + "</td>" +
-        "<td>" + escaparHTML(m.concepto || "Pago") + "</td>" + num(m.monto) + "</tr>";
+        "<td>" + escaparHTML(conceptoLimpio(m) || "Pago") + "</td>" + num(m.monto) + "</tr>";
     });
 
   // --- Stock a reponer ---
@@ -15659,7 +15784,10 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
         {
           id: uidUUID(), clienteId, fecha: todayISO(),
           tipo: "cargo", monto: montoCC,
-          concepto: "Parte a cuenta corriente de una venta"
+          // v9.974 — El id corto de la venta va al final del concepto, para
+          // poder mostrar este tramo adentro de "Ver mercadería" en vez de
+          // como un renglón suelto en la cuenta del cliente.
+          concepto: CONCEPTO_TRAMO_CC + " #" + refDeVenta(venta)
         },
         ...movimientosCC
       ];
@@ -15672,7 +15800,10 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
           id: uidUUID(), clienteId: lineaDeuda.clienteDeuda, fecha: todayISO(),
           tipo: "pago", monto: lineaDeuda.precioUnit * lineaDeuda.cantidad,
           metodo: metodoPago === "efectivo" ? "Efectivo" : (METODO_LABELS[metodoPago] || metodoPago),
-          concepto: "Saldo cobrado con una venta"
+          // v9.974 — Con la referencia a la venta. Sin esto, este cobro salía
+          // en la cuenta como un "Pago recibido" suelto, sin decir de dónde
+          // venía, y parecía plata que había entrado de la nada.
+          concepto: CONCEPTO_SALDO_COBRADO + " #" + refDeVenta(venta)
         },
         ...movimientosCC
       ];
@@ -18560,8 +18691,15 @@ async function imprimirEscPos(texto) {
 // comprobante (columna comprobantes_livianos) y deja la imagen en la nube.
 // FotoComprobante la pide recién cuando se la toca y la guarda en caché,
 // así abrir esta pantalla no gasta MB de más.
-function PagosDeLaVenta({ venta }) {
+function PagosDeLaVenta({ data, venta }) {
   const [ampliada, setAmpliada] = useState(null);
+
+  // v9.974 — Lo que esta venta le movió a la cuenta corriente del cliente.
+  // Son los movimientos que la venta generó y que antes salían como renglones
+  // sueltos en la cuenta: el tramo que quedó fiado y el saldo viejo que se
+  // cobró con ella. Acá están al lado de la mercadería y de los medios de
+  // pago, que es donde se entienden.
+  const anexos = movimientosDeVenta(data, venta);
 
   // Con pago dividido vienen los tramos; con un solo método, se arma uno.
   const pagos = (venta.pagos && venta.pagos.length)
@@ -18658,6 +18796,54 @@ function PagosDeLaVenta({ venta }) {
       React.createElement("span", null, "Vuelto"),
       React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(venta.vuelto))
     ),
+
+    // v9.974 — El efecto de esta venta en la cuenta corriente del cliente.
+    // Rojo lo que le suma deuda, verde lo que se la baja: los mismos colores
+    // que la cuenta del cliente, para que se lea igual en los dos lados.
+    anexos.length > 0 && React.createElement(
+      "div",
+      { style: { marginTop: 12 } },
+      React.createElement("div", {
+        style: {
+          fontSize: 11, fontWeight: 700, letterSpacing: "0.06em",
+          color: "var(--muted)", marginBottom: 8
+        }
+      }, "EN LA CUENTA DE " + String(venta.clienteNombre || "ESTE CLIENTE").toUpperCase()),
+      anexos.map((m) => {
+        const suma = m.tipo === "cargo";
+        const limpio = conceptoLimpio(m);
+        return React.createElement(
+          "div",
+          {
+            key: m.id,
+            style: {
+              display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline",
+              background: "var(--surface-2)", borderRadius: 12,
+              padding: "10px 12px", marginBottom: 6
+            }
+          },
+          React.createElement(
+            "span",
+            { style: { fontSize: 13, minWidth: 0 } },
+            // Dicho desde la venta, no desde la base: "Parte a cuenta
+            // corriente de una venta" era el nombre del movimiento, pero acá
+            // adentro ya se sabe de qué venta se está hablando.
+            limpio === CONCEPTO_TRAMO_CC ? "Quedó a cuenta corriente"
+              : limpio === CONCEPTO_SALDO_COBRADO ? "Saldo anterior cobrado con esta venta"
+              : (limpio || (suma ? "Cargo en la cuenta" : "Pago en la cuenta")),
+            m.metodo ? React.createElement("span", {
+              style: { color: "var(--muted)", fontSize: 11.5, display: "block", marginTop: 2 }
+            }, METODO_LABELS[m.metodo] || m.metodo) : null
+          ),
+          React.createElement("span", {
+            style: {
+              fontFamily: "'IBM Plex Mono', monospace", fontWeight: 650, whiteSpace: "nowrap",
+              color: suma ? "var(--rose)" : "var(--sage)"
+            }
+          }, (suma ? "+" : "−") + money(m.monto).replace("$ ", "$"))
+        );
+      })
+    ),
     ampliada && React.createElement(VisorComprobante, { src: ampliada, onClose: () => setAmpliada(null) })
   );
 }
@@ -18708,7 +18894,7 @@ function TicketModal({ data, venta, onClose }) {
       setMensaje(e && e.message ? e.message : "No se pudo imprimir.");
     }
   };
-  return /* @__PURE__ */ React.createElement(ModalOverlay, { width: 360 }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", marginBottom: 4 } }, /* @__PURE__ */ React.createElement("button", { onClick: onClose, style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)" } }, /* @__PURE__ */ React.createElement(X, { size: 18 }))), /* @__PURE__ */ React.createElement(PagosDeLaVenta, { venta }), /* @__PURE__ */ React.createElement("div", { style: { border: "none", borderRadius: 4 } }, /* @__PURE__ */ React.createElement(TicketVenta, { data, venta })), /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement(ModalOverlay, { width: 360 }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", marginBottom: 4 } }, /* @__PURE__ */ React.createElement("button", { onClick: onClose, style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)" } }, /* @__PURE__ */ React.createElement(X, { size: 18 }))), /* @__PURE__ */ React.createElement(PagosDeLaVenta, { data, venta }), /* @__PURE__ */ React.createElement("div", { style: { border: "none", borderRadius: 4 } }, /* @__PURE__ */ React.createElement(TicketVenta, { data, venta })), /* @__PURE__ */ React.createElement(
     "label",
     { style: { display: "flex", alignItems: "center", gap: 11, cursor: "pointer", marginTop: 14, padding: "12px 14px", border: "none", borderRadius: 10 } },
     /* @__PURE__ */ React.createElement(Switch, { on: comoImagen, onChange: alternarModo }),
@@ -20090,7 +20276,7 @@ function BorrarClientesModal({ data, persist, onClose }) {
 }
 
 
-function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
+function ClienteFichaModal({ data, persist, cliente, onClose }) {
   // v9.972 — Se fueron los estados de "Estado de cuenta" y del WhatsApp del
   // estado de cuenta, junto con sus botones.
   // Menú de 3 puntos por fila y el ticket que se abre desde ahí
@@ -20109,6 +20295,14 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
   // Las demás compras se listan igual, para tener el historial completo
   const ventasPagadas = data.ventas.filter((v) =>
     v.clienteId === cliente.id && !esDevolucion(v) && v.metodoPago !== "cuenta_corriente");
+
+  // v9.974 — Los movimientos que nacieron de una venta se muestran DENTRO de
+  // "Ver mercadería" de esa venta, no como renglón aparte. Una venta cobrada
+  // parte al contado y parte a cuenta, que además cobraba saldo viejo, dejaba
+  // tres renglones y se leía como tres operaciones distintas.
+  const { absorbidos } = anexarMovimientosAVentas(
+    [...ventasFiadas, ...ventasPagadas], movimientos);
+  const movimientosSueltos = movimientos.filter((m) => !absorbidos[m.id]);
 
   // Cómo se pagó una venta, en texto. Con un solo método dice ese; con pago
   // dividido los enumera con su monto ("Efectivo $20.000 · Transferencia
@@ -20149,33 +20343,35 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       monto: v.total,
       venta: v
     })),
-    ...movimientos.map((m) => ({
+    // v9.974 — Sólo los movimientos SUELTOS: los que nacieron de una venta
+    // ya se ven adentro de esa venta, en "Ver mercadería".
+    ...movimientosSueltos.map((m) => ({
       id: m.id,
       clase: m.tipo === "cargo" ? "venta" : "pago",
       fecha: m.fecha,
-      titulo: m.tipo === "cargo" ? (m.concepto || "Fiado a mano") : "Pago recibido",
-      // Los pagos de saldo también dicen con qué método entraron
-      pago: m.tipo === "cargo" ? "" : (METODO_LABELS[m.metodo] || m.metodo || "Efectivo"),
-      // De dónde salió el pago, cuando no es uno suelto: el cobro hecho
-      // desde el Punto de Venta deja el concepto "Saldo cobrado con una
-      // venta" y antes se perdía, porque el título lo pisaba (v9.971).
-      detalle: m.tipo !== "cargo" && m.concepto && m.concepto !== "Pago recibido" ? m.concepto : "",
+      titulo: m.tipo === "cargo" ? (conceptoLimpio(m) || "Fiado a mano") : "Pago recibido",
+      // De dónde salió, y con qué método entró. v9.974 — En la v9.972, al
+      // sacar el detalle de la columna Concepto, este renglón se dejó de
+      // dibujar y los pagos quedaron como montos sueltos sin explicación:
+      // una devolución se leía como plata recibida de la nada. Un pago o un
+      // fiado suelto no tiene "Ver mercadería" donde mirar, así que acá es
+      // el único lugar donde el dato puede estar.
+      pago: [
+        m.tipo !== "cargo" && conceptoLimpio(m) !== "Pago recibido" ? conceptoLimpio(m) : "",
+        m.tipo === "cargo" ? "" : (METODO_LABELS[m.metodo] || m.metodo || "Efectivo")
+      ].filter(Boolean).join(" · "),
       monto: m.monto,
       esMovimiento: true
     }))
   ].sort((a, b) => claveCronologica(b).localeCompare(claveCronologica(a)));
 
-  // El saldo del cliente, sumando desde el movimiento más viejo.
-  // v9.972 — Antes se guardaba además el saldo que quedaba DESPUÉS DE CADA
-  // fila, para la columna "Saldo". Esa columna se sacó, así que ya no hace
-  // falta el mapa: alcanza con el total.
-  let acumulado = 0;
-  [...filas].reverse().forEach((f) => {
-    if (f.clase === "venta") acumulado += f.monto;
-    else if (f.clase === "pago") acumulado -= f.monto;
-    // Las ventas al contado no mueven el saldo
-  });
-  const saldo = Math.max(0, acumulado);
+  // v9.974 — El saldo sale de saldoDeCliente(), la misma función que usan el
+  // listado de clientes, el Punto de Venta y el ticket. Antes se recalculaba
+  // acá sumando los renglones de la pantalla, y al pasar los movimientos de
+  // una venta adentro de "Ver mercadería" esa suma habría dejado de dar: la
+  // cabecera de la cuenta mostraría un saldo distinto al del resto de la app.
+  // Con esto, cambiar cómo se AGRUPAN los renglones no puede mover el saldo.
+  const saldo = saldoDeCliente(data, cliente.id);
 
   // Eliminar un pago o un fiado cargado por error. Pide confirmación
   // mostrando cómo queda el saldo: borrar un pago SUBE la deuda y borrar un
@@ -20189,7 +20385,7 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
     const saldoDespues = Math.max(0, saldoAhora + (esCargo ? -(m.monto || 0) : (m.monto || 0)));
     if (!window.confirm(
       "¿Eliminar " + (esCargo ? "este fiado" : "este pago") + " de " + money(m.monto) + "?\n\n" +
-      (m.concepto ? "\u201C" + m.concepto + "\u201D\n\n" : "") +
+      (conceptoLimpio(m) ? "\u201C" + conceptoLimpio(m) + "\u201D\n\n" : "") +
       "La deuda de " + cliente.nombre + " pasa de " + money(saldoAhora) + " a " + money(saldoDespues) + ".\n\n" +
       "Se puede deshacer."
     )) return;
@@ -20214,12 +20410,26 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       .filter((p) => p.metodo === "efectivo")
       .reduce((a, p) => a + (Number(p.monto) || 0), 0);
     const unidades = (venta.items || []).reduce((a, it) => a + (it.cantidad || 0), 0);
+    // v9.974 — Los movimientos de cuenta que dejó esta venta (el tramo que
+    // quedó fiado y el saldo viejo que cobró) se van con ella. Se listan en
+    // el cartel, uno por uno: son los que hacen que la deuda del cliente
+    // cambie, y borrar la venta sin verlos es a ciegas.
+    const anexos = movimientosDeVenta(data, venta);
+    const textoAnexo = (m) => {
+      const limpio = conceptoLimpio(m);
+      const cual = limpio === CONCEPTO_TRAMO_CC ? "el tramo que qued\u00F3 a cuenta"
+        : limpio === CONCEPTO_SALDO_COBRADO ? "el saldo anterior que cobr\u00F3"
+        : (limpio || "un movimiento de la cuenta");
+      return "\u2022 " + (m.tipo === "cargo" ? "Baja " : "Sube ") + money(m.monto) +
+        " de la deuda del cliente (se elimina " + cual + ")\n";
+    };
 
     if (!window.confirm(
       "¿Eliminar esta venta de " + money(venta.total) + "?\n\n" +
       (unidades > 0 ? "\u2022 Vuelven " + unidades + (unidades === 1 ? " unidad" : " unidades") + " al stock de este local\n" : "") +
       (enEfectivo > 0 ? "\u2022 Salen " + money(enEfectivo) + " de la caja\n" : "") +
       (venta.metodoPago === "cuenta_corriente" ? "\u2022 Baja " + money(venta.total) + " de la deuda del cliente\n" : "") +
+      anexos.map(textoAnexo).join("") +
       "\nSe puede deshacer."
     )) return;
 
@@ -20260,10 +20470,20 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       salida = guardarCaja(salida, miId, cajaCorregida, negocioVenta);
     }
 
-    // Los cargos de cuenta corriente que había creado esta venta se van con
-    // ella: si no, la deuda quedaba aunque la venta ya no exista.
+    // Los movimientos de cuenta que había creado esta venta se van con ella:
+    // si no, la deuda queda aunque la venta ya no exista.
+    //
+    // v9.974 — ERROR QUE YA ESTABA: este filtro miraba `m.ventaId`, y ningún
+    // movimiento de cuenta corriente guarda ese campo. Nunca sacó nada. Una
+    // venta con parte fiada se podía borrar y el cargo seguía ahí: el cliente
+    // quedaba debiendo por una venta que no existía más. Ahora se usa la
+    // misma referencia que muestra "Ver mercadería" (el id corto de la venta
+    // al final del concepto, y fecha + monto para los movimientos viejos),
+    // así lo que se borra es exactamente lo que el cartel dijo que se iba.
+    const idsAnexos = {};
+    anexos.forEach((m) => { idsAnexos[m.id] = true; });
     salida.movimientosCC = (salida.movimientosCC || []).filter((m) =>
-      !(m.ventaId && m.ventaId === venta.id));
+      !idsAnexos[m.id] && !(m.ventaId && m.ventaId === venta.id));
 
     persist(salida);
     avisar("Venta eliminada" + (enEfectivo > 0 ? " \u00B7 " + money(enEfectivo) + " fuera de caja" : "") +
@@ -20292,14 +20512,12 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
         React.createElement("div", { style: { fontSize: 14.5, fontWeight: 700, marginTop: 5, color: saldo > 0 ? "var(--mustard)" : "var(--sage)" } },
           saldo > 0 ? "Saldo pendiente: " + money(saldo) : "Sin deuda pendiente")
       ),
-      // Sólo editar y cerrar arriba: cinco botones no entraban y se pisaban
+      // v9.974 — Sólo cerrar. El lápiz de editar el cliente salió de acá: los
+      // datos del cliente se editan desde su fila en el listado, que es donde
+      // se los busca. Acá adentro se viene a mirar la cuenta.
       React.createElement(
         "div",
         { style: { display: "flex", gap: 8, flexShrink: 0 } },
-        React.createElement("button", {
-          onClick: onEditar, title: "Editar el cliente",
-          style: { background: "var(--surface-2)", border: "none", borderRadius: 999, width: 38, height: 38, cursor: "pointer", color: "var(--ink)", display: "flex", alignItems: "center", justifyContent: "center" }
-        }, React.createElement(Pencil, { size: 16 })),
         React.createElement("button", {
           onClick: onClose, title: "Cerrar",
           style: { background: "var(--surface-2)", border: "none", borderRadius: 999, width: 38, height: 38, cursor: "pointer", color: "var(--ink)", display: "flex", alignItems: "center", justifyContent: "center" }
@@ -20677,8 +20895,9 @@ function Clientes({ data, persist, senalNuevoCliente, senalImportarClientes, sen
     ficha && React.createElement(ClienteFichaModal, {
       data, persist,
       cliente: data.clientes.find((c) => c.id === ficha.id) || ficha,
-      onClose: () => setFicha(null),
-      onEditar: () => { setEditando(data.clientes.find((c) => c.id === ficha.id) || ficha); setFicha(null); }
+      // v9.974 — Sin onEditar: el lápiz salió de la cabecera de la cuenta.
+      // "Editar" sigue estando en el menú de 3 puntos de la fila del cliente.
+      onClose: () => setFicha(null)
     }),
     importando && React.createElement(ImportarClientesModal, {
       data, persist, onClose: () => setImportando(false)
@@ -30014,7 +30233,7 @@ const lineaDeTiempo = (data, negocioId) => {
       tono: m.tipo === "pago" ? "sage" : "mustard", icono: CreditCard,
       titulo: (m.tipo === "pago" ? "Pago de " : "Cargo a ") + ((cli && cli.nombre) || "cliente") +
         (m.metodo ? " \u00B7 " + (METODO_LABELS[m.metodo] || m.metodo) : ""),
-      detalle: m.concepto || (m.tipo || "Movimiento de cuenta"),
+      detalle: conceptoLimpio(m) || (m.tipo || "Movimiento de cuenta"),
       monto: m.monto, usuario: m.usuario || ""
     });
   });
