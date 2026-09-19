@@ -129,7 +129,32 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.979";
+const VERSION_APP = "9.980";
+// v9.980 (2026-09-19) — AJUSTAR EL SALDO DE UN CLIENTE A MANO
+// En la cuenta del cliente, al lado del saldo, el PROPIETARIO tiene ahora un
+// botón "Ajustar" para corregir la deuda en las dos direcciones: restarla o
+// sumarla. Pide el monto y el motivo (con atajos: Descuento, Error de carga,
+// Deuda perdonada, Diferencia de redondeo) y muestra cómo queda la deuda
+// antes de confirmar. Se puede deshacer.
+//
+// ES UNA CORRECCIÓN, NO UN COBRO. No toca la caja ni el arqueo, y NO cuenta
+// como cobro en los informes: no entró ni salió un peso. En la cuenta se ve
+// como "Ajuste de saldo" con el motivo y la aclaración "sin movimiento de
+// plata", para que nadie lo lea como plata recibida. Si el cliente pagó de
+// verdad, eso sigue yendo por el Punto de Venta con "Cobrar saldo", que es
+// lo que hace que la plata pase por la caja.
+//
+// Un ajuste se guarda como un movimiento normal: "pago" para restar deuda y
+// "cargo" para sumarla, que son los dos valores que la columna `tipo` ya
+// maneja. A propósito NO se inventó un tipo nuevo: meterle un tercer valor a
+// esa columna podía hacer fallar el guardado en la nube sin que se note en
+// el dispositivo. Lo que lo distingue es el concepto.
+//
+// No se puede restar más de lo que el cliente debe: el saldo nunca queda en
+// negativo por un ajuste.
+//
+// NO REQUIERE SQL.
+//
 // v9.979 (2026-09-19) — EL PROPIETARIO BORRA CUALQUIER RENGLÓN DE EFECTIVO
 // En Movimientos y en el detalle de un Cierre, el propietario puede ahora
 // eliminar CUALQUIER renglón de la caja, no sólo los ingresos y retiros
@@ -2807,6 +2832,24 @@ const conceptoDeVenta = (m) => {
   if (m.tipo !== "cargo" && limpio === CONCEPTO_SALDO_COBRADO) return CONCEPTO_SALDO_COBRADO;
   return "";
 };
+
+// ===== AJUSTE DE SALDO A MANO (v9.980) ==============================
+// Corregir el saldo de un cliente sin que haya plata de por medio: el saldo
+// quedó mal, se le hace un descuento, se le perdona la deuda. NO toca la caja
+// ni el arqueo, y NO cuenta como cobro en los informes, porque no entró ni
+// salió un peso. Es del Propietario.
+//
+// Se guarda como un movimiento normal —"cargo" para sumar deuda, "pago" para
+// restarla— con el concepto marcado. A propósito no se inventa un tipo nuevo:
+// `tipo` es una columna de la base con dos valores conocidos, y meterle un
+// tercero podía hacer fallar el guardado en la nube sin que se note acá.
+const CONCEPTO_AJUSTE = "Ajuste de saldo";
+const esAjusteDeSaldo = (m) => /^Ajuste de saldo\b/i.test(conceptoLimpio(m));
+const motivoDelAjuste = (m) => conceptoLimpio(m).replace(/^Ajuste de saldo\s*:?\s*/i, "").trim();
+// Ajustar un saldo a mano es del mismo nivel que borrar un movimiento: cambia
+// la deuda sin que haya una operación detrás. Mismo permiso, con la misma
+// salvedad de no trabar al dueño que la app no pudo identificar.
+const puedeAjustarSaldo = puedeEliminarMovimientos;
 
 // Qué movimientos de cuenta hay que borrar junto con una venta.
 //
@@ -11308,7 +11351,10 @@ const informeCompleto = (data, desde, hasta, negocioId, negocioNombre) => {
   const totalDeuda = (data.clientes || []).reduce((a, c) => a + saldoDeCliente(data, c.id), 0);
 
   // --- Pagos de saldo registrados en el período ---
-  const filasP = (data.movimientosCC || []).filter((m) => m.tipo !== "cargo" && enRango(m.fecha))
+  // v9.980 — Los ajustes de saldo quedan afuera: bajan la deuda pero NO es
+  // plata que entró, y contarlos acá inflaba lo cobrado en el período.
+  const filasP = (data.movimientosCC || []).filter((m) =>
+      m.tipo !== "cargo" && !esAjusteDeSaldo(m) && enRango(m.fecha))
     .map((m) => {
       const cli = (data.clientes || []).find((c) => c.id === m.clienteId);
       return "<tr><td>" + fmtF(m.fecha) + "</td><td>" + escaparHTML(cli ? cli.nombre : "—") + "</td>" +
@@ -20400,12 +20446,112 @@ function BorrarClientesModal({ data, persist, onClose }) {
 }
 
 
+// Ajustar a mano el saldo de un cliente, sin plata de por medio (v9.980).
+// Se usa cuando el saldo quedó mal, cuando se le hace un descuento o cuando
+// se le perdona la deuda. No toca la caja ni el arqueo, y no cuenta como
+// cobro en los informes: no entró ni salió un peso.
+function AjustarSaldoModal({ cliente, saldo, onGuardar, onClose }) {
+  const [signo, setSigno] = useState("restar");
+  const [monto, setMonto] = useState("");
+  const [motivo, setMotivo] = useState("");
+  const [error, setError] = useState("");
+
+  const MOTIVOS = ["Descuento", "Error de carga", "Deuda perdonada", "Diferencia de redondeo"];
+  const n = Number(String(monto).replace(/[^\d]/g, "")) || 0;
+  const resta = signo === "restar";
+  const despues = Math.max(0, saldo + (resta ? -n : n));
+
+  const guardar = () => {
+    if (n <= 0) return setError("Escribí cuánto querés " + (resta ? "restar" : "sumar") + ".");
+    if (resta && n > saldo) {
+      return setError("No podés restar más de lo que debe (" + money(saldo) + "). " +
+        "Si querés dejarlo en cero, poné " + money(saldo) + ".");
+    }
+    if (!motivo.trim()) return setError("Escribí por qué lo ajustás: queda anotado en la cuenta.");
+    onGuardar({ resta, monto: n, motivo: motivo.trim() });
+  };
+
+  const botonSigno = (id, texto) => React.createElement("button", {
+    key: id,
+    onClick: () => { setSigno(id); setError(""); },
+    style: {
+      flex: 1, padding: "11px 8px", borderRadius: 10, cursor: "pointer", fontSize: 13.5,
+      fontFamily: "'Inter', sans-serif", fontWeight: 650,
+      border: "1px solid " + (signo === id ? (id === "restar" ? "var(--sage)" : "var(--rose)") : "var(--line)"),
+      background: signo === id
+        ? (id === "restar" ? "rgba(45,201,138,0.12)" : "rgba(232,50,62,0.12)")
+        : "none",
+      color: signo === id ? (id === "restar" ? "var(--sage)" : "var(--rose)") : "var(--muted)"
+    }
+  }, texto);
+
+  return React.createElement(
+    ModalOverlay,
+    { width: 430 },
+    React.createElement(ModalHeader, { icon: Calculator, title: "Ajustar saldo", onClose }),
+    React.createElement("p", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: -8, marginBottom: 14, lineHeight: 1.55 } },
+      cliente.nombre + " debe " + money(saldo) + ". Esto corrige la deuda sin mover plata: " +
+      "no entra ni sale nada de la caja y no cuenta como cobro en los informes."),
+
+    React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 14 } },
+      botonSigno("restar", "Restar deuda"),
+      botonSigno("sumar", "Sumar deuda")),
+
+    React.createElement(Field, { label: "Cuánto" },
+      React.createElement("input", {
+        autoFocus: true, inputMode: "numeric", value: monto,
+        onChange: (e) => { setMonto(e.target.value.replace(/[^\d]/g, "")); setError(""); },
+        placeholder: "0",
+        style: { ...inputStyle, width: "100%", fontFamily: "'IBM Plex Mono', monospace", fontSize: 17 }
+      })),
+
+    React.createElement("div", { style: { marginTop: 12 } },
+      React.createElement(Field, { label: "Por qué" },
+        React.createElement("input", {
+          value: motivo,
+          onChange: (e) => { setMotivo(e.target.value); setError(""); },
+          placeholder: "Queda anotado en la cuenta",
+          style: { ...inputStyle, width: "100%" }
+        }))),
+    React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 } },
+      MOTIVOS.map((t) => React.createElement("button", {
+        key: t,
+        onClick: () => { setMotivo(t); setError(""); },
+        style: {
+          padding: "6px 11px", borderRadius: 999, cursor: "pointer", fontSize: 12,
+          fontFamily: "'Inter', sans-serif", border: "1px solid var(--line)",
+          background: motivo === t ? "var(--surface-2)" : "none",
+          color: motivo === t ? "var(--ink)" : "var(--muted)"
+        }
+      }, t))),
+
+    // Cómo queda, antes de confirmar: es un cambio de plata y conviene verlo
+    n > 0 && React.createElement(
+      "div",
+      { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, marginTop: 16, padding: "12px 14px", borderRadius: 12, background: "var(--surface-2)" } },
+      React.createElement("span", { style: { fontSize: 13, color: "var(--muted)" } }, "La deuda queda en"),
+      React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 17, fontWeight: 700, color: despues > 0 ? "var(--mustard)" : "var(--sage)" } },
+        money(despues))
+    ),
+
+    error && React.createElement("p", { style: { fontSize: 12.5, color: "var(--rose)", marginTop: 12, lineHeight: 1.5 } }, error),
+
+    React.createElement(
+      "div",
+      { className: "ct-pie-fijo", style: { display: "flex", justifyContent: "flex-end", gap: 10 } },
+      React.createElement(Button, { tone: "ghost", onClick: onClose, style: { padding: "12px 20px" } }, "Cancelar"),
+      React.createElement(Button, { onClick: guardar, style: { padding: "12px 24px" } }, "Guardar ajuste")
+    )
+  );
+}
+
 function ClienteFichaModal({ data, persist, cliente, onClose }) {
   // v9.972 — Se fueron los estados de "Estado de cuenta" y del WhatsApp del
   // estado de cuenta, junto con sus botones.
   // Menú de 3 puntos por fila y el ticket que se abre desde ahí
   const [menuFila, setMenuFila] = useState(null);
   const [ticketFicha, setTicketFicha] = useState(null);
+  const [ajustando, setAjustando] = useState(false);
 
   // Los cargos "Venta en cuenta corriente" son duplicados de la venta: la
   // venta ya aparece como "Fiado" en la línea de tiempo, y este movimiento
@@ -20494,19 +20640,28 @@ function ClienteFichaModal({ data, persist, cliente, onClose }) {
       id: m.id,
       clase: m.tipo === "cargo" ? "venta" : "pago",
       fecha: m.fecha,
-      titulo: m.tipo === "cargo" ? (conceptoLimpio(m) || "Fiado a mano") : "Pago recibido",
+      // v9.980 — Un ajuste a mano no es un "Pago recibido": no entró plata.
+      // Se llama por su nombre y el motivo va en el renglón de abajo.
+      titulo: esAjusteDeSaldo(m) ? CONCEPTO_AJUSTE
+        : m.tipo === "cargo" ? (conceptoLimpio(m) || "Fiado a mano")
+        : "Pago recibido",
       // De dónde salió, y con qué método entró. v9.974 — En la v9.972, al
       // sacar el detalle de la columna Concepto, este renglón se dejó de
       // dibujar y los pagos quedaron como montos sueltos sin explicación:
       // una devolución se leía como plata recibida de la nada. Un pago o un
       // fiado suelto no tiene "Ver mercadería" donde mirar, así que acá es
       // el único lugar donde el dato puede estar.
-      pago: [
-        m.tipo !== "cargo" && conceptoLimpio(m) !== "Pago recibido" ? conceptoLimpio(m) : "",
-        m.tipo === "cargo" ? "" : (METODO_LABELS[m.metodo] || m.metodo || "Efectivo")
-      ].filter(Boolean).join(" · "),
+      pago: esAjusteDeSaldo(m)
+        // El ajuste dice su motivo y aclara que no movió plata, para que no
+        // se confunda con un cobro al leer la cuenta.
+        ? [motivoDelAjuste(m), "sin movimiento de plata"].filter(Boolean).join(" · ")
+        : [
+            m.tipo !== "cargo" && conceptoLimpio(m) !== "Pago recibido" ? conceptoLimpio(m) : "",
+            m.tipo === "cargo" ? "" : (METODO_LABELS[m.metodo] || m.metodo || "Efectivo")
+          ].filter(Boolean).join(" · "),
       monto: m.monto,
-      esMovimiento: true
+      esMovimiento: true,
+      esAjuste: esAjusteDeSaldo(m)
     })),
     // El desajuste, si lo hay. No es un movimiento de la base: es la
     // diferencia entre lo que se ocultó y lo que las ventas explican, y
@@ -20534,23 +20689,46 @@ function ClienteFichaModal({ data, persist, cliente, onClose }) {
   // Eliminar un pago o un fiado cargado por error. Pide confirmación
   // mostrando cómo queda el saldo: borrar un pago SUBE la deuda y borrar un
   // fiado la BAJA, y de un toque sin avisar es fácil equivocarse de renglón.
+  // v9.980 — Guardar un ajuste de saldo hecho a mano. Restar deuda se anota
+  // como un "pago" y sumarla como un "cargo": son los dos valores que la
+  // columna `tipo` ya maneja. Lo que lo distingue de un cobro de verdad es el
+  // concepto, que además deja escrito el motivo en la cuenta.
+  const guardarAjuste = ({ resta, monto, motivo }) => {
+    const anterior = data;
+    const mov = {
+      id: uidUUID(),
+      clienteId: cliente.id,
+      fecha: todayISO(),
+      tipo: resta ? "pago" : "cargo",
+      monto,
+      concepto: CONCEPTO_AJUSTE + ": " + motivo,
+      usuario: usuarioActivo(data)
+    };
+    const despues = Math.max(0, saldo + (resta ? -monto : monto));
+    persist({ ...data, movimientosCC: [mov, ...(data.movimientosCC || [])] });
+    setAjustando(false);
+    avisar("Saldo ajustado \u00B7 " + cliente.nombre + " debe " + money(despues),
+      { deshacer: () => persist(anterior) });
+  };
+
   const borrarMovimiento = (id) => {
     const m = (data.movimientosCC || []).find((x) => x.id === id);
     if (!m) return;
     const esCargo = m.tipo === "cargo";
+    const ajuste = esAjusteDeSaldo(m);
     const saldoAhora = saldoDeCliente(data, cliente.id);
     // Sacar un cargo baja la deuda; sacar un pago la sube
     const saldoDespues = Math.max(0, saldoAhora + (esCargo ? -(m.monto || 0) : (m.monto || 0)));
     if (!window.confirm(
-      "¿Eliminar " + (esCargo ? "este fiado" : "este pago") + " de " + money(m.monto) + "?\n\n" +
+      "¿Eliminar " + (ajuste ? "este ajuste" : esCargo ? "este fiado" : "este pago") + " de " + money(m.monto) + "?\n\n" +
       (conceptoLimpio(m) ? "\u201C" + conceptoLimpio(m) + "\u201D\n\n" : "") +
       "La deuda de " + cliente.nombre + " pasa de " + money(saldoAhora) + " a " + money(saldoDespues) + ".\n\n" +
       "Se puede deshacer."
     )) return;
     const anterior = data;
     persist({ ...data, movimientosCC: (data.movimientosCC || []).filter((x) => x.id !== id) });
-    avisar((esCargo ? "Fiado eliminado" : "Pago eliminado") + " \u00B7 deuda " + money(saldoDespues),
-      { deshacer: () => persist(anterior) });
+    avisar((ajuste ? "Ajuste eliminado" : esCargo ? "Fiado eliminado" : "Pago eliminado") +
+      " \u00B7 deuda " + money(saldoDespues), { deshacer: () => persist(anterior) });
   };
 
   // Eliminar una venta entera. Devuelve el stock al local donde se hizo (por
@@ -20667,8 +20845,22 @@ function ClienteFichaModal({ data, persist, cliente, onClose }) {
         // entró, y la fecha de alta está en su columna del listado de
         // clientes. Debajo del nombre queda sólo el saldo, que es el dato
         // por el que se abre esta pantalla.
-        React.createElement("div", { style: { fontSize: 14.5, fontWeight: 700, marginTop: 5, color: saldo > 0 ? "var(--mustard)" : "var(--sage)" } },
-          saldo > 0 ? "Saldo pendiente: " + money(saldo) : "Sin deuda pendiente")
+        React.createElement(
+          "div",
+          { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 5 } },
+          React.createElement("span", { style: { fontSize: 14.5, fontWeight: 700, color: saldo > 0 ? "var(--mustard)" : "var(--sage)" } },
+            saldo > 0 ? "Saldo pendiente: " + money(saldo) : "Sin deuda pendiente"),
+          // v9.980 — Corregir el saldo a mano, sin plata de por medio. Sólo
+          // el Propietario: cambia la deuda sin que haya una operación atrás.
+          puedeAjustarSaldo(data) && React.createElement("button", {
+            onClick: () => setAjustando(true),
+            style: {
+              background: "none", border: "1px solid var(--line)", borderRadius: 999,
+              padding: "4px 11px", cursor: "pointer", color: "var(--muted)",
+              fontSize: 12, fontFamily: "'Inter', sans-serif", whiteSpace: "nowrap"
+            }
+          }, "Ajustar")
+        )
       ),
       // v9.974 — Sólo cerrar. El lápiz de editar el cliente salió de acá: los
       // datos del cliente se editan desde su fila en el listado, que es donde
@@ -20788,7 +20980,9 @@ function ClienteFichaModal({ data, persist, cliente, onClose }) {
                         // adentro los botones de imprimir y de WhatsApp.
                         f.venta && ["Ver mercadería", () => { setTicketFicha(f.venta); setMenuFila(null); }, false],
                         puedeEliminarMovimientos(data) && [
-                          f.esMovimiento ? (f.clase === "venta" ? "Eliminar fiado" : "Eliminar pago") : "Eliminar venta",
+                          f.esAjuste ? "Eliminar ajuste"
+                            : f.esMovimiento ? (f.clase === "venta" ? "Eliminar fiado" : "Eliminar pago")
+                            : "Eliminar venta",
                           () => { setMenuFila(null); f.esMovimiento ? borrarMovimiento(f.id) : (f.venta ? borrarVenta(f.venta) : null); },
                           true
                         ]
@@ -20809,6 +21003,10 @@ function ClienteFichaModal({ data, persist, cliente, onClose }) {
     // hecho, así imprime igual y no duplica lógica.
     ticketFicha && React.createElement(TicketModal, {
       data, venta: ticketFicha, onClose: () => setTicketFicha(null)
+    }),
+
+    ajustando && React.createElement(AjustarSaldoModal, {
+      cliente, saldo, onGuardar: guardarAjuste, onClose: () => setAjustando(false)
     })
   );
 }
