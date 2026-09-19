@@ -129,30 +129,42 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.975";
-// v9.975 (2026-09-19) — EL ENGANCHE DE LOS MOVIMIENTOS VIEJOS, QUE NO ANDABA
-// La v9.974 dejó de mostrar como renglón suelto los movimientos que nacieron
-// de una venta, pero los movimientos ANTERIORES a esa versión no tienen la
-// referencia a su venta y se enganchan por fecha y monto. Ese enganche
-// fallaba y los renglones seguían apareciendo. Tres arreglos:
+const VERSION_APP = "9.976";
+// v9.976 (2026-09-19) — EL DATO SE SACA DE LA VENTA, NO SE ADIVINA
+// La v9.974 y la v9.975 sacaban de la cuenta del cliente los movimientos que
+// habían nacido de una venta, pero para eso primero le buscaban la venta a
+// cada movimiento, por fecha y monto, porque los movimientos anteriores a la
+// v9.974 no guardan a cuál pertenecen. Esa búsqueda fallaba y los renglones
+// seguían apareciendo sueltos. Dos versiones parcheando la búsqueda: el
+// problema era la búsqueda misma.
 //
-// 1) LA FECHA se compara por el DÍA, no como texto crudo. La fecha de una
-//    venta y la de su movimiento pueden volver de la nube con formatos
-//    distintos ("2026-09-19" contra "2026-09-19T03:00:00+00:00") según el
-//    tipo de cada columna, y comparadas como texto nunca daban iguales.
-//    Ésta es la causa más probable de lo que se seguía viendo.
-// 2) UN DÍA DE TOLERANCIA. Una venta hecha cerca de medianoche, o un
-//    corrimiento de huso horario en la base, puede dejar la venta en un día
-//    y su movimiento en el otro. Primero se busca el mismo día; recién si no
-//    hay, el de al lado.
-// 3) VARIAS VENTAS QUE COINCIDEN ya no dejan el movimiento suelto. Todas
-//    pasaron el filtro del MISMO monto esperado, así que son intercambiables
-//    y se ve igual se elija la que se elija. Antes, ante la duda, el renglón
-//    quedaba suelto: justo lo que se quería sacar.
+// AHORA VA AL REVÉS, y no hay nada que adivinar:
 //
-// Y para no volver a adivinar: con ?diag=1 en la dirección, la cuenta del
-// cliente muestra abajo POR QUÉ un movimiento no se pudo enganchar, con las
-// fechas y los montos contra los que se comparó. Sin ?diag=1 no se ve nada.
+// · PARA SACARLO DE LA LISTA alcanza con el concepto del movimiento. "Parte
+//   a cuenta corriente de una venta" y "Saldo cobrado con una venta" los
+//   escribe la app en un solo lugar cada uno, al vender: un movimiento que
+//   los tiene vino de una venta, seguro. No hace falta saber de CUÁL.
+//
+// · LO QUE SE MUESTRA en "Ver mercadería" sale de la VENTA: el tramo fiado
+//   de sus pagos, y el saldo cobrado de su renglón "Saldo pendiente de…".
+//   Los dos datos ya estaban adentro de la venta. Sin fechas, sin montos que
+//   comparar, sin casos ambiguos: no puede fallar.
+//
+// · RED DE SEGURIDAD: si lo que se oculta no coincide con lo que las ventas
+//   explican —un cargo huérfano porque su venta se borró con el error que
+//   arregló la v9.974— la diferencia sale en un renglón propio. La lista
+//   siempre explica el saldo de la cabecera y nada queda escondido. En una
+//   cuenta sana ese renglón no aparece nunca.
+//
+// El saldo no se toca: sale de saldoDeCliente(), que lee la base y no la
+// pantalla. Ocultar o agrupar renglones no puede moverlo.
+//
+// Al borrar una venta se aplica la misma idea: se lleva sus movimientos
+// buscando por concepto y por el monto que la venta ya sabe, sin comparar
+// fechas, que era donde fallaba.
+//
+// Se fue el panel de ?diag=1 de la v9.975: era para entender por qué fallaba
+// la búsqueda, y ya no hay búsqueda que pueda fallar.
 //
 // v9.974 (2026-09-19) — UNA VENTA, UN RENGLÓN EN LA CUENTA DEL CLIENTE
 // Etapa 3 de la tanda, y el arreglo del "Pago recibido" que nadie recibió.
@@ -2721,25 +2733,19 @@ const tramoCCdeVenta = (v) => (v.pagos || [])
 const saldoCobradoEnVenta = (v) => (v.items || [])
   .filter((it) => !it.productoId && /^Saldo pendiente de /i.test(String(it.nombre || "")))
   .reduce((a, it) => a + (Number(it.precioUnit) || 0) * (Number(it.cantidad) || 0), 0);
+// Cuánto de la venta quedó FIADO, que es lo que genera el cargo aparte.
+// Una venta cobrada ENTERA a cuenta corriente no genera cargo: ya suma al
+// saldo por sí sola (si no, el cliente figuraba debiendo el doble). Esta es
+// exactamente la condición con la que se crea el movimiento al vender, y por
+// eso es la que sirve para leerlo de vuelta.
+const tramoFiadoDeVenta = (v) => v.metodoPago === "cuenta_corriente" ? 0 : tramoCCdeVenta(v);
 
-// Sólo el día: la fecha de un movimiento y la de su venta pueden volver de
-// la nube con formatos distintos ("2026-09-19" contra
-// "2026-09-19T03:00:00+00:00") según el tipo de cada columna. Compararlas
-// como texto crudo fallaba y el movimiento quedaba suelto. v9.975.
-const soloDia = (f) => String(f || "").slice(0, 10);
-// Cuántos días hay entre dos fechas. Una venta hecha cerca de medianoche, o
-// una diferencia de huso horario en la base, puede dejar la venta en un día
-// y su movimiento en el otro.
-const diasDeDiferencia = (a, b) => {
-  const da = Date.parse(soloDia(a) + "T00:00:00Z");
-  const db = Date.parse(soloDia(b) + "T00:00:00Z");
-  return (isNaN(da) || isNaN(db)) ? 9999 : Math.abs(da - db) / 86400000;
-};
-
-// Cuánto tenía que valer la venta para haber generado este movimiento.
-// Un cargo viene del tramo que se cobró a cuenta corriente; un pago, de la
-// línea "Saldo pendiente de…" que agrega el botón "Cobrar saldo".
-const montoEsperadoEnVenta = (m, v) => m.tipo === "cargo" ? tramoCCdeVenta(v) : saldoCobradoEnVenta(v);
+// ¿Este movimiento nació de una venta? Devuelve cuál de los dos conceptos es,
+// o "" si es un pago o un fiado suelto de verdad (una devolución, un fiado
+// cargado a mano). Cada uno de esos dos textos lo escribe la app en un solo
+// lugar, al vender: si el movimiento lo tiene, vino de una venta, seguro.
+// Es lo único que hace falta saber para sacarlo de la lista de la cuenta;
+// de QUÉ venta vino se lee de la venta misma, no del movimiento.
 const conceptoDeVenta = (m) => {
   const limpio = conceptoLimpio(m);
   if (m.tipo === "cargo" && limpio === CONCEPTO_TRAMO_CC) return CONCEPTO_TRAMO_CC;
@@ -2747,68 +2753,37 @@ const conceptoDeVenta = (m) => {
   return "";
 };
 
-// Reparte los movimientos entre las ventas que los generaron.
-// Devuelve { porVenta: { ventaId: [movs] }, absorbidos: { movId: true },
-//            sueltos: [ { m, motivo, candidatos } ] }.
-// `sueltos` es sólo para el diagnóstico: dice por qué un movimiento que
-// tenía pinta de venir de una venta no se pudo enganchar.
-const anexarMovimientosAVentas = (ventas, movimientos) => {
-  const porVenta = {};
-  const absorbidos = {};
-  const sueltos = [];
-  const anexar = (v, m) => {
-    (porVenta[v.id] = porVenta[v.id] || []).push(m);
-    absorbidos[m.id] = true;
-  };
-  const sinRef = [];
-  (movimientos || []).forEach((m) => {
-    const ref = refEnConcepto(m);
-    if (!ref) return sinRef.push(m);
-    const v = (ventas || []).find((x) => refDeVenta(x) === ref);
-    // Si la venta se borró, el movimiento queda suelto a propósito: sigue
-    // moviendo el saldo, así que tiene que verse y poder eliminarse.
-    if (v) anexar(v, m);
-    else sueltos.push({ m, motivo: "la venta " + ref + " ya no está", candidatos: [] });
-  });
-  // Una venta que ya tiene un movimiento de ese mismo concepto no puede
-  // recibir otro: si no, dos cargos iguales del mismo día caían los dos en
-  // la primera venta.
-  const libre = (v, concepto) => !(porVenta[v.id] || []).some((x) => conceptoLimpio(x) === concepto);
-  sinRef.forEach((m) => {
-    const concepto = conceptoDeVenta(m);
-    if (!concepto) return;   // un pago o un fiado suelto de verdad: no se toca
-    const monto = Number(m.monto) || 0;
-    const mismoMonto = (v) => Math.abs(montoEsperadoEnVenta(m, v) - monto) < 0.5;
-    // Primero el mismo día; si no hay, se mira el día de al lado.
-    let cand = (ventas || []).filter((v) => diasDeDiferencia(v.fecha, m.fecha) === 0 && mismoMonto(v) && libre(v, concepto));
-    if (!cand.length) {
-      cand = (ventas || []).filter((v) => diasDeDiferencia(v.fecha, m.fecha) <= 1 && mismoMonto(v) && libre(v, concepto));
-    }
-    // Si coincide más de una, son intercambiables: todas pasaron el filtro
-    // del MISMO monto esperado, así que se ven igual se elija la que se
-    // elija, y libre() ya impide que dos movimientos caigan en la misma
-    // venta. Dejarlas sin enganchar por "ambiguas" era peor: el renglón
-    // quedaba suelto, que es justo lo que se quiso sacar.
-    if (cand.length) return anexar(cand[0], m);
-    sueltos.push({
-      m,
-      motivo: "ninguna venta le coincide",
-      // Con qué se comparó, para poder ver a simple vista qué no cuadra
-      candidatos: (ventas || []).map((v) => ({
-        id: refDeVenta(v), fecha: soloDia(v.fecha), total: v.total,
-        esperado: montoEsperadoEnVenta(m, v), dias: diasDeDiferencia(v.fecha, m.fecha)
-      }))
-    });
-  });
-  return { porVenta, absorbidos, sueltos };
-};
-
-// Los movimientos de UNA venta, para mostrarlos en "Ver mercadería".
+// Qué movimientos de cuenta hay que borrar junto con una venta.
+//
+// v9.976 — Determinista. Primero los que guardan la referencia a esta venta
+// (exacto, v9.974 en adelante). Para los VIEJOS, que no la guardan, se busca
+// UNO por concepto y monto: la venta ya sabe cuánto dejó fiado y cuánto
+// saldo cobró, así que el monto no se adivina, y el concepto lo escribe la
+// app en un solo lugar cada uno. Antes esto también comparaba fechas y ahí
+// era donde fallaba: la fecha de la venta y la del movimiento pueden volver
+// de la nube con formatos distintos según el tipo de cada columna.
 const movimientosDeVenta = (data, venta) => {
   if (!venta || !venta.clienteId) return [];
-  const ventas = (data.ventas || []).filter((v) => v.clienteId === venta.clienteId && !esDevolucion(v));
-  const movs = (data.movimientosCC || []).filter((m) => m.clienteId === venta.clienteId && !esCargoDuplicado(m));
-  return anexarMovimientosAVentas(ventas, movs).porVenta[venta.id] || [];
+  const delCliente = (data.movimientosCC || [])
+    .filter((m) => m.clienteId === venta.clienteId && !esCargoDuplicado(m));
+  const ref = refDeVenta(venta);
+  const elegidos = [];
+  const tomado = {};
+  delCliente.forEach((m) => {
+    if (conceptoDeVenta(m) && refEnConcepto(m) === ref) { elegidos.push(m); tomado[m.id] = true; }
+  });
+  const buscarUno = (concepto, monto, esCargo) => {
+    if (!(monto > 0.5)) return;
+    // Si ya vino por referencia, no se busca otro: sería de otra venta.
+    if (elegidos.some((m) => conceptoLimpio(m) === concepto)) return;
+    const m = delCliente.find((x) => !tomado[x.id] && !refEnConcepto(x) &&
+      conceptoLimpio(x) === concepto && (x.tipo === "cargo") === esCargo &&
+      Math.abs((Number(x.monto) || 0) - monto) < 0.5);
+    if (m) { elegidos.push(m); tomado[m.id] = true; }
+  };
+  buscarUno(CONCEPTO_TRAMO_CC, tramoFiadoDeVenta(venta), true);
+  buscarUno(CONCEPTO_SALDO_COBRADO, saldoCobradoEnVenta(venta), false);
+  return elegidos;
 };
 const ventasNetas = (ventas) => (ventas || []).filter((v) => !esDevolucion(v));
 const devueltoDeVenta = (data, ventaId) => {
@@ -18763,12 +18738,24 @@ async function imprimirEscPos(texto) {
 function PagosDeLaVenta({ data, venta }) {
   const [ampliada, setAmpliada] = useState(null);
 
-  // v9.974 — Lo que esta venta le movió a la cuenta corriente del cliente.
-  // Son los movimientos que la venta generó y que antes salían como renglones
-  // sueltos en la cuenta: el tramo que quedó fiado y el saldo viejo que se
-  // cobró con ella. Acá están al lado de la mercadería y de los medios de
-  // pago, que es donde se entienden.
-  const anexos = movimientosDeVenta(data, venta);
+  // Lo que esta venta le movió a la cuenta corriente del cliente: el tramo
+  // que quedó fiado y el saldo viejo que se cobró con ella. Antes salían como
+  // renglones sueltos en la cuenta del cliente; acá están al lado de la
+  // mercadería y de los medios de pago, que es donde se entienden.
+  //
+  // v9.976 — Sale de la VENTA (sus pagos y sus renglones), no de buscar los
+  // movimientos que generó. La v9.974 los buscaba por fecha y monto para los
+  // movimientos viejos, que no guardan a qué venta pertenecen, y cuando esa
+  // búsqueda fallaba el renglón seguía apareciendo suelto en la cuenta. La
+  // venta ya tiene los dos datos adentro, así que no hay nada que adivinar.
+  const fiado = tramoFiadoDeVenta(venta);
+  const saldoCobrado = saldoCobradoEnVenta(venta);
+  const todoACuenta = venta.metodoPago === "cuenta_corriente" ? (Number(venta.total) || 0) : 0;
+  const efectosCuenta = [
+    todoACuenta > 0.5 && { k: "cc", texto: "Toda la venta quedó a cuenta corriente", monto: todoACuenta, suma: true },
+    fiado > 0.5 && { k: "fi", texto: "Quedó a cuenta corriente", monto: fiado, suma: true },
+    saldoCobrado > 0.5 && { k: "sa", texto: "Saldo anterior cobrado con esta venta", monto: saldoCobrado, suma: false }
+  ].filter(Boolean);
 
   // Con pago dividido vienen los tramos; con un solo método, se arma uno.
   const pagos = (venta.pagos && venta.pagos.length)
@@ -18866,10 +18853,10 @@ function PagosDeLaVenta({ data, venta }) {
       React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(venta.vuelto))
     ),
 
-    // v9.974 — El efecto de esta venta en la cuenta corriente del cliente.
-    // Rojo lo que le suma deuda, verde lo que se la baja: los mismos colores
-    // que la cuenta del cliente, para que se lea igual en los dos lados.
-    anexos.length > 0 && React.createElement(
+    // El efecto de esta venta en la cuenta corriente del cliente. Rojo lo que
+    // le suma deuda, verde lo que se la baja: los mismos colores que la
+    // cuenta del cliente, para que se lea igual en los dos lados.
+    efectosCuenta.length > 0 && React.createElement(
       "div",
       { style: { marginTop: 12 } },
       React.createElement("div", {
@@ -18878,40 +18865,24 @@ function PagosDeLaVenta({ data, venta }) {
           color: "var(--muted)", marginBottom: 8
         }
       }, "EN LA CUENTA DE " + String(venta.clienteNombre || "ESTE CLIENTE").toUpperCase()),
-      anexos.map((m) => {
-        const suma = m.tipo === "cargo";
-        const limpio = conceptoLimpio(m);
-        return React.createElement(
-          "div",
-          {
-            key: m.id,
-            style: {
-              display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline",
-              background: "var(--surface-2)", borderRadius: 12,
-              padding: "10px 12px", marginBottom: 6
-            }
-          },
-          React.createElement(
-            "span",
-            { style: { fontSize: 13, minWidth: 0 } },
-            // Dicho desde la venta, no desde la base: "Parte a cuenta
-            // corriente de una venta" era el nombre del movimiento, pero acá
-            // adentro ya se sabe de qué venta se está hablando.
-            limpio === CONCEPTO_TRAMO_CC ? "Quedó a cuenta corriente"
-              : limpio === CONCEPTO_SALDO_COBRADO ? "Saldo anterior cobrado con esta venta"
-              : (limpio || (suma ? "Cargo en la cuenta" : "Pago en la cuenta")),
-            m.metodo ? React.createElement("span", {
-              style: { color: "var(--muted)", fontSize: 11.5, display: "block", marginTop: 2 }
-            }, METODO_LABELS[m.metodo] || m.metodo) : null
-          ),
-          React.createElement("span", {
-            style: {
-              fontFamily: "'IBM Plex Mono', monospace", fontWeight: 650, whiteSpace: "nowrap",
-              color: suma ? "var(--rose)" : "var(--sage)"
-            }
-          }, (suma ? "+" : "−") + money(m.monto).replace("$ ", "$"))
-        );
-      })
+      efectosCuenta.map((e) => React.createElement(
+        "div",
+        {
+          key: e.k,
+          style: {
+            display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline",
+            background: "var(--surface-2)", borderRadius: 12,
+            padding: "10px 12px", marginBottom: 6
+          }
+        },
+        React.createElement("span", { style: { fontSize: 13, minWidth: 0 } }, e.texto),
+        React.createElement("span", {
+          style: {
+            fontFamily: "'IBM Plex Mono', monospace", fontWeight: 650, whiteSpace: "nowrap",
+            color: e.suma ? "var(--rose)" : "var(--sage)"
+          }
+        }, (e.suma ? "+" : "\u2212") + money(e.monto).replace("$ ", "$"))
+      ))
     ),
     ampliada && React.createElement(VisorComprobante, { src: ampliada, onClose: () => setAmpliada(null) })
   );
@@ -20365,13 +20336,34 @@ function ClienteFichaModal({ data, persist, cliente, onClose }) {
   const ventasPagadas = data.ventas.filter((v) =>
     v.clienteId === cliente.id && !esDevolucion(v) && v.metodoPago !== "cuenta_corriente");
 
-  // v9.974 — Los movimientos que nacieron de una venta se muestran DENTRO de
-  // "Ver mercadería" de esa venta, no como renglón aparte. Una venta cobrada
-  // parte al contado y parte a cuenta, que además cobraba saldo viejo, dejaba
-  // tres renglones y se leía como tres operaciones distintas.
-  const { absorbidos, sueltos: sinEnganchar } = anexarMovimientosAVentas(
-    [...ventasFiadas, ...ventasPagadas], movimientos);
-  const movimientosSueltos = movimientos.filter((m) => !absorbidos[m.id]);
+  // Los movimientos que nacieron de una venta se muestran DENTRO de "Ver
+  // mercadería" de esa venta, no como renglón aparte: una venta cobrada
+  // parte al contado y parte a cuenta, que además cobraba saldo viejo,
+  // dejaba tres renglones y se leía como tres operaciones distintas.
+  //
+  // v9.976 — Se ocultan POR SU CONCEPTO, sin buscarles la venta. Esos dos
+  // conceptos los escribe la app en un solo lugar cada uno, al vender: un
+  // movimiento que los tiene vino de una venta, seguro. La v9.974 intentaba
+  // además averiguar DE CUÁL, por fecha y monto, porque los movimientos
+  // viejos no lo guardan; cuando esa búsqueda fallaba el renglón seguía
+  // apareciendo suelto. Para sacarlo de la lista no hace falta saber de qué
+  // venta es: alcanza con saber que vino de una.
+  const todasLasVentas = [...ventasFiadas, ...ventasPagadas];
+  const movimientosSueltos = movimientos.filter((m) => !conceptoDeVenta(m));
+
+  // Red de seguridad. Lo que se oculta tiene que estar explicado por las
+  // ventas que se ven: cada venta muestra adentro de "Ver mercadería" lo que
+  // le movió a la cuenta. Si no cuadra —por ejemplo, un cargo que quedó
+  // huérfano porque su venta se borró con el error de la v9.973— la
+  // diferencia se muestra en un renglón propio. Así la lista siempre explica
+  // el saldo de la cabecera y nada queda escondido.
+  const sumar = (lista, fn) => lista.reduce((a, x) => a + (fn(x) || 0), 0);
+  const ocultos = movimientos.filter((m) => conceptoDeVenta(m));
+  const netoOculto = sumar(ocultos.filter((m) => m.tipo === "cargo"), (m) => m.monto) -
+                     sumar(ocultos.filter((m) => m.tipo !== "cargo"), (m) => m.monto);
+  const netoExplicado = sumar(todasLasVentas, tramoFiadoDeVenta) -
+                        sumar(todasLasVentas, saldoCobradoEnVenta);
+  const desajuste = Math.round((netoOculto - netoExplicado) * 100) / 100;
 
   // Cómo se pagó una venta, en texto. Con un solo método dice ese; con pago
   // dividido los enumera con su monto ("Efectivo $20.000 · Transferencia
@@ -20431,7 +20423,20 @@ function ClienteFichaModal({ data, persist, cliente, onClose }) {
       ].filter(Boolean).join(" · "),
       monto: m.monto,
       esMovimiento: true
-    }))
+    })),
+    // El desajuste, si lo hay. No es un movimiento de la base: es la
+    // diferencia entre lo que se ocultó y lo que las ventas explican, y
+    // está para que la lista nunca deje de sumar el saldo de la cabecera.
+    // En una cuenta sana no aparece nunca.
+    ...(Math.abs(desajuste) > 0.5 ? [{
+      id: "__desajuste__",
+      clase: desajuste > 0 ? "venta" : "pago",
+      fecha: (todasLasVentas[0] && todasLasVentas[0].fecha) || todayISO(),
+      titulo: desajuste > 0 ? "Fiado de una venta que ya no est\u00E1" : "Pago de una venta que ya no est\u00E1",
+      pago: "Qued\u00F3 en la cuenta sin su venta. Se puede eliminar desde los 3 puntos de esa venta, o dejarlo si corresponde.",
+      monto: Math.abs(desajuste),
+      esDesajuste: true
+    }] : [])
   ].sort((a, b) => claveCronologica(b).localeCompare(claveCronologica(a)));
 
   // v9.974 — El saldo sale de saldoDeCliente(), la misma función que usan el
@@ -20674,7 +20679,9 @@ function ClienteFichaModal({ data, persist, cliente, onClose }) {
                     // Menú de 3 puntos por fila: ver la mercadería que se
                     // llevó, imprimir el ticket y eliminar. Antes había sólo un
                     // botón de borrar suelto.
-                    !puedeEliminarMovimientos(data) && !f.venta
+                    // El renglón del desajuste no es un movimiento de la
+                    // base: no hay nada que borrar ni que imprimir en él.
+                    f.esDesajuste || (!puedeEliminarMovimientos(data) && !f.venta)
                       ? null
                       : React.createElement("button", {
                           onClick: (e) => setMenuFila(menuFila && menuFila.id === f.id ? null : { id: f.id, rect: e.currentTarget.getBoundingClientRect() }),
@@ -20713,29 +20720,6 @@ function ClienteFichaModal({ data, persist, cliente, onClose }) {
             )
           )
         ),
-    // v9.975 — Por qué un movimiento que tiene pinta de venir de una venta
-    // quedó suelto en vez de mostrarse adentro de ella. Sólo con ?diag=1:
-    // es para revisar un caso raro, no para el uso de todos los días.
-    // Muestra contra qué se comparó, así se ve a simple vista qué no cuadra
-    // (la fecha, el monto, o que hay dos ventas que podrían ser).
-    DIAG && sinEnganchar.length > 0 && React.createElement(
-      "div",
-      { style: { marginTop: 16, padding: "12px 14px", borderRadius: 12, background: "var(--surface-2)", fontSize: 12, fontFamily: "'IBM Plex Mono', monospace", lineHeight: 1.6, overflowX: "auto" } },
-      React.createElement("div", { style: { fontWeight: 700, marginBottom: 8, color: "var(--mustard)" } },
-        "DIAG · " + sinEnganchar.length + " movimiento(s) sin enganchar a su venta"),
-      sinEnganchar.map((s, i) => React.createElement(
-        "div",
-        { key: i, style: { marginBottom: 10, paddingBottom: 10, borderBottom: "1px solid color-mix(in srgb, var(--line) 60%, transparent)" } },
-        React.createElement("div", { style: { color: "var(--ink)" } },
-          "MOV " + (s.m.tipo || "?") + " " + money(s.m.monto) + " · fecha " + JSON.stringify(s.m.fecha)),
-        React.createElement("div", { style: { color: "var(--muted)" } }, "concepto " + JSON.stringify(s.m.concepto || "")),
-        React.createElement("div", { style: { color: "var(--rose)" } }, "motivo: " + s.motivo),
-        s.candidatos.map((c, k) => React.createElement("div", { key: k, style: { color: "var(--muted)" } },
-          "  venta #" + c.id + " fecha " + c.fecha + " (dif " + c.dias + "d) total " + money(c.total) +
-          " → esperado " + money(c.esperado)))
-      ))
-    ),
-
     // Ver la mercadería e imprimir el ticket de una venta, desde el menú de
     // 3 puntos de su fila. Reusa el mismo modal que muestra el ticket recién
     // hecho, así imprime igual y no duplica lógica.
