@@ -129,7 +129,29 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.977";
+const VERSION_APP = "9.978";
+// v9.978 (2026-09-19) — EL DETALLE DEL CIERRE, DE UN VISTAZO
+// "Ver detalle" de un cierre de caja era una sola columna larguísima: cinco
+// renglones de datos, la diferencia, los medios de pago, la mercadería, los
+// comprobantes y los movimientos, todo uno abajo del otro. Para saber si la
+// caja había cerrado bien había que arrastrar media pantalla, y los botones
+// quedaban al final de todo. Ahora:
+//
+// · ARRIBA, lo que se viene a ver: VENDIDO y EFECTIVO CONTADO en dos
+//   tarjetas, y debajo la franja de la diferencia ("Cerró justo" / "Sobró" /
+//   "Faltó"), en verde o rojo y de ancho completo.
+// · CÓMO SE COBRÓ en grilla de tarjetitas, no una fila por medio de pago.
+// · EL TURNO en dos columnas: apertura, cierre, monto inicial y unidades.
+// · LAS TRES LISTAS LARGAS (mercadería, comprobantes y movimientos) quedan
+//   plegadas, con su resumen a la vista en el encabezado. Se abren sólo si
+//   hace falta mirarlas, y ahí adentro se desplazan solas.
+// · LOS BOTONES quedan fijos al pie del modal: imprimir ya no obliga a
+//   arrastrar hasta abajo.
+//
+// Medido en un celular de 390x780: todo entra sin desplazar, y sin
+// desplazamiento horizontal. No cambia ningún cálculo ni nada de la base:
+// es sólo cómo se muestra.
+//
 // v9.977 (2026-09-19) — Sale el renglón "Cuenta Corriente · Cliente desde
 // DD/MM/AAAA" de abajo del nombre, en la cuenta del cliente. Debajo del
 // nombre queda sólo el saldo. La fecha de alta sigue en su columna del
@@ -35534,50 +35556,146 @@ function DetalleCierreModal({ cierre, onClose, data }) {
     }));
   });
 
-  const bloque = (titulo, extra) => React.createElement("div", {
-    style: { fontSize: 12.5, fontWeight: 700, marginTop: 20, marginBottom: 8, display: "flex", justifyContent: "space-between" }
-  }, React.createElement("span", null, titulo), extra ? React.createElement("span", { style: { color: "var(--muted)", fontWeight: 500 } }, extra) : null);
-  const linea = (k, v, destacado) => React.createElement(
+  // ===== PRESENTACIÓN (v9.978) ========================================
+  // Antes el detalle era una sola columna larguísima: cinco renglones de
+  // datos, la diferencia, los medios de pago, la mercadería, los
+  // comprobantes y los movimientos, todo uno abajo del otro. Para ver si la
+  // caja cerró bien había que arrastrar media pantalla, y los botones
+  // quedaban al final de todo.
+  //
+  // Ahora lo que importa entra de un vistazo: los tres números grandes
+  // arriba, el desglose de cobros en grilla, los datos del turno en dos
+  // columnas, y las tres listas largas plegadas con su resumen a la vista.
+  // Se abren sólo si hace falta mirarlas. Los botones quedan fijos al pie.
+  const [abierta, setAbierta] = useState({});
+  const alternar = (k) => setAbierta((a) => ({ ...a, [k]: !a[k] }));
+
+  const tarjeta = (rotulo, valor, pie, color) => React.createElement(
     "div",
-    { key: k, style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, padding: "11px 0", borderBottom: "1px solid var(--line)" } },
-    React.createElement("span", { style: { fontSize: 13.5, color: "var(--muted)" } }, k),
-    React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: destacado ? 17 : 14, fontWeight: destacado ? 700 : 500 } }, v)
+    { key: rotulo, style: { background: "var(--surface-2)", borderRadius: 12, padding: "11px 12px", minWidth: 0 } },
+    React.createElement("div", {
+      style: { fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", color: "var(--muted)" }
+    }, rotulo),
+    React.createElement("div", {
+      style: {
+        fontFamily: "'IBM Plex Mono', monospace", fontSize: 17, fontWeight: 700, marginTop: 4,
+        color: color || "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis"
+      }
+    }, valor),
+    pie ? React.createElement("div", {
+      style: { fontSize: 11, color: color || "var(--muted)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }
+    }, pie) : null
   );
+
+  const grilla = (min, hijos) => React.createElement("div", {
+    style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(" + min + "px, 1fr))", gap: 8 }
+  }, hijos);
+
+  const dato = (k, v) => React.createElement(
+    "div",
+    { key: k, style: { minWidth: 0 } },
+    React.createElement("div", { style: { fontSize: 11, color: "var(--muted)" } }, k),
+    React.createElement("div", { style: { fontSize: 13, fontWeight: 600, marginTop: 1, wordBreak: "break-word" } }, v)
+  );
+
+  const rotuloSeccion = (texto) => React.createElement("div", {
+    style: { fontSize: 10.5, fontWeight: 700, letterSpacing: "0.06em", color: "var(--muted)", marginTop: 18, marginBottom: 8 }
+  }, texto);
+
+  // Una sección plegable: en el encabezado, el nombre y el resumen; el
+  // contenido sólo cuando se la abre. Así las tres listas largas no empujan
+  // el resto de la pantalla hacia abajo.
+  const plegable = (clave, titulo, resumen, contenido) => React.createElement(
+    "div",
+    { key: clave, style: { border: "1px solid var(--line)", borderRadius: 12, marginTop: 8, overflow: "hidden" } },
+    React.createElement(
+      "button",
+      {
+        onClick: () => alternar(clave),
+        style: {
+          display: "flex", alignItems: "center", gap: 10, width: "100%",
+          padding: "12px 14px", background: "none", border: "none", cursor: "pointer",
+          color: "var(--ink)", font: "inherit", textAlign: "left"
+        }
+      },
+      React.createElement(ChevronRight, {
+        size: 15, color: "var(--muted)", style: { flexShrink: 0, transition: "transform .15s", transform: abierta[clave] ? "rotate(90deg)" : "none" }
+      }),
+      React.createElement("span", { style: { flex: 1, minWidth: 0, fontSize: 13.5, fontWeight: 650 } }, titulo),
+      React.createElement("span", { style: { fontSize: 12, color: "var(--muted)", whiteSpace: "nowrap" } }, resumen)
+    ),
+    abierta[clave] ? React.createElement("div", { style: { padding: "0 14px 14px" } }, contenido) : null
+  );
+
+  const rango = cierre.abiertaEn
+    ? hora24(cierre.abiertaEn) + " → " + (cierre.cerradaEn ? hora24(cierre.cerradaEn) : "sin cerrar")
+    : "";
+  const dia = cierre.abiertaEn ? fechaHoraLargaISO(cierre.abiertaEn).split(",")[0] : "";
 
   return React.createElement(
     ModalOverlay,
-    { width: 520 },
+    { width: 560 },
     React.createElement(ModalHeader, { icon: Archive, title: "Detalle del cierre", onClose }),
-    React.createElement("p", { style: { fontSize: 13, color: "var(--muted)", marginTop: -8, marginBottom: 18 } },
-      cierre.usuarioNombre || "\u2014", cierre.negocioNombre ? " \u00B7 " + cierre.negocioNombre : ""),
+    React.createElement("p", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: -8, marginBottom: 14 } },
+      [cierre.usuarioNombre || "—", cierre.negocioNombre, dia && (dia + " · " + rango)].filter(Boolean).join(" · ")),
 
-    linea("Apertura", cierre.abiertaEn ? fechaHoraLargaISO(cierre.abiertaEn) : "\u2014"),
-    linea("Cierre", cierre.cerradaEn ? fechaHoraLargaISO(cierre.cerradaEn) : "\u2014"),
-    linea("Monto inicial", money(cierre.montoInicial)),
-    linea("Efectivo esperado", money(cierre.efectivoEsperado)),
-    linea("Efectivo contado", money(cierre.efectivoContado), true),
+    // Los números por los que se abre esta pantalla
+    grilla(150, [
+      tarjeta("VENDIDO", money(totalCobrado).replace("$ ", "$"),
+        delTurno.length + (delTurno.length === 1 ? " venta" : " ventas")),
+      tarjeta("EFECTIVO CONTADO", money(cierre.efectivoContado).replace("$ ", "$"),
+        "esperado " + money(cierre.efectivoEsperado).replace("$ ", "$"))
+    ]),
 
+    // La diferencia va en una franja de ancho completo, no en una tarjeta
+    // más: en el celular entran dos tarjetas por fila y la tercera quedaba
+    // sola, empujando el resto fuera de la pantalla. Además no es un número
+    // para comparar con los otros dos: es el veredicto del cierre.
     React.createElement(
       "div",
       {
         style: {
           display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12,
-          marginTop: 16, padding: "13px 16px", borderRadius: 10,
+          marginTop: 8, padding: "11px 14px", borderRadius: 12,
           border: "1px solid " + (dif === 0 ? "var(--sage)" : "var(--rose)"),
           background: dif === 0 ? "rgba(61,214,160,0.08)" : "rgba(244,118,122,0.08)"
         }
       },
-      React.createElement("span", { style: { fontSize: 13.5, fontWeight: 600, color: dif === 0 ? "var(--sage)" : "var(--rose)" } },
+      React.createElement("span", { style: { fontSize: 13.5, fontWeight: 650, color: dif === 0 ? "var(--sage)" : "var(--rose)" } },
         dif === 0 ? "Cerró justo" : dif > 0 ? "Sobró plata" : "Faltó plata"),
-      React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 17, fontWeight: 700, color: dif === 0 ? "var(--sage)" : "var(--rose)" } },
-        (dif > 0 ? "+" : "") + money(dif))
+      React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 16, fontWeight: 700, whiteSpace: "nowrap", color: dif === 0 ? "var(--sage)" : "var(--rose)" } },
+        (dif > 0 ? "+" : "") + money(dif).replace("$ ", "$"))
     ),
+
+    // Cómo entró la plata, en grilla y no en una fila por medio
+    Object.keys(porMedio).length > 0 && React.createElement(
+      React.Fragment,
+      null,
+      rotuloSeccion("CÓMO SE COBRÓ"),
+      grilla(130, Object.entries(porMedio).sort((a, b) => b[1] - a[1]).map(([m, monto]) =>
+        React.createElement(
+          "div",
+          { key: m, style: { background: "var(--surface-2)", borderRadius: 10, padding: "9px 11px", minWidth: 0 } },
+          React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } },
+            METODO_LABELS[m] || m),
+          React.createElement("div", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 14, fontWeight: 650, marginTop: 2 } },
+            money(monto))
+        )))
+    ),
+
+    rotuloSeccion("EL TURNO"),
+    grilla(130, [
+      dato("Apertura", cierre.abiertaEn ? fechaHoraLargaISO(cierre.abiertaEn) : "—"),
+      dato("Cierre", cierre.cerradaEn ? fechaHoraLargaISO(cierre.cerradaEn) : "—"),
+      dato("Monto inicial", money(cierre.montoInicial)),
+      dato("Unidades vendidas", unidades + (unidades === 1 ? " unidad" : " unidades"))
+    ]),
 
     // Si no se encontró ninguna venta se dice por qué, en vez de mostrar el
     // cierre incompleto y que parezca que no se vendió nada.
     delTurno.length === 0 && React.createElement(
       "div",
-      { style: { marginTop: 18, background: "var(--surface-2)", borderRadius: 10, padding: "12px 14px", fontSize: 12.5, lineHeight: 1.55, color: "var(--muted)" } },
+      { style: { marginTop: 16, background: "var(--surface-2)", borderRadius: 10, padding: "12px 14px", fontSize: 12.5, lineHeight: 1.55, color: "var(--muted)" } },
       !data
         ? "No se pudo revisar el detalle de este turno."
         : !cierre.abiertaEn
@@ -35587,87 +35705,67 @@ function DetalleCierreModal({ cierre, onClose, data }) {
             " en este local."
     ),
 
-    // Todo lo cobrado en el turno, no sólo el efectivo
-    delTurno.length > 0 && React.createElement(
-      React.Fragment,
-      null,
-      bloque("Cobrado en el turno", delTurno.length + (delTurno.length === 1 ? " venta" : " ventas")),
+    (listaArticulos.length > 0 || comprobantes.length > 0 || movs.length > 0) && rotuloSeccion("EL DETALLE"),
+
+    // --- Mercadería vendida ---
+    listaArticulos.length > 0 && plegable(
+      "merc", "Mercadería vendida",
+      unidades + " u · " + listaArticulos.length + " art.",
       React.createElement(
-        "div",
-        { style: { display: "flex", flexDirection: "column", gap: 2 } },
-        Object.entries(porMedio).sort((a, b) => b[1] - a[1]).map(([m, monto]) => React.createElement(
-          "div",
-          { key: m, style: { display: "flex", justifyContent: "space-between", fontSize: 13, padding: "8px 0", borderBottom: "1px solid color-mix(in srgb, var(--line) 50%, transparent)" } },
-          React.createElement("span", { style: { color: "var(--muted)" } }, METODO_LABELS[m] || m),
-          React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 } }, money(monto))
-        )),
+        React.Fragment,
+        null,
         React.createElement(
           "div",
-          { style: { display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "10px 0", fontWeight: 700 } },
-          React.createElement("span", null, "Total"),
-          React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(totalCobrado))
-        )
+          { style: { maxHeight: verTodo ? "none" : 260, overflowY: "auto" } },
+          (verTodo ? listaArticulos : listaArticulos.slice(0, 8)).map((a2, k) => React.createElement(
+            "div",
+            { key: k, style: { display: "flex", alignItems: "center", gap: 10, fontSize: 13, padding: "8px 0", borderBottom: "1px solid color-mix(in srgb, var(--line) 50%, transparent)" } },
+            React.createElement("span", {
+              style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, minWidth: 26, color: "var(--denim-light)" }
+            }, a2.cantidad + "×"),
+            React.createElement(
+              "span",
+              { style: { flex: 1, minWidth: 0 } },
+              React.createElement("span", { style: { display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, a2.nombre),
+              (a2.talle || a2.color) && React.createElement("span", {
+                style: { display: "block", fontSize: 11.5, color: "var(--muted)", marginTop: 2 }
+              }, [a2.talle && ("Talle " + a2.talle), a2.color].filter(Boolean).join(" · "))
+            ),
+            React.createElement("span", {
+              style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, flexShrink: 0 }
+            }, money(a2.monto))
+          ))
+        ),
+        listaArticulos.length > 8 && !verTodo && React.createElement("button", {
+          onClick: () => setVerTodo(true),
+          style: { background: "none", border: "none", cursor: "pointer", color: "var(--denim-light)", fontSize: 12.5, padding: "10px 0", fontFamily: "'Inter', sans-serif" }
+        }, "Ver los " + listaArticulos.length + " artículos"),
+        // Imprimir la mercadería de este cierre por Bluetooth
+        React.createElement(Button, {
+          tone: "ghost",
+          onClick: async () => {
+            setImpMerc("");
+            try {
+              if (!window.__blePrinter || !window.__blePrinter.device) await conectarImpresoraBLE();
+              else if (!window.__blePrinter.device.gatt.connected) await caracteristicaImpresora();
+              await imprimirEscPos(construirTicketMercaderia(data || {}, listaArticulos, {
+                abiertaEn: cierre.abiertaEn, cerradaEn: cierre.cerradaEn
+              }));
+              setImpMerc("Enviado a la impresora.");
+            } catch (e) { setImpMerc(e && e.message ? e.message : "No se pudo imprimir."); }
+          },
+          style: { width: "100%", justifyContent: "center", marginTop: 12 }
+        }, React.createElement(Receipt, { size: 14 }), " Imprimir mercadería"),
+        impMerc && React.createElement("p", { style: { fontSize: 11.5, color: "var(--muted)", textAlign: "center", marginTop: 6 } }, impMerc)
       )
     ),
 
-    // Qué mercadería salió
-    listaArticulos.length > 0 && React.createElement(
-      React.Fragment,
-      null,
-      bloque("Mercadería vendida", unidades + (unidades === 1 ? " unidad" : " unidades")),
+    // --- Comprobantes ---
+    comprobantes.length > 0 && plegable(
+      "comp", "Comprobantes recibidos", String(comprobantes.length),
       React.createElement(
         "div",
-        { style: { maxHeight: verTodo ? "none" : 220, overflowY: "auto" } },
-        (verTodo ? listaArticulos : listaArticulos.slice(0, 8)).map((a2, k) => React.createElement(
-          "div",
-          { key: k, style: { display: "flex", alignItems: "center", gap: 10, fontSize: 13, padding: "8px 0", borderBottom: "1px solid color-mix(in srgb, var(--line) 50%, transparent)" } },
-          React.createElement("span", {
-            style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, minWidth: 26, color: "var(--denim-light)" }
-          }, a2.cantidad + "×"),
-          React.createElement(
-            "span",
-            { style: { flex: 1, minWidth: 0 } },
-            React.createElement("span", { style: { display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, a2.nombre),
-            (a2.talle || a2.color) && React.createElement("span", {
-              style: { display: "block", fontSize: 11.5, color: "var(--muted)", marginTop: 2 }
-            }, [a2.talle && ("Talle " + a2.talle), a2.color].filter(Boolean).join(" · "))
-          ),
-          React.createElement("span", {
-            style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5, flexShrink: 0 }
-          }, money(a2.monto))
-        ))
-      ),
-      listaArticulos.length > 8 && !verTodo && React.createElement("button", {
-        onClick: () => setVerTodo(true),
-        style: { background: "none", border: "none", cursor: "pointer", color: "var(--denim-light)", fontSize: 12.5, padding: "10px 0", fontFamily: "'Inter', sans-serif" }
-      }, "Ver los " + listaArticulos.length + " artículos"),
-      // Imprimir la mercadería de este cierre por Bluetooth
-      React.createElement(Button, {
-        tone: "ghost",
-        onClick: async () => {
-          setImpMerc("");
-          try {
-            if (!window.__blePrinter || !window.__blePrinter.device) await conectarImpresoraBLE();
-            else if (!window.__blePrinter.device.gatt.connected) await caracteristicaImpresora();
-            await imprimirEscPos(construirTicketMercaderia(data || {}, listaArticulos, {
-              abiertaEn: cierre.abiertaEn, cerradaEn: cierre.cerradaEn
-            }));
-            setImpMerc("Enviado a la impresora.");
-          } catch (e) { setImpMerc(e && e.message ? e.message : "No se pudo imprimir."); }
-        },
-        style: { width: "100%", justifyContent: "center", marginTop: 12 }
-      }, React.createElement(Receipt, { size: 14 }), " Imprimir mercadería"),
-      impMerc && React.createElement("p", { style: { fontSize: 11.5, color: "var(--muted)", textAlign: "center", marginTop: 6 } }, impMerc)
-    ),
-
-    // Los comprobantes de transferencia, con su foto
-    comprobantes.length > 0 && React.createElement(
-      React.Fragment,
-      null,
-      bloque("Comprobantes recibidos", comprobantes.length),
-      React.createElement(
-        "div",
-        { style: { display: "flex", flexDirection: "column", gap: 8 } },
+        { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: 300, overflowY: "auto" } },
         comprobantes.map((c) => React.createElement(
           "div",
           { key: c.clave, style: { display: "flex", alignItems: "center", gap: 11, background: "var(--surface-2)", borderRadius: 10, padding: "9px 11px" } },
@@ -35690,28 +35788,29 @@ function DetalleCierreModal({ cierre, onClose, data }) {
       )
     ),
 
-    ampliado && React.createElement(VisorComprobante, { src: ampliado, onClose: () => setAmpliado(null) }),
-
-    movs.length > 0 && React.createElement(
-      "div",
-      { style: { marginTop: 20 } },
-      React.createElement("div", { style: { fontSize: 13.5, fontWeight: 650, marginBottom: 10 } }, "Movimientos de efectivo (", movs.length, ")"),
+    // --- Movimientos de efectivo ---
+    movs.length > 0 && plegable(
+      "movs", "Movimientos de efectivo", String(movs.length),
       React.createElement(
         "div",
-        { style: { border: "none", borderRadius: 10, maxHeight: 200, overflowY: "auto" } },
+        { style: { maxHeight: 260, overflowY: "auto" } },
         movs.map((m, k) => React.createElement(
           "div",
-          { key: m.id || k, style: { display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", borderBottom: k === movs.length - 1 ? "none" : "1px solid var(--line)" } },
+          { key: m.id || k, style: { display: "flex", alignItems: "center", gap: 12, padding: "9px 0", borderBottom: k === movs.length - 1 ? "none" : "1px solid color-mix(in srgb, var(--line) 50%, transparent)" } },
           React.createElement("span", { style: { flex: 1, minWidth: 0, fontSize: 13 } }, m.concepto || m.tipo),
-          React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 13.5, color: m.tipo === "retiro" ? "var(--rose)" : "var(--sage)" } },
+          React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 13.5, whiteSpace: "nowrap", color: m.tipo === "retiro" ? "var(--rose)" : "var(--sage)" } },
             (m.tipo === "retiro" ? "-" : "+") + money(m.monto))
         ))
       )
     ),
 
+    ampliado && React.createElement(VisorComprobante, { src: ampliado, onClose: () => setAmpliado(null) }),
+
+    // Los botones quedan pegados al pie: antes estaban al final de todo y
+    // para imprimir había que arrastrar la pantalla entera.
     React.createElement(
       "div",
-      { style: { display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 20 } },
+      { className: "ct-pie-fijo", style: { display: "flex", justifyContent: "flex-end", gap: 10 } },
       React.createElement(Button, { tone: "ghost", onClick: () => imprimirCierre(cierre, data), style: { padding: "12px 20px" } },
         React.createElement(Receipt, { size: 15 }), " Imprimir"),
       React.createElement(Button, { onClick: onClose, style: { padding: "12px 24px" } }, "Cerrar")
