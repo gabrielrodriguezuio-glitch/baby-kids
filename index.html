@@ -129,7 +129,59 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.971";
+const VERSION_APP = "9.973";
+// v9.973 (2026-09-19) — CÓMO SE PAGÓ, DENTRO DE "VER MERCADERÍA"
+// Etapa 2 de la tanda. Al entrar por los 3 puntos → "Ver mercadería", ARRIBA
+// del ticket aparece ahora "CÓMO SE PAGÓ":
+//  · cada medio de pago con su monto (con pago dividido, los tres o cuatro
+//    tramos por separado);
+//  · debajo de cada transferencia, la foto del comprobante y lo que el
+//    escáner le pudo leer: banco, monto, fecha, número de operación, quién
+//    la mandó y quién la recibió;
+//  · el dato que el escáner NO pudo sacar dice "no se pudo leer" en vez de
+//    quedar en blanco: en blanco parecía que el comprobante no lo tenía;
+//  · una transferencia sin ningún comprobante cargado se avisa, porque es
+//    justo la que después no se puede reclamar.
+//
+// La foto se toca para verla en grande. IMPORTANTE para el consumo: la foto
+// NO viaja en la sincronización (la app baja comprobantes_livianos, que son
+// los datos sin la imagen). FotoComprobante la pide recién cuando se la
+// toca y la deja en caché, así abrir esta pantalla no gasta MB de más.
+//
+// En el TICKET DE 58 mm y en el TEXTO DE WHATSAPP los datos del comprobante
+// ya salían (banco, monto, fecha, número). Se les agregó el DESTINATARIO,
+// que faltaba en los dos: sirve para saber a cuál de los tres negocios le
+// entró la transferencia sin abrir el home banking. En el papel y en el
+// chat, el dato que no se pudo leer se omite en vez de decir "no se pudo
+// leer": ese papel se lo lleva el cliente.
+//
+// Además: se BORRÓ el código del estado de cuenta que había quedado sin uso
+// en v9.972 — 329 líneas entre filasEstadoCuenta, construirEstadoCuentaTexto,
+// imprimirEstadoCuenta, textoEstadoCuenta y EstadoCuentaModal.
+//
+// v9.972 (2026-09-18) — LA CUENTA DEL CLIENTE, MÁS CORTA
+// Etapa 1 de la tanda: sacar cosas de la cuenta del cliente para que entre
+// en el celular y se lea de un vistazo.
+//
+// 1) Se fue la columna "Saldo" (el saldo corrido fila por fila). El saldo
+//    total sigue arriba, en la cabecera. La tabla bajó de 620 a 380 px de
+//    ancho mínimo: ahora entra en el celular sin arrastrarla de costado.
+// 2) La columna "Concepto" quedó en UNA sola línea: punto de color y
+//    título. El detalle de la mercadería y el desglose de cómo se pagó se
+//    ven entrando por los 3 puntos → "Ver mercadería".
+//    EXCEPCIÓN a propósito: las filas que no tienen venta detrás (un pago
+//    suelto, un fiado cargado a mano) no tienen "Ver mercadería" que abrir,
+//    así que conservan el renglón del método. Sin eso, cómo entró ese pago
+//    no se vería en ningún lado de la app.
+// 3) "Imprimir ticket" se fue del menú de 3 puntos: abría exactamente el
+//    mismo modal que "Ver mercadería", que ya trae adentro los botones de
+//    imprimir por Bluetooth y de WhatsApp. No se perdió ninguna función.
+// 4) y 5) Se fue la fila de acciones entera, con sus dos botones: "Estado
+//    de cuenta" y "WhatsApp".
+//
+// NOTA: el código del estado de cuenta quedó sin uso con este cambio, y se
+// borró entero en v9.973.
+//
 // v9.971 (2026-09-18) — UN SOLO IDIOMA EN LA CUENTA DEL CLIENTE
 // La cuenta del cliente llamaba a las mismas cuatro cosas de cuatro maneras
 // distintas, según dónde se mirara:
@@ -17671,6 +17723,11 @@ function ticketParaChat(data, venta) {
         L.push("      · " + cab);
         const det = [c.fecha || "", c.numero ? "Op " + c.numero : ""].filter(Boolean).join("   ");
         if (det) L.push("        " + det);
+        // Quién la mandó y a qué cuenta entró (v9.973). El "de" sólo cuando
+        // no es el mismo cliente de la venta: si no, es repetir el nombre
+        // que ya está arriba.
+        if (c.de && c.de !== venta.clienteNombre) L.push("        de " + c.de);
+        if (c.para) L.push("        para " + c.para);
       });
   });
   if (venta.vuelto > 0) L.push("   Vuelto   " + money(venta.vuelto));
@@ -17790,6 +17847,9 @@ function construirTicketTexto(data, venta) {
     }
     // Quién mandó la plata, cuando no es el cliente de la venta
     if (c.de && c.de !== venta.clienteNombre) out.push("     de " + String(c.de).slice(0, ANCHO - 8));
+    // Y a qué cuenta entró (v9.973). Sirve para saber a cuál de los tres
+    // negocios le entró la transferencia sin abrir el home banking.
+    if (c.para) out.push("     para " + String(c.para).slice(0, ANCHO - 10));
   };
 
   if (venta.pagos && venta.pagos.length > 1) {
@@ -18490,6 +18550,118 @@ async function imprimirEscPos(texto) {
   bytes.set(body, init.length);
   await escribirBytesBLE(bytes);
 }
+// ===== CÓMO SE PAGÓ ESTA VENTA (v9.973) =============================
+// Va arriba del ticket, dentro de "Ver mercadería": los medios de pago con
+// su monto y, para cada transferencia, la foto del comprobante y lo que el
+// escáner le pudo leer (banco, monto, fecha, número de operación, quién la
+// mandó y quién la recibió).
+//
+// La FOTO no viaja en la sincronización: la app baja sólo los datos del
+// comprobante (columna comprobantes_livianos) y deja la imagen en la nube.
+// FotoComprobante la pide recién cuando se la toca y la guarda en caché,
+// así abrir esta pantalla no gasta MB de más.
+function PagosDeLaVenta({ venta }) {
+  const [ampliada, setAmpliada] = useState(null);
+
+  // Con pago dividido vienen los tramos; con un solo método, se arma uno.
+  const pagos = (venta.pagos && venta.pagos.length)
+    ? venta.pagos
+    : [{ metodo: venta.metodoPago || "otro", monto: venta.total }];
+
+  // Los comprobantes viejos no guardaban el método: se asumen de la
+  // transferencia, que es de donde salieron siempre.
+  const compsDe = (metodo) => (venta.comprobantes || [])
+    .filter((c) => (c.metodo || "transferencia") === metodo);
+
+  // Un dato que el escáner no pudo sacar se dice, no se deja en blanco: en
+  // blanco parece que el comprobante no lo tenía.
+  const dato = (etiqueta, valor) => React.createElement(
+    "div",
+    { style: { display: "flex", gap: 6, fontSize: 11.5, lineHeight: 1.5 } },
+    React.createElement("span", { style: { color: "var(--muted)", flexShrink: 0 } }, etiqueta),
+    React.createElement("span", {
+      style: {
+        color: valor ? "var(--ink)" : "var(--muted)",
+        fontStyle: valor ? "normal" : "italic",
+        wordBreak: "break-word"
+      }
+    }, valor || "no se pudo leer")
+  );
+
+  const filaComprobante = (c, k) => React.createElement(
+    "div",
+    {
+      key: k,
+      style: {
+        display: "flex", gap: 10, alignItems: "flex-start",
+        background: "var(--surface)", borderRadius: 10, padding: "9px 10px", marginTop: 7
+      }
+    },
+    React.createElement(FotoComprobante, {
+      ventaId: venta.id, indice: k, imagen: c.imagen,
+      tieneFoto: !!(c.imagen || c.tieneFoto), tam: 46, onAmpliar: setAmpliada
+    }),
+    React.createElement(
+      "div",
+      { style: { flex: 1, minWidth: 0 } },
+      dato("Banco", c.banco),
+      dato("Monto", (Number(c.monto) || 0) > 0 ? money(Number(c.monto)) : ""),
+      dato("Fecha", c.fecha),
+      dato("Operación", c.numero || venta.numeroOperacion || ""),
+      dato("Envió", c.de),
+      dato("Recibió", c.para),
+      c.nota ? React.createElement("div", {
+        style: { fontSize: 11, color: "var(--muted)", marginTop: 3, fontStyle: "italic" }
+      }, c.nota) : null
+    )
+  );
+
+  return React.createElement(
+    "div",
+    { style: { marginBottom: 14 } },
+    React.createElement("div", {
+      style: {
+        fontSize: 11, fontWeight: 700, letterSpacing: "0.06em",
+        color: "var(--muted)", marginBottom: 8
+      }
+    }, "CÓMO SE PAGÓ"),
+    pagos.map((p, i) => {
+      const comps = compsDe(p.metodo);
+      return React.createElement(
+        "div",
+        {
+          key: i,
+          style: {
+            background: "var(--surface-2)", borderRadius: 12,
+            padding: "10px 12px", marginBottom: 8
+          }
+        },
+        React.createElement(
+          "div",
+          { style: { display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13.5, fontWeight: 650 } },
+          React.createElement("span", null, METODO_LABELS[p.metodo] || p.metodo || "Sin especificar"),
+          React.createElement("span", {
+            style: { fontFamily: "'IBM Plex Mono', monospace" }
+          }, money(p.monto))
+        ),
+        comps.map(filaComprobante),
+        // Una transferencia sin ningún comprobante cargado: conviene que se
+        // note, porque es justo la que no se puede reclamar después.
+        !comps.length && p.metodo === "transferencia" && React.createElement("div", {
+          style: { fontSize: 11.5, color: "var(--muted)", fontStyle: "italic", marginTop: 5 }
+        }, "Sin comprobante cargado")
+      );
+    }),
+    venta.vuelto > 0 && React.createElement(
+      "div",
+      { style: { display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "var(--muted)", padding: "0 12px" } },
+      React.createElement("span", null, "Vuelto"),
+      React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace" } }, money(venta.vuelto))
+    ),
+    ampliada && React.createElement(VisorComprobante, { src: ampliada, onClose: () => setAmpliada(null) })
+  );
+}
+
 function TicketModal({ data, venta, onClose }) {
   const [enviarWA, setEnviarWA] = useState(false);
   // Si la venta tiene cliente, se propone su teléfono para no buscarlo
@@ -18536,7 +18708,7 @@ function TicketModal({ data, venta, onClose }) {
       setMensaje(e && e.message ? e.message : "No se pudo imprimir.");
     }
   };
-  return /* @__PURE__ */ React.createElement(ModalOverlay, { width: 360 }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", marginBottom: 4 } }, /* @__PURE__ */ React.createElement("button", { onClick: onClose, style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)" } }, /* @__PURE__ */ React.createElement(X, { size: 18 }))), /* @__PURE__ */ React.createElement("div", { style: { border: "none", borderRadius: 4 } }, /* @__PURE__ */ React.createElement(TicketVenta, { data, venta })), /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement(ModalOverlay, { width: 360 }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", marginBottom: 4 } }, /* @__PURE__ */ React.createElement("button", { onClick: onClose, style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)" } }, /* @__PURE__ */ React.createElement(X, { size: 18 }))), /* @__PURE__ */ React.createElement(PagosDeLaVenta, { venta }), /* @__PURE__ */ React.createElement("div", { style: { border: "none", borderRadius: 4 } }, /* @__PURE__ */ React.createElement(TicketVenta, { data, venta })), /* @__PURE__ */ React.createElement(
     "label",
     { style: { display: "flex", alignItems: "center", gap: 11, cursor: "pointer", marginTop: 14, padding: "12px 14px", border: "none", borderRadius: 10 } },
     /* @__PURE__ */ React.createElement(Switch, { on: comoImagen, onChange: alternarModo }),
@@ -19408,222 +19580,12 @@ function ClienteFormModal({ inicial, listasPrecio, onGuardar, onClose }) {
   );
 }
 
-// ===== Estado de cuenta del cliente =====
-// Todo lo que compró y todo lo que pagó, con el saldo al pie. Se imprime o se
-// guarda como PDF, sale por la impresora térmica Bluetooth, y se puede mandar
-// por WhatsApp resumido.
-
-// Las filas del estado de cuenta, ordenadas por fecha. Se calculan una sola
-// vez y las usan las tres salidas (PDF, térmica, chat).
-const filasEstadoCuenta = (data, cliente) => {
-  const movs = (data.movimientosCC || []).filter((m) => m.clienteId === cliente.id);
-  const ventas = (data.ventas || []).filter((v) => v.clienteId === cliente.id && !esDevolucion(v));
-  return [
-    ...ventas.map((v) => ({
-      fecha: v.fecha, hora: v.horaTexto || "",
-      // Cada producto por separado: la salida decide cómo juntarlos
-      items: (v.items || []).map((it) =>
-        it.cantidad + "x " + it.nombre +
-        ([it.talla, it.color].filter(Boolean).length
-          ? " (" + [it.talla && "Talle " + it.talla, it.color].filter(Boolean).join(" · ") + ")" : "")),
-      // v9.971 — Mismos nombres que la cuenta en pantalla.
-      tipo: v.metodoPago === "cuenta_corriente" ? "Venta a cuenta" : "Venta al contado",
-      // Cómo la pagó, si fue al contado: antes esto ocupaba el lugar del
-      // concepto ("Efectivo") y se perdía que era una venta.
-      metodo: v.metodoPago === "cuenta_corriente" ? "" : (METODO_LABELS[v.metodoPago] || ""),
-      debe: v.metodoPago === "cuenta_corriente" ? v.total : 0,
-      // ARREGLO v9.971: la venta al contado iba en "haber", así que salía
-      // con signo menos y sumaba en "Total pagado", como si el cliente
-      // hubiera pagado deuda. El saldo del pie la ignora (saldoDeCliente
-      // sólo cuenta las ventas a cuenta), así que los renglones no cerraban
-      // con el total y el cliente podía leer que pagó algo que no pagó.
-      // Ahora no va en ninguna de las dos columnas: se muestra sin signo y
-      // se suma aparte.
-      haber: 0,
-      contado: v.metodoPago === "cuenta_corriente" ? 0 : v.total
-    })),
-    // Los movimientos de la cuenta. Se saltean los cargos "Venta en cuenta
-    // corriente", que son el duplicado de una venta ya listada arriba; los
-    // demás cargos SÍ van: un fiado cargado a mano, o la parte a cuenta de un
-    // pago dividido, son deuda real y antes no aparecían en el estado.
-    ...movs.filter((m) => !esCargoDuplicado(m)).map((m) => (
-      m.tipo === "cargo"
-        ? {
-            fecha: m.fecha, hora: "",
-            items: [m.concepto || "Fiado a mano"],
-            tipo: "Fiado a mano", metodo: "", debe: m.monto, haber: 0, contado: 0
-          }
-        : {
-            fecha: m.fecha, hora: "",
-            items: [m.concepto || "Pago recibido"],
-            tipo: "Pago recibido",
-            metodo: METODO_LABELS[m.metodo] || m.metodo || "",
-            debe: 0, haber: m.monto, contado: 0
-          }
-    ))
-  ].sort((a, b) => (a.fecha + a.hora).localeCompare(b.fecha + b.hora));
-};
-
-// Versión para la impresora térmica de 58 mm: 32 columnas, mismos comandos
-// ESC/POS que el ticket, así sale con la misma letra y el mismo resaltado.
-const construirEstadoCuentaTexto = (data, cliente, negocioNombre) => {
-  const ANCHO = 32;
-  const negocio = data.negocio || {};
-  const filas = filasEstadoCuenta(data, cliente);
-  const saldo = saldoDeCliente(data, cliente.id);
-  const totalDebe = filas.reduce((a, f) => a + (f.debe || 0), 0);
-  const totalPago = filas.reduce((a, f) => a + (f.haber || 0), 0);
-  // Lo que compró y pagó en el momento. Va aparte: no es deuda ni es pago
-  // de deuda, y mezclarlo era lo que descuadraba el papel (v9.971).
-  const totalContado = filas.reduce((a, f) => a + (f.contado || 0), 0);
-
-  const linea = (izq, der) => {
-    izq = izq || ""; der = der || "";
-    const espacio = Math.max(1, ANCHO - izq.length - der.length);
-    return izq + " ".repeat(espacio) + der;
-  };
-  const partir = (texto, ancho) => {
-    const palabras = String(texto || "").split(" ");
-    const lineas = [];
-    let actual = "";
-    palabras.forEach((pal) => {
-      if (!actual) { actual = pal; return; }
-      if ((actual + " " + pal).length <= ancho) actual += " " + pal;
-      else { lineas.push(actual); actual = pal; }
-    });
-    if (actual) lineas.push(actual);
-    return lineas.length ? lineas : [""];
-  };
-  const dashes = SUBRAYADO + " ".repeat(ANCHO) + SIN_SUBRAYADO;
-  const out = [];
-  out.push(CURSIVA + NEGRITA);
-
-  out.push(CENTRO + GRANDE + NEGRITA + (negocioNombre || negocio.nombre || "Mi negocio").toUpperCase() + NORMAL + SIN_NEGRITA);
-  if (negocio.telefono) out.push(CENTRO + "Tel " + negocio.telefono);
-  out.push(CENTRO + ALTO + "ESTADO DE CUENTA" + NORMAL);
-  out.push(IZQ + dashes);
-
-  out.push(NEGRITA + cliente.nombre + NORMAL);
-  if (cliente.telefono) out.push("Tel " + cliente.telefono);
-  out.push(linea("Al", fecha(todayISO())));
-  out.push(dashes);
-
-  if (!filas.length) {
-    out.push("Sin movimientos registrados.");
-  } else {
-    filas.forEach((f) => {
-      // Fecha y concepto a la izquierda, el importe a la derecha: lo que
-      // suma deuda con "+", lo que la baja con "-", y la venta al contado
-      // sin signo, porque no mueve el saldo (v9.971).
-      const importe = f.debe ? "+" + money(f.debe)
-        : f.haber ? "-" + money(f.haber)
-        : money(f.contado || 0);
-      out.push(NEGRITA + linea(fecha(f.fecha) + " " + f.tipo, importe) + SIN_NEGRITA);
-      if (f.metodo) out.push("  (" + f.metodo + ")");
-      // El punto medio no es ASCII y la impresora lo borra: va un guion
-      f.items.forEach((it) => partir(it.replace(/ \u00B7 /g, " - "), ANCHO - 2).forEach((l) => out.push("  " + l)));
-    });
-  }
-  out.push(dashes);
-
-  out.push(linea("Total a cuenta", money(totalDebe)));
-  out.push(linea("Total pagado", money(totalPago)));
-  // Sólo si compró algo al contado: si no, es un renglón en cero que
-  // confunde más de lo que aclara.
-  if (totalContado > 0) out.push(linea("Compras al contado", money(totalContado)));
-  out.push("");
-  out.push(ALTO + linea(saldo > 0 ? "SALDO PENDIENTE" : "SALDO", saldo > 0 ? money(saldo) : "AL DIA") + NORMAL);
-  out.push(dashes);
-  out.push(CENTRO + (saldo > 0 ? "Podes abonarlo en el local" : "Gracias!"));
-  if (saldo > 0) out.push(CENTRO + "o por transferencia.");
-  out.push(IZQ + SIN_CURSIVA + ESC + "!" + "\x00" + GS + "!" + "\x00");
-  out.push("");
-  out.push("");
-  return escposEncode(out.join("\n"));
-};
-
-const imprimirEstadoCuenta = (data, cliente, negocioNombre) => {
-  const saldo = saldoDeCliente(data, cliente.id);
-  const filas = filasEstadoCuenta(data, cliente).map((f) => ({
-    ...f, concepto: f.items.map(escaparHTML).join("<br>") || "Venta"
-  }));
-  const totalDebe = filas.reduce((a, f) => a + (f.debe || 0), 0);
-  const totalPago = filas.reduce((a, f) => a + (f.haber || 0), 0);
-  const totalContado = filas.reduce((a, f) => a + (f.contado || 0), 0);
-
-  const estilos =
-    "h1{font-size:17pt;margin:0 0 1mm}.sub{font-size:9.5pt;color:#555;margin-bottom:7mm}" +
-    "table{width:100%;border-collapse:collapse}" +
-    "th{text-align:left;font-size:8pt;text-transform:uppercase;letter-spacing:.06em;color:#666;border-bottom:1px solid #999;padding:2.5mm 2mm}" +
-    "td{font-size:9.5pt;border-bottom:1px solid #e6e6e6;padding:2.5mm 2mm;vertical-align:top}" +
-    ".num{font-family:'IBM Plex Mono',monospace;text-align:right;white-space:nowrap}" +
-    ".saldo{margin-top:7mm;padding-top:4mm;border-top:2px solid #111;display:flex;justify-content:space-between;font-size:14pt;font-weight:700}" +
-    ".pie{margin-top:5mm;font-size:9pt;color:#555}" +
-    ".totales{margin-top:5mm;font-size:10pt;color:#333}" +
-    ".totales div{display:flex;justify-content:space-between;padding:1mm 0}" +
-    "tr{page-break-inside:avoid}";
-
-  const cuerpo =
-    "<h1>Estado de cuenta</h1>" +
-    "<div class='sub'>" + escaparHTML(cliente.nombre) +
-      (cliente.telefono ? " · " + escaparHTML(cliente.telefono) : "") +
-      "<br>" + escaparHTML(negocioNombre || "") + " · al " + fechaNumerica(todayISO()) + "</div>" +
-    (filas.length === 0
-      ? "<p>Sin movimientos registrados.</p>"
-      // v9.971 — Una sola columna de importe con signo, en vez de las dos
-      // (Debe / Pagó) que obligaban a decidir en cuál cae la venta al
-      // contado. "+" suma deuda, "−" la baja, sin signo no la mueve.
-      : "<table><thead><tr><th>Fecha</th><th>Concepto</th><th>Detalle</th>" +
-        "<th class='num'>Importe</th></tr></thead><tbody>" +
-        filas.map((f) =>
-          "<tr><td>" + fechaNumerica(f.fecha) + "</td>" +
-          "<td>" + escaparHTML(f.tipo) +
-            (f.metodo ? "<br><small>" + escaparHTML(f.metodo) + "</small>" : "") + "</td>" +
-          "<td>" + f.concepto + "</td>" +
-          "<td class='num'>" +
-            (f.debe ? "+" + money(f.debe)
-              : f.haber ? "−" + money(f.haber)
-              : money(f.contado || 0)) +
-          "</td></tr>"
-        ).join("") + "</tbody></table>" +
-        "<div class='totales'>" +
-          "<div><span>Total a cuenta</span><span>" + money(totalDebe) + "</span></div>" +
-          "<div><span>Total pagado</span><span>" + money(totalPago) + "</span></div>" +
-          (totalContado > 0
-            ? "<div><span>Compras al contado</span><span>" + money(totalContado) + "</span></div>"
-            : "") +
-        "</div>") +
-    "<div class='saldo'><span>" + (saldo > 0 ? "Saldo pendiente" : "Saldo") + "</span><span>" +
-      (saldo > 0 ? money(saldo) : "Sin deuda") + "</span></div>" +
-    (saldo > 0 ? "<p class='pie'>Podés abonarlo en el local o por transferencia.</p>" : "");
-
-  return abrirImpresion("Estado de cuenta · " + cliente.nombre, estilos, cuerpo);
-};
-
-// Versión corta para el chat: el PDF no se puede adjuntar desde un enlace
-const textoEstadoCuenta = (data, cliente, negocioNombre) => {
-  // v9.971 — Sale de las MISMAS filas que el papel y el PDF. Antes armaba
-  // su propia lista con sólo las ventas: los pagos del cliente no aparecían
-  // por ningún lado, y decía "(a cuenta)" / "(pagado)", dos palabras más
-  // para las mismas cosas que en pantalla se llaman de otra manera.
-  const filas = filasEstadoCuenta(data, cliente);
-  const saldo = saldoDeCliente(data, cliente.id);
-  const ultimas = filas.slice(-6);
-  const importe = (f) => f.debe ? "+" + money(f.debe)
-    : f.haber ? "-" + money(f.haber)
-    : money(f.contado || 0);
-  return "*" + (negocioNombre || "Estado de cuenta") + "*\n" +
-    "Hola " + cliente.nombre + ", te paso el detalle al " + fechaNumerica(todayISO()) + ".\n\n" +
-    (ultimas.length
-      ? ultimas.map((f) =>
-          fechaNumerica(f.fecha) + "  " + f.tipo + "  " + importe(f) +
-          (f.items.length ? "\n   " + f.items.join(", ") : "")
-        ).join("\n") + "\n\n"
-      : "") +
-    (saldo > 0
-      ? "*Saldo pendiente: " + money(saldo) + "*"
-      : "*No tenés saldo pendiente.* ¡Gracias!");
-};
+// ===== Estado de cuenta del cliente: ELIMINADO en v9.973 =====
+// Vivía acá el estado de cuenta completo (vista previa, impresión
+// térmica, PDF y texto de WhatsApp) con su modal. El botón se sacó en
+// v9.972 y el código quedó sin uso, así que se borró entero. Lo que se
+// le manda al cliente ahora es el ticket de cada venta, desde
+// "Ver mercadería".
 
 // ===== Importar clientes desde una planilla =====
 // Sirve para pasar la lista que ya se tenía en Excel o en el teléfono sin
@@ -20127,123 +20089,10 @@ function BorrarClientesModal({ data, persist, onClose }) {
   );
 }
 
-// Modal del estado de cuenta: vista previa y tres salidas. La térmica
-// Bluetooth es la que se usa en el mostrador; el PDF sirve para archivar o
-// mandar por mail; WhatsApp para el cliente que no está.
-function EstadoCuentaModal({ data, cliente, onClose }) {
-  const negocioNombre = (data.negocio && data.negocio.nombre) || "";
-  const [enviarWA, setEnviarWA] = useState(false);
-  const [estado, setEstado] = useState("idle");
-  const [mensaje, setMensaje] = useState("");
-  const filas = filasEstadoCuenta(data, cliente);
-  const saldo = saldoDeCliente(data, cliente.id);
-  const totalDebe = filas.reduce((a, f) => a + (f.debe || 0), 0);
-  const totalPago = filas.reduce((a, f) => a + (f.haber || 0), 0);
-  const totalContado = filas.reduce((a, f) => a + (f.contado || 0), 0);
-
-  // Mismo camino que el ticket de venta: si ya se emparejó, reconecta sola
-  const imprimirBluetooth = async () => {
-    setMensaje("");
-    try {
-      if (!window.__blePrinter || !window.__blePrinter.device) {
-        setEstado("conectando");
-        const nombre = await conectarImpresoraBLE();
-        setMensaje("Conectado a " + nombre + ". Imprimiendo\u2026");
-      } else if (!window.__blePrinter.device.gatt.connected) {
-        setEstado("conectando");
-        setMensaje("Reconectando con la impresora\u2026");
-        await caracteristicaImpresora();
-      }
-      setEstado("imprimiendo");
-      await imprimirEscPos(construirEstadoCuentaTexto(data, cliente, negocioNombre));
-      setEstado("ok");
-      setMensaje("Estado de cuenta enviado a la impresora.");
-    } catch (e) {
-      setEstado("error");
-      setMensaje(e && e.message ? e.message : "No se pudo imprimir.");
-    }
-  };
-
-  const mono = { fontFamily: "'IBM Plex Mono', monospace" };
-  const ocupado = estado === "conectando" || estado === "imprimiendo";
-
-  return React.createElement(
-    ModalOverlay,
-    { width: 420 },
-    React.createElement(ModalHeader, { icon: Receipt, title: "Estado de cuenta", onClose }),
-
-    // Vista previa: lo mismo que va a salir del papel, en pantalla
-    React.createElement(
-      "div",
-      { style: { background: "var(--surface-2)", borderRadius: 12, padding: "14px 16px", maxHeight: 340, overflowY: "auto" } },
-      React.createElement("div", { style: { fontSize: 14, fontWeight: 700 } }, cliente.nombre),
-      React.createElement("div", { style: { fontSize: 12, color: "var(--muted)", marginBottom: 10 } },
-        (cliente.telefono ? cliente.telefono + " \u00B7 " : "") + "al " + fechaNumerica(todayISO())),
-      filas.length === 0
-        ? React.createElement("div", { style: { fontSize: 13, color: "var(--muted)" } }, "Sin movimientos registrados.")
-        : filas.map((f, i) => React.createElement(
-            "div",
-            { key: i, style: { padding: "7px 0", borderBottom: "1px solid var(--line)" } },
-            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13 } },
-              React.createElement("span", { style: { fontWeight: 600 } },
-                fechaNumerica(f.fecha) + " \u00B7 " + f.tipo + (f.metodo ? " (" + f.metodo + ")" : "")),
-              // v9.971 \u2014 Tres estados, no dos: suma deuda (+ rojo), la baja
-              // (\u2212 verde) y la venta al contado, que no la mueve (gris, sin
-              // signo). Antes ca\u00EDa en el "\u2212" verde y parec\u00EDa un pago.
-              React.createElement("span", {
-                style: { ...mono, fontWeight: 650, color: f.debe ? "var(--rose)" : f.haber ? "var(--sage)" : "var(--muted)" }
-              },
-                f.debe ? "+" + money(f.debe)
-                  : f.haber ? "\u2212" + money(f.haber)
-                  : money(f.contado || 0))),
-            f.items.map((it, k) => React.createElement("div", { key: k, style: { fontSize: 12, color: "var(--muted)", marginTop: 2 } }, it))
-          )),
-      React.createElement("div", { style: { marginTop: 12, fontSize: 12.5, color: "var(--muted)", display: "flex", justifyContent: "space-between" } },
-        React.createElement("span", null, "Total a cuenta"), React.createElement("span", { style: mono }, money(totalDebe))),
-      React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", display: "flex", justifyContent: "space-between", marginTop: 3 } },
-        React.createElement("span", null, "Total pagado"), React.createElement("span", { style: mono }, money(totalPago))),
-      totalContado > 0 && React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", display: "flex", justifyContent: "space-between", marginTop: 3 } },
-        React.createElement("span", null, "Compras al contado"), React.createElement("span", { style: mono }, money(totalContado))),
-      React.createElement("div", { style: { marginTop: 10, paddingTop: 10, borderTop: "2px solid var(--ink)", display: "flex", justifyContent: "space-between", fontSize: 15, fontWeight: 700 } },
-        React.createElement("span", null, saldo > 0 ? "Saldo pendiente" : "Saldo"),
-        React.createElement("span", { style: { ...mono, color: saldo > 0 ? "var(--rose)" : "var(--sage)" } }, saldo > 0 ? money(saldo) : "Al d\u00EDa"))
-    ),
-
-    mensaje && React.createElement("p", { style: { fontSize: 12, marginTop: 10, color: estado === "error" ? "var(--rose)" : "var(--muted)" } }, mensaje),
-
-    React.createElement(
-      "div",
-      { style: { display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" } },
-      React.createElement(Button, {
-        onClick: imprimirBluetooth, disabled: ocupado,
-        style: { flex: 1, justifyContent: "center", minWidth: 170 }
-      }, React.createElement(Receipt, { size: 14 }), " ",
-        estado === "conectando" ? "Conectando\u2026" : estado === "imprimiendo" ? "Imprimiendo\u2026" : "Imprimir por Bluetooth"),
-      React.createElement(Button, {
-        tone: "ghost",
-        onClick: () => imprimirEstadoCuenta(data, cliente, negocioNombre),
-        title: "Imprimir en A4 o guardar como PDF",
-        style: { justifyContent: "center" }
-      }, "PDF / A4"),
-      React.createElement(Button, {
-        tone: "ghost", onClick: () => setEnviarWA(true),
-        style: { justifyContent: "center" }
-      }, React.createElement(MessageCircle, { size: 14 }), " WhatsApp")
-    ),
-
-    enviarWA && React.createElement(EnviarWhatsAppModal, {
-      data,
-      titulo: "Enviar el estado de cuenta",
-      texto: textoEstadoCuenta(data, cliente, negocioNombre),
-      sugerido: cliente.telefono || "",
-      onClose: () => setEnviarWA(false)
-    })
-  );
-}
 
 function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
-  const [enviarCuenta, setEnviarCuenta] = useState(false);
-  const [verCuenta, setVerCuenta] = useState(false);
+  // v9.972 — Se fueron los estados de "Estado de cuenta" y del WhatsApp del
+  // estado de cuenta, junto con sus botones.
   // Menú de 3 puntos por fila y el ticket que se abre desde ahí
   const [menuFila, setMenuFila] = useState(null);
   const [ticketFicha, setTicketFicha] = useState(null);
@@ -20316,15 +20165,15 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
     }))
   ].sort((a, b) => claveCronologica(b).localeCompare(claveCronologica(a)));
 
-  // El saldo que quedaba después de cada movimiento, contando desde el más viejo
-  const enOrden = [...filas].reverse();
-  const saldos = {};
+  // El saldo del cliente, sumando desde el movimiento más viejo.
+  // v9.972 — Antes se guardaba además el saldo que quedaba DESPUÉS DE CADA
+  // fila, para la columna "Saldo". Esa columna se sacó, así que ya no hace
+  // falta el mapa: alcanza con el total.
   let acumulado = 0;
-  enOrden.forEach((f) => {
+  [...filas].reverse().forEach((f) => {
     if (f.clase === "venta") acumulado += f.monto;
     else if (f.clase === "pago") acumulado -= f.monto;
-    // Las compras pagadas al contado no mueven el saldo
-    saldos[f.id] = Math.max(0, acumulado);
+    // Las ventas al contado no mueven el saldo
   });
   const saldo = Math.max(0, acumulado);
 
@@ -20458,23 +20307,10 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       )
     ),
 
-    // Las acciones en su propia fila: entran completas y se leen con su nombre
-    React.createElement(
-      "div",
-      { style: { display: "flex", gap: 9, flexWrap: "wrap", marginBottom: 18 } },
-      React.createElement(Button, {
-        tone: "ghost",
-        onClick: () => setVerCuenta(true),
-        title: "Ver, imprimir por Bluetooth o guardar como PDF",
-        style: { padding: "11px 18px" }
-      }, React.createElement(Receipt, { size: 15 }), " Estado de cuenta"),
-      React.createElement(Button, {
-        tone: "ghost",
-        onClick: () => setEnviarCuenta(true),
-        title: "Mandarle el detalle por WhatsApp",
-        style: { padding: "11px 18px" }
-      }, React.createElement(MessageCircle, { size: 15 }), " WhatsApp")
-    ),
+    // v9.972 — La fila de acciones se sacó entera: tenía "Estado de cuenta" y
+    // "WhatsApp", y los dos salieron. El ticket de cada venta se sigue
+    // imprimiendo y mandando por WhatsApp desde "Ver mercadería", que ya
+    // tiene los dos botones adentro.
 
     // v9.970 — El formulario de "Registrar pago" se sacó de la cuenta del
     // cliente: los cobros de fiado se hacen desde el Punto de Venta, que
@@ -20490,17 +20326,20 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
           { className: "ct-tablewrap" },
           React.createElement(
             "table",
-            { style: { minWidth: 620 } },
+            // v9.972 — Con una columna menos y el concepto en una sola línea,
+            // la tabla entra en el celular sin arrastrarla de costado.
+            { style: { minWidth: 380 } },
             // v9.971 — Un solo juego de palabras. Antes la columna "Tipo"
             // decía Fiado/Contado/Pago y la de al lado, para la misma fila,
             // decía Venta a cuenta/Compra/Pago recibido. Ahora el concepto
             // está una sola vez, con su punto de color, y se lee como un
-            // extracto: fecha, concepto, importe con signo y saldo.
+            // extracto: fecha, concepto e importe con signo.
+            // v9.972 — Se sacó la columna "Saldo" (el saldo corrido fila por
+            // fila). El saldo total sigue arriba, en la cabecera.
             React.createElement("thead", null, React.createElement("tr", null,
               React.createElement("th", null, "Fecha"),
               React.createElement("th", null, "Concepto"),
               React.createElement("th", { style: { textAlign: "right" } }, "Importe"),
-              React.createElement("th", { style: { textAlign: "right" } }, "Saldo"),
               React.createElement("th", { style: { width: 50 } }, "")
             )),
             React.createElement(
@@ -20515,7 +20354,9 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
                   React.createElement("td", { style: { color: "var(--muted)", whiteSpace: "nowrap", fontSize: 13 } }, fechaHoraLabel(f.fecha)),
                   React.createElement(
                     "td",
-                    { style: { minWidth: 200 } },
+                    // v9.972 — De 200 a 140: el concepto es una sola línea
+                    // corta y con 200 la tabla se iba de ancho en el celular.
+                    { style: { minWidth: 140 } },
                     // El punto de color va con el concepto, no en una columna
                     // aparte: rojo lo que suma deuda, verde lo que la baja,
                     // gris lo que no la mueve.
@@ -20525,26 +20366,23 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
                       React.createElement("span", { style: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: esVenta ? "var(--rose)" : esPagada ? "var(--muted)" : "var(--sage)" } }),
                       f.titulo
                     ),
-                    // El detalle completo en dos renglones: cortado en uno no
-                    // se sabía qué se había llevado. Va corrido 16px para
-                    // quedar debajo del texto del concepto, no del punto.
-                    f.detalle && React.createElement("div", {
-                      style: { fontSize: 12, color: "var(--muted)", marginTop: 3, marginLeft: 16, lineHeight: 1.45, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" },
-                      title: f.detalle
-                    }, f.detalle),
-                    // Cómo se pagó, con su ícono: es lo que faltaba. Ahora se ve
-                    // de un vistazo si fue efectivo, transferencia, tarjeta o QR,
-                    // y en pago dividido el desglose con cada monto.
-                    f.pago && React.createElement("div", {
+                    // v9.972 — El detalle de la mercadería y el desglose de
+                    // cómo se pagó salieron de acá: se ven entrando por los 3
+                    // puntos, en "Ver mercadería". La columna queda en una
+                    // sola línea.
+                    //
+                    // La ÚNICA excepción son las filas que no tienen venta
+                    // detrás (un pago suelto, un fiado cargado a mano): esas
+                    // no tienen "Ver mercadería" que abrir, así que si se les
+                    // saca este renglón, cómo entró ese pago no se ve en
+                    // ningún lado de la app. Por eso lo conservan.
+                    !f.venta && f.pago && React.createElement("div", {
                       style: { fontSize: 11.5, color: "var(--denim-light)", marginTop: 4, marginLeft: 16, fontWeight: 600, lineHeight: 1.4 }
                     }, f.pago)
                   ),
                   React.createElement("td", {
                     style: { textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 650, whiteSpace: "nowrap", color: esVenta ? "var(--rose)" : esPagada ? "var(--muted)" : "var(--sage)" }
                   }, esPagada ? money(f.monto).replace("$ ", "$") : (esVenta ? "+" : "−") + money(f.monto).replace("$ ", "$")),
-                  React.createElement("td", {
-                    style: { textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: saldos[f.id] > 0 ? "var(--ink)" : "var(--muted)" }
-                  }, saldos[f.id] > 0 ? money(saldos[f.id]) : "—"),
                   React.createElement("td", { style: { textAlign: "right", position: "relative" } },
                     // Menú de 3 puntos por fila: ver la mercadería que se
                     // llevó, imprimir el ticket y eliminar. Antes había sólo un
@@ -20567,8 +20405,10 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
                         // Ver detalle e imprimir sólo tienen sentido si la fila
                         // es una venta (los pagos y fiados sueltos no tienen
                         // productos ni ticket).
+                        // v9.972 — "Imprimir ticket" se sacó de acá: abría el
+                        // mismo modal que "Ver mercadería", que ya trae
+                        // adentro los botones de imprimir y de WhatsApp.
                         f.venta && ["Ver mercadería", () => { setTicketFicha(f.venta); setMenuFila(null); }, false],
-                        f.venta && ["Imprimir ticket", () => { setTicketFicha(f.venta); setMenuFila(null); }, false],
                         puedeEliminarMovimientos(data) && [
                           f.esMovimiento ? (f.clase === "venta" ? "Eliminar fiado" : "Eliminar pago") : "Eliminar venta",
                           () => { setMenuFila(null); f.esMovimiento ? borrarMovimiento(f.id) : (f.venta ? borrarVenta(f.venta) : null); },
@@ -20586,17 +20426,6 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
             )
           )
         ),
-    verCuenta && React.createElement(EstadoCuentaModal, {
-      data, cliente, onClose: () => setVerCuenta(false)
-    }),
-    enviarCuenta && React.createElement(EnviarWhatsAppModal, {
-      data,
-      titulo: "Enviar el estado de cuenta",
-      texto: textoEstadoCuenta(data, cliente, (data.negocio && data.negocio.nombre) || ""),
-      sugerido: cliente.telefono || "",
-      onClose: () => setEnviarCuenta(false)
-    }),
-
     // Ver la mercadería e imprimir el ticket de una venta, desde el menú de
     // 3 puntos de su fila. Reusa el mismo modal que muestra el ticket recién
     // hecho, así imprime igual y no duplica lógica.
