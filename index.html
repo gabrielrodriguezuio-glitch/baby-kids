@@ -129,7 +129,35 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.970";
+const VERSION_APP = "9.971";
+// v9.971 (2026-09-18) — UN SOLO IDIOMA EN LA CUENTA DEL CLIENTE
+// La cuenta del cliente llamaba a las mismas cuatro cosas de cuatro maneras
+// distintas, según dónde se mirara:
+//   · en pantalla, la columna "Tipo" decía Fiado / Contado / Pago, y la
+//     columna de al lado, para esa MISMA fila, decía Venta a cuenta /
+//     Compra / Pago recibido;
+//   · el estado de cuenta impreso decía A cuenta / Contado / Fiado / Pago;
+//   · el texto de WhatsApp decía (a cuenta) / (pagado).
+// Ahora hay un solo juego de palabras en los cuatro lados: VENTA A CUENTA,
+// VENTA AL CONTADO, PAGO RECIBIDO y FIADO A MANO. En pantalla se sacó la
+// columna "Tipo": el concepto va una sola vez, con su punto de color, y la
+// lista se lee como un extracto (fecha · concepto · importe con signo ·
+// saldo).
+//
+// ARREGLO GRAVE que apareció al unificar: en el estado de cuenta —el que se
+// imprime y el que se manda por WhatsApp— una VENTA AL CONTADO se cargaba
+// en la columna "Pagó", salía con signo menos y sumaba en "Total pagado",
+// como si el cliente hubiera pagado deuda. El saldo del pie sale de
+// saldoDeCliente(), que sólo cuenta las ventas a cuenta, así que los
+// renglones NO cerraban con el total de abajo: un cliente que compró
+// $20.000 en efectivo podía leer que había pagado $20.000 de su deuda.
+// Ahora la venta al contado no va en ninguna de las dos columnas: se
+// muestra sin signo y se suma aparte, en "Compras al contado".
+//
+// De paso: el texto de WhatsApp no mostraba NINGÚN pago del cliente (armaba
+// su propia lista sólo con ventas). Ahora sale de las mismas filas que el
+// papel, así que el cliente ve también lo que pagó.
+//
 // v9.970 (2026-09-18) — LO DEL DUEÑO, FECHA DE ALTA Y LIMPIEZA DE LA CUENTA
 // Cuatro cambios chicos, en cuatro frentes distintos:
 //
@@ -19398,9 +19426,21 @@ const filasEstadoCuenta = (data, cliente) => {
         it.cantidad + "x " + it.nombre +
         ([it.talla, it.color].filter(Boolean).length
           ? " (" + [it.talla && "Talle " + it.talla, it.color].filter(Boolean).join(" · ") + ")" : "")),
-      tipo: v.metodoPago === "cuenta_corriente" ? "A cuenta" : (METODO_LABELS[v.metodoPago] || "Contado"),
+      // v9.971 — Mismos nombres que la cuenta en pantalla.
+      tipo: v.metodoPago === "cuenta_corriente" ? "Venta a cuenta" : "Venta al contado",
+      // Cómo la pagó, si fue al contado: antes esto ocupaba el lugar del
+      // concepto ("Efectivo") y se perdía que era una venta.
+      metodo: v.metodoPago === "cuenta_corriente" ? "" : (METODO_LABELS[v.metodoPago] || ""),
       debe: v.metodoPago === "cuenta_corriente" ? v.total : 0,
-      haber: v.metodoPago === "cuenta_corriente" ? 0 : v.total
+      // ARREGLO v9.971: la venta al contado iba en "haber", así que salía
+      // con signo menos y sumaba en "Total pagado", como si el cliente
+      // hubiera pagado deuda. El saldo del pie la ignora (saldoDeCliente
+      // sólo cuenta las ventas a cuenta), así que los renglones no cerraban
+      // con el total y el cliente podía leer que pagó algo que no pagó.
+      // Ahora no va en ninguna de las dos columnas: se muestra sin signo y
+      // se suma aparte.
+      haber: 0,
+      contado: v.metodoPago === "cuenta_corriente" ? 0 : v.total
     })),
     // Los movimientos de la cuenta. Se saltean los cargos "Venta en cuenta
     // corriente", que son el duplicado de una venta ya listada arriba; los
@@ -19410,13 +19450,15 @@ const filasEstadoCuenta = (data, cliente) => {
       m.tipo === "cargo"
         ? {
             fecha: m.fecha, hora: "",
-            items: [m.concepto || "Fiado"],
-            tipo: "Fiado", debe: m.monto, haber: 0
+            items: [m.concepto || "Fiado a mano"],
+            tipo: "Fiado a mano", metodo: "", debe: m.monto, haber: 0, contado: 0
           }
         : {
             fecha: m.fecha, hora: "",
             items: [m.concepto || "Pago recibido"],
-            tipo: "Pago", debe: 0, haber: m.monto
+            tipo: "Pago recibido",
+            metodo: METODO_LABELS[m.metodo] || m.metodo || "",
+            debe: 0, haber: m.monto, contado: 0
           }
     ))
   ].sort((a, b) => (a.fecha + a.hora).localeCompare(b.fecha + b.hora));
@@ -19431,6 +19473,9 @@ const construirEstadoCuentaTexto = (data, cliente, negocioNombre) => {
   const saldo = saldoDeCliente(data, cliente.id);
   const totalDebe = filas.reduce((a, f) => a + (f.debe || 0), 0);
   const totalPago = filas.reduce((a, f) => a + (f.haber || 0), 0);
+  // Lo que compró y pagó en el momento. Va aparte: no es deuda ni es pago
+  // de deuda, y mezclarlo era lo que descuadraba el papel (v9.971).
+  const totalContado = filas.reduce((a, f) => a + (f.contado || 0), 0);
 
   const linea = (izq, der) => {
     izq = izq || ""; der = der || "";
@@ -19467,10 +19512,14 @@ const construirEstadoCuentaTexto = (data, cliente, negocioNombre) => {
     out.push("Sin movimientos registrados.");
   } else {
     filas.forEach((f) => {
-      // Fecha y tipo a la izquierda, el importe a la derecha: lo que debe con
-      // signo, lo que pagó sin nada, para que se distingan de un vistazo.
-      const importe = f.debe ? "+" + money(f.debe) : "-" + money(f.haber);
+      // Fecha y concepto a la izquierda, el importe a la derecha: lo que
+      // suma deuda con "+", lo que la baja con "-", y la venta al contado
+      // sin signo, porque no mueve el saldo (v9.971).
+      const importe = f.debe ? "+" + money(f.debe)
+        : f.haber ? "-" + money(f.haber)
+        : money(f.contado || 0);
       out.push(NEGRITA + linea(fecha(f.fecha) + " " + f.tipo, importe) + SIN_NEGRITA);
+      if (f.metodo) out.push("  (" + f.metodo + ")");
       // El punto medio no es ASCII y la impresora lo borra: va un guion
       f.items.forEach((it) => partir(it.replace(/ \u00B7 /g, " - "), ANCHO - 2).forEach((l) => out.push("  " + l)));
     });
@@ -19479,6 +19528,9 @@ const construirEstadoCuentaTexto = (data, cliente, negocioNombre) => {
 
   out.push(linea("Total a cuenta", money(totalDebe)));
   out.push(linea("Total pagado", money(totalPago)));
+  // Sólo si compró algo al contado: si no, es un renglón en cero que
+  // confunde más de lo que aclara.
+  if (totalContado > 0) out.push(linea("Compras al contado", money(totalContado)));
   out.push("");
   out.push(ALTO + linea(saldo > 0 ? "SALDO PENDIENTE" : "SALDO", saldo > 0 ? money(saldo) : "AL DIA") + NORMAL);
   out.push(dashes);
@@ -19495,6 +19547,9 @@ const imprimirEstadoCuenta = (data, cliente, negocioNombre) => {
   const filas = filasEstadoCuenta(data, cliente).map((f) => ({
     ...f, concepto: f.items.map(escaparHTML).join("<br>") || "Venta"
   }));
+  const totalDebe = filas.reduce((a, f) => a + (f.debe || 0), 0);
+  const totalPago = filas.reduce((a, f) => a + (f.haber || 0), 0);
+  const totalContado = filas.reduce((a, f) => a + (f.contado || 0), 0);
 
   const estilos =
     "h1{font-size:17pt;margin:0 0 1mm}.sub{font-size:9.5pt;color:#555;margin-bottom:7mm}" +
@@ -19504,6 +19559,8 @@ const imprimirEstadoCuenta = (data, cliente, negocioNombre) => {
     ".num{font-family:'IBM Plex Mono',monospace;text-align:right;white-space:nowrap}" +
     ".saldo{margin-top:7mm;padding-top:4mm;border-top:2px solid #111;display:flex;justify-content:space-between;font-size:14pt;font-weight:700}" +
     ".pie{margin-top:5mm;font-size:9pt;color:#555}" +
+    ".totales{margin-top:5mm;font-size:10pt;color:#333}" +
+    ".totales div{display:flex;justify-content:space-between;padding:1mm 0}" +
     "tr{page-break-inside:avoid}";
 
   const cuerpo =
@@ -19513,15 +19570,29 @@ const imprimirEstadoCuenta = (data, cliente, negocioNombre) => {
       "<br>" + escaparHTML(negocioNombre || "") + " · al " + fechaNumerica(todayISO()) + "</div>" +
     (filas.length === 0
       ? "<p>Sin movimientos registrados.</p>"
-      : "<table><thead><tr><th>Fecha</th><th>Detalle</th><th>Tipo</th>" +
-        "<th class='num'>Debe</th><th class='num'>Pagó</th></tr></thead><tbody>" +
+      // v9.971 — Una sola columna de importe con signo, en vez de las dos
+      // (Debe / Pagó) que obligaban a decidir en cuál cae la venta al
+      // contado. "+" suma deuda, "−" la baja, sin signo no la mueve.
+      : "<table><thead><tr><th>Fecha</th><th>Concepto</th><th>Detalle</th>" +
+        "<th class='num'>Importe</th></tr></thead><tbody>" +
         filas.map((f) =>
           "<tr><td>" + fechaNumerica(f.fecha) + "</td>" +
+          "<td>" + escaparHTML(f.tipo) +
+            (f.metodo ? "<br><small>" + escaparHTML(f.metodo) + "</small>" : "") + "</td>" +
           "<td>" + f.concepto + "</td>" +
-          "<td>" + escaparHTML(f.tipo) + "</td>" +
-          "<td class='num'>" + (f.debe ? money(f.debe) : "—") + "</td>" +
-          "<td class='num'>" + (f.haber ? money(f.haber) : "—") + "</td></tr>"
-        ).join("") + "</tbody></table>") +
+          "<td class='num'>" +
+            (f.debe ? "+" + money(f.debe)
+              : f.haber ? "−" + money(f.haber)
+              : money(f.contado || 0)) +
+          "</td></tr>"
+        ).join("") + "</tbody></table>" +
+        "<div class='totales'>" +
+          "<div><span>Total a cuenta</span><span>" + money(totalDebe) + "</span></div>" +
+          "<div><span>Total pagado</span><span>" + money(totalPago) + "</span></div>" +
+          (totalContado > 0
+            ? "<div><span>Compras al contado</span><span>" + money(totalContado) + "</span></div>"
+            : "") +
+        "</div>") +
     "<div class='saldo'><span>" + (saldo > 0 ? "Saldo pendiente" : "Saldo") + "</span><span>" +
       (saldo > 0 ? money(saldo) : "Sin deuda") + "</span></div>" +
     (saldo > 0 ? "<p class='pie'>Podés abonarlo en el local o por transferencia.</p>" : "");
@@ -19531,17 +19602,22 @@ const imprimirEstadoCuenta = (data, cliente, negocioNombre) => {
 
 // Versión corta para el chat: el PDF no se puede adjuntar desde un enlace
 const textoEstadoCuenta = (data, cliente, negocioNombre) => {
-  const ventas = (data.ventas || []).filter((v) => v.clienteId === cliente.id && !esDevolucion(v));
+  // v9.971 — Sale de las MISMAS filas que el papel y el PDF. Antes armaba
+  // su propia lista con sólo las ventas: los pagos del cliente no aparecían
+  // por ningún lado, y decía "(a cuenta)" / "(pagado)", dos palabras más
+  // para las mismas cosas que en pantalla se llaman de otra manera.
+  const filas = filasEstadoCuenta(data, cliente);
   const saldo = saldoDeCliente(data, cliente.id);
-  const ultimas = ventas.slice(-6);
+  const ultimas = filas.slice(-6);
+  const importe = (f) => f.debe ? "+" + money(f.debe)
+    : f.haber ? "-" + money(f.haber)
+    : money(f.contado || 0);
   return "*" + (negocioNombre || "Estado de cuenta") + "*\n" +
     "Hola " + cliente.nombre + ", te paso el detalle al " + fechaNumerica(todayISO()) + ".\n\n" +
     (ultimas.length
-      ? ultimas.map((v) =>
-          fechaNumerica(v.fecha) + "  " +
-          (v.items || []).map((it) => it.cantidad + "× " + it.nombre).join(", ") +
-          "  " + money(v.total) +
-          (v.metodoPago === "cuenta_corriente" ? "  (a cuenta)" : "  (pagado)")
+      ? ultimas.map((f) =>
+          fechaNumerica(f.fecha) + "  " + f.tipo + "  " + importe(f) +
+          (f.items.length ? "\n   " + f.items.join(", ") : "")
         ).join("\n") + "\n\n"
       : "") +
     (saldo > 0
@@ -20063,6 +20139,7 @@ function EstadoCuentaModal({ data, cliente, onClose }) {
   const saldo = saldoDeCliente(data, cliente.id);
   const totalDebe = filas.reduce((a, f) => a + (f.debe || 0), 0);
   const totalPago = filas.reduce((a, f) => a + (f.haber || 0), 0);
+  const totalContado = filas.reduce((a, f) => a + (f.contado || 0), 0);
 
   // Mismo camino que el ticket de venta: si ya se emparejó, reconecta sola
   const imprimirBluetooth = async () => {
@@ -20108,15 +20185,25 @@ function EstadoCuentaModal({ data, cliente, onClose }) {
             "div",
             { key: i, style: { padding: "7px 0", borderBottom: "1px solid var(--line)" } },
             React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13 } },
-              React.createElement("span", { style: { fontWeight: 600 } }, fechaNumerica(f.fecha) + " \u00B7 " + f.tipo),
-              React.createElement("span", { style: { ...mono, fontWeight: 650, color: f.debe ? "var(--rose)" : "var(--sage)" } },
-                f.debe ? "+" + money(f.debe) : "\u2212" + money(f.haber))),
+              React.createElement("span", { style: { fontWeight: 600 } },
+                fechaNumerica(f.fecha) + " \u00B7 " + f.tipo + (f.metodo ? " (" + f.metodo + ")" : "")),
+              // v9.971 \u2014 Tres estados, no dos: suma deuda (+ rojo), la baja
+              // (\u2212 verde) y la venta al contado, que no la mueve (gris, sin
+              // signo). Antes ca\u00EDa en el "\u2212" verde y parec\u00EDa un pago.
+              React.createElement("span", {
+                style: { ...mono, fontWeight: 650, color: f.debe ? "var(--rose)" : f.haber ? "var(--sage)" : "var(--muted)" }
+              },
+                f.debe ? "+" + money(f.debe)
+                  : f.haber ? "\u2212" + money(f.haber)
+                  : money(f.contado || 0))),
             f.items.map((it, k) => React.createElement("div", { key: k, style: { fontSize: 12, color: "var(--muted)", marginTop: 2 } }, it))
           )),
       React.createElement("div", { style: { marginTop: 12, fontSize: 12.5, color: "var(--muted)", display: "flex", justifyContent: "space-between" } },
         React.createElement("span", null, "Total a cuenta"), React.createElement("span", { style: mono }, money(totalDebe))),
       React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", display: "flex", justifyContent: "space-between", marginTop: 3 } },
         React.createElement("span", null, "Total pagado"), React.createElement("span", { style: mono }, money(totalPago))),
+      totalContado > 0 && React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", display: "flex", justifyContent: "space-between", marginTop: 3 } },
+        React.createElement("span", null, "Compras al contado"), React.createElement("span", { style: mono }, money(totalContado))),
       React.createElement("div", { style: { marginTop: 10, paddingTop: 10, borderTop: "2px solid var(--ink)", display: "flex", justifyContent: "space-between", fontSize: 15, fontWeight: 700 } },
         React.createElement("span", null, saldo > 0 ? "Saldo pendiente" : "Saldo"),
         React.createElement("span", { style: { ...mono, color: saldo > 0 ? "var(--rose)" : "var(--sage)" } }, saldo > 0 ? money(saldo) : "Al d\u00EDa"))
@@ -20205,7 +20292,9 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       id: v.id,
       clase: "pagada",
       fecha: v.fecha,
-      titulo: "Compra",
+      // v9.971: antes decía "Compra" acá y "Contado" en la columna Tipo.
+      // Un solo nombre para cada cosa, en un solo lugar.
+      titulo: "Venta al contado",
       detalle: productosDe(v),
       pago: comoPago(v),
       monto: v.total,
@@ -20215,10 +20304,13 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
       id: m.id,
       clase: m.tipo === "cargo" ? "venta" : "pago",
       fecha: m.fecha,
-      titulo: m.tipo === "cargo" ? (m.concepto || "Fiado") : "Pago recibido",
+      titulo: m.tipo === "cargo" ? (m.concepto || "Fiado a mano") : "Pago recibido",
       // Los pagos de saldo también dicen con qué método entraron
       pago: m.tipo === "cargo" ? "" : (METODO_LABELS[m.metodo] || m.metodo || "Efectivo"),
-      detalle: "",
+      // De dónde salió el pago, cuando no es uno suelto: el cobro hecho
+      // desde el Punto de Venta deja el concepto "Saldo cobrado con una
+      // venta" y antes se perdía, porque el título lo pisaba (v9.971).
+      detalle: m.tipo !== "cargo" && m.concepto && m.concepto !== "Pago recibido" ? m.concepto : "",
       monto: m.monto,
       esMovimiento: true
     }))
@@ -20399,12 +20491,16 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
           React.createElement(
             "table",
             { style: { minWidth: 620 } },
+            // v9.971 — Un solo juego de palabras. Antes la columna "Tipo"
+            // decía Fiado/Contado/Pago y la de al lado, para la misma fila,
+            // decía Venta a cuenta/Compra/Pago recibido. Ahora el concepto
+            // está una sola vez, con su punto de color, y se lee como un
+            // extracto: fecha, concepto, importe con signo y saldo.
             React.createElement("thead", null, React.createElement("tr", null,
-              React.createElement("th", null, "Tipo"),
               React.createElement("th", null, "Fecha"),
-              React.createElement("th", null, "Descripción"),
-              React.createElement("th", { style: { textAlign: "right" } }, "Monto"),
-              React.createElement("th", { style: { textAlign: "right" } }, "Saldo pendiente"),
+              React.createElement("th", null, "Concepto"),
+              React.createElement("th", { style: { textAlign: "right" } }, "Importe"),
+              React.createElement("th", { style: { textAlign: "right" } }, "Saldo"),
               React.createElement("th", { style: { width: 50 } }, "")
             )),
             React.createElement(
@@ -20416,29 +20512,31 @@ function ClienteFichaModal({ data, persist, cliente, onClose, onEditar }) {
                 return React.createElement(
                   "tr",
                   { key: f.id },
-                  React.createElement("td", null,
-                    React.createElement(
-                      "span",
-                      { style: { display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13.5, fontWeight: 650 } },
-                      React.createElement("span", { style: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: esVenta ? "var(--rose)" : esPagada ? "var(--muted)" : "var(--sage)" } }),
-                      esVenta ? "Fiado" : esPagada ? "Contado" : "Pago"
-                    )),
                   React.createElement("td", { style: { color: "var(--muted)", whiteSpace: "nowrap", fontSize: 13 } }, fechaHoraLabel(f.fecha)),
                   React.createElement(
                     "td",
                     { style: { minWidth: 200 } },
-                    React.createElement("div", { style: { fontSize: 13.5, fontWeight: 650 } }, f.titulo),
+                    // El punto de color va con el concepto, no en una columna
+                    // aparte: rojo lo que suma deuda, verde lo que la baja,
+                    // gris lo que no la mueve.
+                    React.createElement(
+                      "div",
+                      { style: { display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, fontWeight: 650 } },
+                      React.createElement("span", { style: { width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: esVenta ? "var(--rose)" : esPagada ? "var(--muted)" : "var(--sage)" } }),
+                      f.titulo
+                    ),
                     // El detalle completo en dos renglones: cortado en uno no
-                    // se sabía qué se había llevado.
+                    // se sabía qué se había llevado. Va corrido 16px para
+                    // quedar debajo del texto del concepto, no del punto.
                     f.detalle && React.createElement("div", {
-                      style: { fontSize: 12, color: "var(--muted)", marginTop: 3, lineHeight: 1.45, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" },
+                      style: { fontSize: 12, color: "var(--muted)", marginTop: 3, marginLeft: 16, lineHeight: 1.45, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" },
                       title: f.detalle
                     }, f.detalle),
                     // Cómo se pagó, con su ícono: es lo que faltaba. Ahora se ve
                     // de un vistazo si fue efectivo, transferencia, tarjeta o QR,
                     // y en pago dividido el desglose con cada monto.
                     f.pago && React.createElement("div", {
-                      style: { fontSize: 11.5, color: "var(--denim-light)", marginTop: 4, fontWeight: 600, lineHeight: 1.4 }
+                      style: { fontSize: 11.5, color: "var(--denim-light)", marginTop: 4, marginLeft: 16, fontWeight: 600, lineHeight: 1.4 }
                     }, f.pago)
                   ),
                   React.createElement("td", {
