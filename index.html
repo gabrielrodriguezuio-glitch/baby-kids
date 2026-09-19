@@ -129,7 +129,12 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.976";
+const VERSION_APP = "9.977";
+// v9.977 (2026-09-19) — Sale el renglón "Cuenta Corriente · Cliente desde
+// DD/MM/AAAA" de abajo del nombre, en la cuenta del cliente. Debajo del
+// nombre queda sólo el saldo. La fecha de alta sigue en su columna del
+// listado de clientes, que se puede ordenar por ella.
+//
 // v9.976 (2026-09-19) — EL DATO SE SACA DE LA VENTA, NO SE ADIVINA
 // La v9.974 y la v9.975 sacaban de la cuenta del cliente los movimientos que
 // habían nacido de una venta, pero para eso primero le buscaban la venta a
@@ -20578,11 +20583,11 @@ function ClienteFichaModal({ data, persist, cliente, onClose }) {
         "div",
         { style: { minWidth: 0 } },
         React.createElement("div", { style: { fontFamily: "'Inter Tight', sans-serif", fontSize: 22, fontWeight: 700, letterSpacing: -0.02 } }, cliente.nombre),
-        React.createElement("div", { style: { fontSize: 13, color: "var(--muted)", marginTop: 3 } },
-          "Cuenta Corriente",
-          // Fecha de alta a la vista en la cabecera (v9.970): sirve para
-          // saber de cuándo viene el cliente sin salir de la cuenta.
-          cliente.fechaRegistro ? " · Cliente desde " + fechaCorta(cliente.fechaRegistro) : ""),
+        // v9.977 — Salió el renglón "Cuenta Corriente · Cliente desde…" que
+        // iba debajo del nombre. "Cuenta corriente" ya se sabe por dónde se
+        // entró, y la fecha de alta está en su columna del listado de
+        // clientes. Debajo del nombre queda sólo el saldo, que es el dato
+        // por el que se abre esta pantalla.
         React.createElement("div", { style: { fontSize: 14.5, fontWeight: 700, marginTop: 5, color: saldo > 0 ? "var(--mustard)" : "var(--sage)" } },
           saldo > 0 ? "Saldo pendiente: " + money(saldo) : "Sin deuda pendiente")
       ),
