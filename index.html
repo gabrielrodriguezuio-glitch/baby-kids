@@ -129,7 +129,35 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.978";
+const VERSION_APP = "9.979";
+// v9.979 (2026-09-19) — EL PROPIETARIO BORRA CUALQUIER RENGLÓN DE EFECTIVO
+// En Movimientos y en el detalle de un Cierre, el propietario puede ahora
+// eliminar CUALQUIER renglón de la caja, no sólo los ingresos y retiros
+// manuales que permitía la v9.969: también el efectivo que entró por una
+// venta, el que salió por una devolución y las notas de corrección.
+//
+// LO QUE EL CARTEL AVISA ANTES DE CONFIRMAR: esto saca SÓLO el renglón de la
+// caja. La venta (o la devolución) sigue existiendo, con su stock y su
+// cuenta corriente. Sirve cuando la operación está bien pero el efectivo se
+// anotó mal. Si lo que está mal es la venta entera, hay que borrar la venta
+// —botón aparte, en la lista de ventas del turno—, que además devuelve el
+// stock. Todo se puede deshacer.
+//
+// EN UN CIERRE YA CERRADO, al sacar un renglón se recalculan el EFECTIVO
+// ESPERADO y la DIFERENCIA. Lo CONTADO no se toca nunca: es la plata que se
+// contó de verdad. El cartel muestra los tres números antes y después.
+//
+// ERROR QUE ESTO DESTAPÓ Y SE ARREGLA ACÁ
+// En la sincronización, los cierres de caja sólo se INSERTABAN y se
+// BORRABAN: no existía camino de ACTUALIZACIÓN ("un cierre no se edita",
+// decía el comentario). Cualquier cambio a un cierre se guardaba en el
+// dispositivo pero NUNCA llegaba a la nube, y en la bajada siguiente el
+// cierre volvía como estaba, sin avisar. Ahora se actualiza, comparando
+// antes una firma de los campos que la app puede tocar, así un cierre que no
+// cambió no gasta una escritura.
+//
+// NO REQUIERE SQL: son columnas que la tabla caja_cierres ya tiene.
+//
 // v9.978 (2026-09-19) — EL DETALLE DEL CIERRE, DE UN VISTAZO
 // "Ver detalle" de un cierre de caja era una sola columna larguísima: cinco
 // renglones de datos, la diferencia, los medios de pago, la mercadería, los
@@ -7194,13 +7222,42 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
   }
 
   // ── Cierres de caja ───────────────────────────────────────
-  // Un cierre no se edita: se agregan los nuevos y el due\u00F1o puede borrar.
+  // v9.979 — Antes acá decía "un cierre no se edita": sólo se agregaban los
+  // nuevos y se borraban los que el dueño sacaba. No había camino de
+  // ACTUALIZACIÓN, así que si un cierre cambiaba, el cambio se guardaba en el
+  // dispositivo pero NUNCA llegaba a la nube, y en la bajada siguiente el
+  // cierre volvía como estaba, sin avisar. Ahora que el propietario puede
+  // eliminar un movimiento de efectivo de un cierre pasado, ese camino tiene
+  // que existir o el borrado se deshace solo.
   const cierresAntes = new Set((antes.cajasCerradas || []).map((c) => c.id));
   const cierresDespues = new Set((despues.cajasCerradas || []).map((c) => c.id));
   const cierresBorrados = (antes.cajasCerradas || []).filter((c) => !cierresDespues.has(c.id) && esIdDeLaBase(c.id));
   for (const c of cierresBorrados) {
     const { error } = await nube.from("caja_cierres").delete().eq("id", c.id);
     if (error && avisarProblema) avisarProblema("El cierre no se pudo borrar de la nube: " + error.message);
+  }
+  // Los que ya estaban y cambiaron. Se comparan sólo los campos que la app
+  // puede tocar; así un cierre que no cambió no gasta una escritura.
+  const firmaCierre = (c) => JSON.stringify([
+    Number(c.montoInicial) || 0, Number(c.efectivoEsperado) || 0,
+    Number(c.efectivoContado) || 0, Number(c.diferencia) || 0,
+    (c.movimientos || []).map((m) => m && m.id)
+  ]);
+  const cierrePrevio = {};
+  (antes.cajasCerradas || []).forEach((c) => { if (c && c.id != null) cierrePrevio[c.id] = c; });
+  const cierresCambiados = (despues.cajasCerradas || []).filter((c) =>
+    // Sólo los que ya viven en la base: uno con id local todavía no se subió
+    // y actualizar por ese id no encontraría ninguna fila.
+    cierrePrevio[c.id] && esIdDeLaBase(c.id) && firmaCierre(cierrePrevio[c.id]) !== firmaCierre(c));
+  for (const c of cierresCambiados) {
+    const { error } = await nube.from("caja_cierres").update({
+      monto_inicial: Number(c.montoInicial) || 0,
+      efectivo_esperado: Number(c.efectivoEsperado) || 0,
+      monto_contado: Number(c.efectivoContado) || 0,
+      diferencia: Number(c.diferencia) || 0,
+      movimientos: c.movimientos || []
+    }).eq("id", c.id);
+    if (error && avisarProblema) avisarProblema("El cierre no se pudo actualizar en la nube: " + error.message);
   }
   const cierresNuevos = (despues.cajasCerradas || []).filter((c) => !cierresAntes.has(c.id));
   for (const c of cierresNuevos) {
@@ -21436,23 +21493,41 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
   const [impMerc, setImpMerc] = useState("");
   const movs = caja.movimientos || [];
 
-  // Eliminar un ingreso o retiro cargado por error (un "pago mal hecho" en
-  // efectivo). Sólo ingresos y retiros manuales: los de venta se corrigen
-  // borrando la venta. Saca el movimiento de la caja abierta y deja deshacer.
+  // Eliminar un renglón de efectivo cargado por error.
+  //
+  // v9.979 — Antes sólo se podían borrar los ingresos y retiros MANUALES.
+  // Ahora el propietario puede sacar cualquiera, incluido el efectivo que
+  // entró por una venta y el que salió por una devolución.
+  //
+  // OJO, y por eso el cartel lo dice: esto saca SÓLO el renglón de la caja.
+  // La venta (o la devolución) sigue existiendo, con su stock y su cuenta
+  // corriente. Sirve cuando la operación está bien pero el efectivo se
+  // anotó mal. Si lo que está mal es la venta entera, hay que borrar la
+  // venta —botón aparte, en la lista de ventas del turno—, que además
+  // devuelve el stock.
   const borrarMovCaja = (mov) => {
     if (!persist) return;
-    const sale = mov.tipo === "retiro";
+    const sale = mov.tipo === "retiro" || mov.tipo === "devolucion";
+    const nombre = TIPO_MOV_LABEL[mov.tipo] || mov.tipo || "movimiento";
+    const deOtraCosa = mov.tipo === "venta" || mov.tipo === "devolucion";
     if (!window.confirm(
-      "¿Eliminar este " + (sale ? "retiro" : "ingreso") + " de " + money(mov.monto) + "?\n\n" +
-      (mov.concepto ? "\u201C" + mov.concepto + "\u201D\n\n" : "") +
-      "El efectivo en caja " + (sale ? "sube" : "baja") + " " + money(mov.monto) + ". Se puede deshacer."
+      "¿Eliminar este renglón de " + money(mov.monto) + "?\n\n" +
+      nombre + (mov.concepto ? "\n\u201C" + mov.concepto + "\u201D" : "") + "\n\n" +
+      "El efectivo en caja " + (sale ? "sube" : "baja") + " " + money(mov.monto) + ".\n" +
+      (deOtraCosa
+        ? "\nLa " + (mov.tipo === "venta" ? "venta" : "devolución") +
+          " NO se borra: sigue en el historial, con su stock y su cuenta corriente. " +
+          "Sale solamente de la caja.\n"
+        : "") +
+      "\nSe puede deshacer."
     )) return;
     const anterior = data;
     const miId = usuarioActualId(data);
     const negId = negocioActivo(data).id;
     const cajaSinMov = { ...caja, movimientos: (caja.movimientos || []).filter((x) => x.id !== mov.id) };
     persist(guardarCaja(data, miId, cajaSinMov, negId));
-    avisar((sale ? "Retiro" : "Ingreso") + " eliminado", { deshacer: () => persist(anterior) });
+    avisar(nombre + " eliminado \u00B7 quedan " + money(efectivoEnCaja(cajaSinMov)) + " en caja",
+      { deshacer: () => persist(anterior) });
   };
 
   // Eliminar una venta mal cargada desde acá: es donde el vendedor la ve al
@@ -21823,12 +21898,11 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
                   React.createElement("span", {
                     style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600, flexShrink: 0, color: sale ? "var(--rose)" : "var(--sage)", paddingTop: 1 }
                   }, (sale ? "− " : "+ ") + money(m.monto)),
-                  // Sólo los ingresos y retiros MANUALES se pueden borrar acá:
-                  // un movimiento de "venta" viene de una venta real y se
-                  // corrige eliminando esa venta (así vuelve el stock también);
-                  // borrarlo suelto dejaría la venta sin su efectivo. Pide
-                  // permiso de propietario y caja abierta.
-                  (m.tipo === "ingreso" || m.tipo === "retiro") && puedeEliminarMovimientos(data) && caja.abierta && React.createElement("button", {
+                  // v9.979 — Cualquier renglón se puede borrar, no sólo los
+                  // ingresos y retiros manuales. El de una venta saca la plata
+                  // de la caja pero deja la venta en pie, y el cartel lo
+                  // aclara antes de confirmar. Pide propietario y caja abierta.
+                  puedeEliminarMovimientos(data) && caja.abierta && React.createElement("button", {
                     onClick: () => borrarMovCaja(m),
                     title: "Eliminar este movimiento",
                     style: {
@@ -21955,7 +22029,7 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
               )
             )),
 
-    detalle && React.createElement(DetalleCierreModal, { cierre: detalle, data, onClose: () => setDetalle(null) }),
+    detalle && React.createElement(DetalleCierreModal, { cierre: detalle, data, persist, onClose: () => setDetalle(null) }),
 
     // Imprimir el ticket de una venta del historial, con el mismo modal que
     // usa el POS al cerrar una venta.
@@ -35402,7 +35476,7 @@ function CajaReportes({ data, rango, persist, dataReal }) {
           )
     ),
 
-    detalle && React.createElement(DetalleCierreModal, { cierre: detalle, data, onClose: () => setDetalle(null) }),
+    detalle && React.createElement(DetalleCierreModal, { cierre: detalle, data, persist, datos: real, onClose: () => setDetalle(null) }),
 
     // Confirmación antes de forzar: se muestra de quién es y con cuánto cierra
     forzando && React.createElement(
@@ -35491,12 +35565,56 @@ const momentoDeVenta = (v) => {
   return d.getTime();
 };
 
-function DetalleCierreModal({ cierre, onClose, data }) {
+function DetalleCierreModal({ cierre: cierreAbierto, onClose, data, persist, datos }) {
+  // En Reportes, `data` viene filtrado por el rango de fechas: para guardar
+  // hay que usar los datos completos o se pisan cierres que el filtro dejó
+  // afuera. Es el mismo cuidado que ya tiene el cierre forzado.
+  const real = datos || data;
+  // v9.979 — La versión VIVA del cierre. El objeto con el que se abrió el
+  // modal queda viejo apenas se le borra un movimiento, y la pantalla seguía
+  // mostrando el efectivo esperado y la diferencia de antes.
+  const cierre = ((real && real.cajasCerradas) || []).find((c) => c.id === cierreAbierto.id) || cierreAbierto;
   const dif = Number(cierre.diferencia) || 0;
   const movs = cierre.movimientos || [];
   const [ampliado, setAmpliado] = useState(null);
   const [verTodo, setVerTodo] = useState(false);
   const [impMerc, setImpMerc] = useState("");
+
+  // v9.979 — Eliminar un renglón de efectivo de un cierre YA CERRADO.
+  // Es del propietario. Al sacarlo se recalculan el efectivo esperado y la
+  // diferencia: lo contado no se toca, porque es la plata que se contó de
+  // verdad. Igual que en la caja abierta, si el renglón viene de una venta o
+  // de una devolución, esa operación NO se borra: sale sólo de la caja.
+  const borrarMovDelCierre = (mov) => {
+    if (!persist || !real) return;
+    const sale = mov.tipo === "retiro" || mov.tipo === "devolucion";
+    const nombre = TIPO_MOV_LABEL[mov.tipo] || mov.tipo || "movimiento";
+    const deOtraCosa = mov.tipo === "venta" || mov.tipo === "devolucion";
+    const restantes = movs.filter((x) => x.id !== mov.id);
+    const esperado = efectivoEnCaja({ montoInicial: cierre.montoInicial, movimientos: restantes });
+    const nuevaDif = (Number(cierre.efectivoContado) || 0) - esperado;
+    if (!window.confirm(
+      "¿Eliminar este renglón de " + money(mov.monto) + " de un cierre ya cerrado?\n\n" +
+      nombre + (mov.concepto ? "\n\u201C" + mov.concepto + "\u201D" : "") + "\n\n" +
+      "Efectivo esperado: " + money(cierre.efectivoEsperado) + " \u2192 " + money(esperado) + "\n" +
+      "Diferencia: " + money(dif) + " \u2192 " + money(nuevaDif) + "\n" +
+      "Lo contado no cambia: " + money(cierre.efectivoContado) + "\n" +
+      (deOtraCosa
+        ? "\nLa " + (mov.tipo === "venta" ? "venta" : "devolución") +
+          " NO se borra: sigue en el historial, con su stock y su cuenta corriente.\n"
+        : "") +
+      "\nSe puede deshacer."
+    )) return;
+    const anterior = real;
+    persist({
+      ...real,
+      cajasCerradas: (real.cajasCerradas || []).map((c) => c.id === cierre.id
+        ? { ...c, movimientos: restantes, efectivoEsperado: esperado, diferencia: nuevaDif }
+        : c)
+    });
+    avisar(nombre + " eliminado del cierre \u00B7 diferencia " + money(nuevaDif),
+      { deshacer: () => persist(anterior) });
+  };
 
   // Las ventas del turno: las de ese local entre que se abrió y se cerró la
   // caja. Sin esto el cierre sólo mostraba el efectivo, que es una parte.
@@ -35794,13 +35912,34 @@ function DetalleCierreModal({ cierre, onClose, data }) {
       React.createElement(
         "div",
         { style: { maxHeight: 260, overflowY: "auto" } },
-        movs.map((m, k) => React.createElement(
-          "div",
-          { key: m.id || k, style: { display: "flex", alignItems: "center", gap: 12, padding: "9px 0", borderBottom: k === movs.length - 1 ? "none" : "1px solid color-mix(in srgb, var(--line) 50%, transparent)" } },
-          React.createElement("span", { style: { flex: 1, minWidth: 0, fontSize: 13 } }, m.concepto || m.tipo),
-          React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 13.5, whiteSpace: "nowrap", color: m.tipo === "retiro" ? "var(--rose)" : "var(--sage)" } },
-            (m.tipo === "retiro" ? "-" : "+") + money(m.monto))
-        ))
+        movs.map((m, k) => {
+          const sale = m.tipo === "retiro" || m.tipo === "devolucion";
+          return React.createElement(
+            "div",
+            { key: m.id || k, style: { display: "flex", alignItems: "flex-start", gap: 10, padding: "9px 0", borderBottom: k === movs.length - 1 ? "none" : "1px solid color-mix(in srgb, var(--line) 50%, transparent)" } },
+            React.createElement(
+              "span",
+              { style: { flex: 1, minWidth: 0 } },
+              React.createElement("span", { style: { display: "block", fontSize: 13, lineHeight: 1.45, overflowWrap: "anywhere" } },
+                m.concepto || (TIPO_MOV_LABEL[m.tipo] || m.tipo)),
+              React.createElement("span", { style: { display: "block", fontSize: 11, color: "var(--muted)", marginTop: 2 } },
+                TIPO_MOV_LABEL[m.tipo] || m.tipo)
+            ),
+            React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 13.5, whiteSpace: "nowrap", paddingTop: 1, color: sale ? "var(--rose)" : "var(--sage)" } },
+              (sale ? "-" : "+") + money(m.monto)),
+            // v9.979 — El propietario puede sacar un renglón mal cargado de un
+            // cierre ya guardado. El efectivo esperado y la diferencia se
+            // recalculan solos, y se puede deshacer.
+            persist && puedeEliminarMovimientos(data) && React.createElement("button", {
+              onClick: () => borrarMovDelCierre(m),
+              title: "Eliminar este movimiento del cierre",
+              style: {
+                background: "none", border: "none", cursor: "pointer", flexShrink: 0,
+                color: "var(--muted)", display: "flex", alignItems: "center", padding: 4, marginTop: 1
+              }
+            }, React.createElement(Trash2, { size: 14 }))
+          );
+        })
       )
     ),
 
