@@ -129,7 +129,31 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.974";
+const VERSION_APP = "9.975";
+// v9.975 (2026-09-19) — EL ENGANCHE DE LOS MOVIMIENTOS VIEJOS, QUE NO ANDABA
+// La v9.974 dejó de mostrar como renglón suelto los movimientos que nacieron
+// de una venta, pero los movimientos ANTERIORES a esa versión no tienen la
+// referencia a su venta y se enganchan por fecha y monto. Ese enganche
+// fallaba y los renglones seguían apareciendo. Tres arreglos:
+//
+// 1) LA FECHA se compara por el DÍA, no como texto crudo. La fecha de una
+//    venta y la de su movimiento pueden volver de la nube con formatos
+//    distintos ("2026-09-19" contra "2026-09-19T03:00:00+00:00") según el
+//    tipo de cada columna, y comparadas como texto nunca daban iguales.
+//    Ésta es la causa más probable de lo que se seguía viendo.
+// 2) UN DÍA DE TOLERANCIA. Una venta hecha cerca de medianoche, o un
+//    corrimiento de huso horario en la base, puede dejar la venta en un día
+//    y su movimiento en el otro. Primero se busca el mismo día; recién si no
+//    hay, el de al lado.
+// 3) VARIAS VENTAS QUE COINCIDEN ya no dejan el movimiento suelto. Todas
+//    pasaron el filtro del MISMO monto esperado, así que son intercambiables
+//    y se ve igual se elija la que se elija. Antes, ante la duda, el renglón
+//    quedaba suelto: justo lo que se quería sacar.
+//
+// Y para no volver a adivinar: con ?diag=1 en la dirección, la cuenta del
+// cliente muestra abajo POR QUÉ un movimiento no se pudo enganchar, con las
+// fechas y los montos contra los que se comparó. Sin ?diag=1 no se ve nada.
+//
 // v9.974 (2026-09-19) — UNA VENTA, UN RENGLÓN EN LA CUENTA DEL CLIENTE
 // Etapa 3 de la tanda, y el arreglo del "Pago recibido" que nadie recibió.
 //
@@ -2698,11 +2722,40 @@ const saldoCobradoEnVenta = (v) => (v.items || [])
   .filter((it) => !it.productoId && /^Saldo pendiente de /i.test(String(it.nombre || "")))
   .reduce((a, it) => a + (Number(it.precioUnit) || 0) * (Number(it.cantidad) || 0), 0);
 
+// Sólo el día: la fecha de un movimiento y la de su venta pueden volver de
+// la nube con formatos distintos ("2026-09-19" contra
+// "2026-09-19T03:00:00+00:00") según el tipo de cada columna. Compararlas
+// como texto crudo fallaba y el movimiento quedaba suelto. v9.975.
+const soloDia = (f) => String(f || "").slice(0, 10);
+// Cuántos días hay entre dos fechas. Una venta hecha cerca de medianoche, o
+// una diferencia de huso horario en la base, puede dejar la venta en un día
+// y su movimiento en el otro.
+const diasDeDiferencia = (a, b) => {
+  const da = Date.parse(soloDia(a) + "T00:00:00Z");
+  const db = Date.parse(soloDia(b) + "T00:00:00Z");
+  return (isNaN(da) || isNaN(db)) ? 9999 : Math.abs(da - db) / 86400000;
+};
+
+// Cuánto tenía que valer la venta para haber generado este movimiento.
+// Un cargo viene del tramo que se cobró a cuenta corriente; un pago, de la
+// línea "Saldo pendiente de…" que agrega el botón "Cobrar saldo".
+const montoEsperadoEnVenta = (m, v) => m.tipo === "cargo" ? tramoCCdeVenta(v) : saldoCobradoEnVenta(v);
+const conceptoDeVenta = (m) => {
+  const limpio = conceptoLimpio(m);
+  if (m.tipo === "cargo" && limpio === CONCEPTO_TRAMO_CC) return CONCEPTO_TRAMO_CC;
+  if (m.tipo !== "cargo" && limpio === CONCEPTO_SALDO_COBRADO) return CONCEPTO_SALDO_COBRADO;
+  return "";
+};
+
 // Reparte los movimientos entre las ventas que los generaron.
-// Devuelve { porVenta: { ventaId: [movs] }, absorbidos: { movId: true } }.
+// Devuelve { porVenta: { ventaId: [movs] }, absorbidos: { movId: true },
+//            sueltos: [ { m, motivo, candidatos } ] }.
+// `sueltos` es sólo para el diagnóstico: dice por qué un movimiento que
+// tenía pinta de venir de una venta no se pudo enganchar.
 const anexarMovimientosAVentas = (ventas, movimientos) => {
   const porVenta = {};
   const absorbidos = {};
+  const sueltos = [];
   const anexar = (v, m) => {
     (porVenta[v.id] = porVenta[v.id] || []).push(m);
     absorbidos[m.id] = true;
@@ -2715,23 +2768,39 @@ const anexarMovimientosAVentas = (ventas, movimientos) => {
     // Si la venta se borró, el movimiento queda suelto a propósito: sigue
     // moviendo el saldo, así que tiene que verse y poder eliminarse.
     if (v) anexar(v, m);
+    else sueltos.push({ m, motivo: "la venta " + ref + " ya no está", candidatos: [] });
   });
+  // Una venta que ya tiene un movimiento de ese mismo concepto no puede
+  // recibir otro: si no, dos cargos iguales del mismo día caían los dos en
+  // la primera venta.
+  const libre = (v, concepto) => !(porVenta[v.id] || []).some((x) => conceptoLimpio(x) === concepto);
   sinRef.forEach((m) => {
-    const limpio = conceptoLimpio(m);
+    const concepto = conceptoDeVenta(m);
+    if (!concepto) return;   // un pago o un fiado suelto de verdad: no se toca
     const monto = Number(m.monto) || 0;
-    let cand = [];
-    if (m.tipo === "cargo" && limpio === CONCEPTO_TRAMO_CC) {
-      cand = (ventas || []).filter((v) => v.fecha === m.fecha && Math.abs(tramoCCdeVenta(v) - monto) < 0.5);
-    } else if (m.tipo !== "cargo" && limpio === CONCEPTO_SALDO_COBRADO) {
-      cand = (ventas || []).filter((v) => v.fecha === m.fecha && Math.abs(saldoCobradoEnVenta(v) - monto) < 0.5);
+    const mismoMonto = (v) => Math.abs(montoEsperadoEnVenta(m, v) - monto) < 0.5;
+    // Primero el mismo día; si no hay, se mira el día de al lado.
+    let cand = (ventas || []).filter((v) => diasDeDiferencia(v.fecha, m.fecha) === 0 && mismoMonto(v) && libre(v, concepto));
+    if (!cand.length) {
+      cand = (ventas || []).filter((v) => diasDeDiferencia(v.fecha, m.fecha) <= 1 && mismoMonto(v) && libre(v, concepto));
     }
-    // Una venta que ya tiene un movimiento de ese mismo concepto no puede
-    // recibir otro: si no, dos cargos iguales del mismo día caían los dos
-    // en la primera venta.
-    const libres = cand.filter((v) => !(porVenta[v.id] || []).some((x) => conceptoLimpio(x) === limpio));
-    if (libres.length === 1) anexar(libres[0], m);
+    // Si coincide más de una, son intercambiables: todas pasaron el filtro
+    // del MISMO monto esperado, así que se ven igual se elija la que se
+    // elija, y libre() ya impide que dos movimientos caigan en la misma
+    // venta. Dejarlas sin enganchar por "ambiguas" era peor: el renglón
+    // quedaba suelto, que es justo lo que se quiso sacar.
+    if (cand.length) return anexar(cand[0], m);
+    sueltos.push({
+      m,
+      motivo: "ninguna venta le coincide",
+      // Con qué se comparó, para poder ver a simple vista qué no cuadra
+      candidatos: (ventas || []).map((v) => ({
+        id: refDeVenta(v), fecha: soloDia(v.fecha), total: v.total,
+        esperado: montoEsperadoEnVenta(m, v), dias: diasDeDiferencia(v.fecha, m.fecha)
+      }))
+    });
   });
-  return { porVenta, absorbidos };
+  return { porVenta, absorbidos, sueltos };
 };
 
 // Los movimientos de UNA venta, para mostrarlos en "Ver mercadería".
@@ -20300,7 +20369,7 @@ function ClienteFichaModal({ data, persist, cliente, onClose }) {
   // "Ver mercadería" de esa venta, no como renglón aparte. Una venta cobrada
   // parte al contado y parte a cuenta, que además cobraba saldo viejo, dejaba
   // tres renglones y se leía como tres operaciones distintas.
-  const { absorbidos } = anexarMovimientosAVentas(
+  const { absorbidos, sueltos: sinEnganchar } = anexarMovimientosAVentas(
     [...ventasFiadas, ...ventasPagadas], movimientos);
   const movimientosSueltos = movimientos.filter((m) => !absorbidos[m.id]);
 
@@ -20644,6 +20713,29 @@ function ClienteFichaModal({ data, persist, cliente, onClose }) {
             )
           )
         ),
+    // v9.975 — Por qué un movimiento que tiene pinta de venir de una venta
+    // quedó suelto en vez de mostrarse adentro de ella. Sólo con ?diag=1:
+    // es para revisar un caso raro, no para el uso de todos los días.
+    // Muestra contra qué se comparó, así se ve a simple vista qué no cuadra
+    // (la fecha, el monto, o que hay dos ventas que podrían ser).
+    DIAG && sinEnganchar.length > 0 && React.createElement(
+      "div",
+      { style: { marginTop: 16, padding: "12px 14px", borderRadius: 12, background: "var(--surface-2)", fontSize: 12, fontFamily: "'IBM Plex Mono', monospace", lineHeight: 1.6, overflowX: "auto" } },
+      React.createElement("div", { style: { fontWeight: 700, marginBottom: 8, color: "var(--mustard)" } },
+        "DIAG · " + sinEnganchar.length + " movimiento(s) sin enganchar a su venta"),
+      sinEnganchar.map((s, i) => React.createElement(
+        "div",
+        { key: i, style: { marginBottom: 10, paddingBottom: 10, borderBottom: "1px solid color-mix(in srgb, var(--line) 60%, transparent)" } },
+        React.createElement("div", { style: { color: "var(--ink)" } },
+          "MOV " + (s.m.tipo || "?") + " " + money(s.m.monto) + " · fecha " + JSON.stringify(s.m.fecha)),
+        React.createElement("div", { style: { color: "var(--muted)" } }, "concepto " + JSON.stringify(s.m.concepto || "")),
+        React.createElement("div", { style: { color: "var(--rose)" } }, "motivo: " + s.motivo),
+        s.candidatos.map((c, k) => React.createElement("div", { key: k, style: { color: "var(--muted)" } },
+          "  venta #" + c.id + " fecha " + c.fecha + " (dif " + c.dias + "d) total " + money(c.total) +
+          " → esperado " + money(c.esperado)))
+      ))
+    ),
+
     // Ver la mercadería e imprimir el ticket de una venta, desde el menú de
     // 3 puntos de su fila. Reusa el mismo modal que muestra el ticket recién
     // hecho, así imprime igual y no duplica lógica.
