@@ -129,7 +129,9 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.981";
+const VERSION_APP = "9.983";
+// v9.983 (2026-09-21) — Transferencias: quitar toggle confirmación recepción; "sin control" activo por defecto
+// v9.982 (2026-09-21) — Resumen pre-cierre: quitar ingresos por ventas y por método de pago
 // v9.981 (2026-09-21) — POS: aviso de caja cerrada + bloquear +/- en línea de deuda
 // v9.980 (2026-09-19) — AJUSTAR EL SALDO DE UN CLIENTE A MANO
 // En la cuenta del cliente, al lado del saldo, el PROPIETARIO tiene ahora un
@@ -21553,9 +21555,6 @@ const ingresosPorMetodo = (ventas) => {
 };
 
 function ResumenPreCierreModal({ data, caja, onContinuar, onVolver, onClose }) {
-  const ventas = ventasDelTurno(data, caja);
-  const ingresoVentas = ventas.reduce((a, v) => a + v.total, 0);
-  const porMetodo = ingresosPorMetodo(ventas);
   const movs = caja.movimientos || [];
   const suma = (tipo) => movs.filter((m) => m.tipo === tipo).reduce((a, m) => a + m.monto, 0);
   const recibidoEnEfectivo = suma("venta");
@@ -21616,30 +21615,9 @@ function ResumenPreCierreModal({ data, caja, onContinuar, onVolver, onClose }) {
 
     React.createElement(
       "div",
-      { className: "ct-checkout", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 } },
-      tarjeta(CreditCard, "Ingresos por ventas", money(ingresoVentas),
-        ventas.length + " venta" + (ventas.length === 1 ? "" : "s") + " en el período"),
+      { className: "ct-checkout", style: { marginBottom: 20 } },
       tarjeta(Archive, "Efectivo esperado", money(esperado), "Apertura y movimientos de la caja actual")
     ),
-
-    React.createElement("div", { style: { fontSize: 14.5, fontWeight: 650, marginBottom: 10 } }, "Ingresos por método de pago"),
-    porMetodo.length === 0
-      ? React.createElement("div", { style: { fontSize: 13, color: "var(--muted)", marginBottom: 20 } }, "No hubo ingresos por ventas en este período.")
-      : React.createElement(
-          "div",
-          { style: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 } },
-          porMetodo.map((m) => React.createElement(
-            "div",
-            { key: m.id, style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, border: "none", borderRadius: 9, padding: "11px 14px" } },
-            React.createElement(SwingTag, { tone: "denim", small: true }, m.label),
-            React.createElement(
-              "span",
-              { style: { display: "flex", alignItems: "baseline", gap: 12 } },
-              React.createElement("span", { style: { fontSize: 12, color: "var(--muted)" } }, m.cantidad, " pago", m.cantidad === 1 ? "" : "s"),
-              React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, fontWeight: 600 } }, money(m.monto))
-            )
-          ))
-        ),
 
     React.createElement("div", { style: { fontSize: 14.5, fontWeight: 650, marginBottom: 10 } }, "Movimientos de caja"),
     React.createElement(
@@ -27470,7 +27448,8 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
   const [nota, setNota] = useState("");
   // Viene activado: que alguien del destino confirme la llegada es lo que
   // permite saber quién recibió y detectar si algo no llegó.
-  const [enCamino, setEnCamino] = useState(true);
+  // v9.983 — La confirmación de recepción se quitó del UI; siempre entra directo.
+  const enCamino = false;
   const [query, setQuery] = useState("");
   const [escaneando, setEscaneando] = useState(false);
   const [abierto, setAbierto] = useState(null);
@@ -27893,21 +27872,6 @@ function NuevaTransferenciaModal({ data, negocios, principalId, onGuardar, onClo
     React.createElement(
       "label",
       { style: { display: "flex", alignItems: "center", gap: 12, marginTop: 16, cursor: "pointer" } },
-      React.createElement(Switch, { on: enCamino, onChange: () => setEnCamino(!enCamino) }),
-      React.createElement(
-        "span",
-        null,
-        React.createElement("span", { style: { display: "block", fontSize: 14, fontWeight: 600 } }, "Pedir confirmación de recepción"),
-        React.createElement("span", { style: { display: "block", fontSize: 12.5, color: "var(--muted)", marginTop: 3 } },
-          enCamino
-            ? "Sale del origen ahora. Alguien del destino confirma la llegada y queda registrado quién."
-            : "Entra directo al destino, sin que nadie confirme que llegó.")
-      )
-    ),
-
-    React.createElement(
-      "label",
-      { style: { display: "flex", alignItems: "center", gap: 12, marginTop: 14, cursor: "pointer" } },
       React.createElement(Switch, { on: sinControl, onChange: () => setSinControl(!sinControl) }),
       React.createElement(
         "span",
