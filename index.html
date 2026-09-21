@@ -129,7 +129,8 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.980";
+const VERSION_APP = "9.981";
+// v9.981 (2026-09-21) — POS: aviso de caja cerrada + bloquear +/- en línea de deuda
 // v9.980 (2026-09-19) — AJUSTAR EL SALDO DE UN CLIENTE A MANO
 // En la cuenta del cliente, al lado del saldo, el PROPIETARIO tiene ahora un
 // botón "Ajustar" para corregir la deuda en las dos direcciones: restarla o
@@ -16327,8 +16328,9 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
                     })
                   ),
 
-                  // Cantidad
-                  React.createElement(
+                  // Cantidad — la línea de deuda no se puede tocar: el monto
+                  // sale de saldoDeCliente y subir la cantidad cobraría de más.
+                  !it.esDeuda && React.createElement(
                     "div",
                     { style: { display: "flex", alignItems: "center", gap: 8 } },
                     React.createElement("button", { onClick: () => changeQty(it, -1), title: "Quitar uno", style: { ...posQtyBtnStyle, width: 32, height: 32 } },
@@ -16419,6 +16421,17 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
                 React.createElement("div", { style: { marginTop: 5 } },
                   "Revis\u00E1 el campo Mayorista de cada producto, o pon\u00E9 un % de ajuste a la lista en Configuraci\u00F3n.")
               )
+        ),
+        // Aviso cuando la caja del usuario no está abierta
+        !cajaDe(data, usuarioActualId(data), negocioId).abierta && React.createElement(
+          "div",
+          { style: { display: "flex", alignItems: "center", gap: 10, padding: "12px 14px",
+              borderRadius: 10,
+              background: "color-mix(in srgb, var(--mustard) 15%, transparent)",
+              border: "1px solid color-mix(in srgb, var(--mustard) 40%, transparent)",
+              marginBottom: 12, fontSize: 13, color: "var(--ink)" } },
+          React.createElement(AlertTriangle, { size: 16, color: "var(--mustard)" }),
+          "La caja no está abierta. La venta se registra igual, pero no suma al arqueo."
         ),
         React.createElement(
           PosButton,
