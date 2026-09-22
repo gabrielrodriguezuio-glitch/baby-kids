@@ -129,7 +129,8 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.986";
+const VERSION_APP = "9.987";
+// v9.987 (2026-09-21) — PDF consolidado: seleccionar múltiples cierres de caja y generar un informe PDF detallado para compartir por WhatsApp
 // v9.986 (2026-09-21) — Cierre de caja: botón para enviar informe detallado en PDF (ventas, clientes, medios de pago, saldos, comprobantes)
 // v9.985 (2026-09-21) — Fix: tombstone para movimientos CC eliminados (evita que reaparezcan tras sincronización)
 // v9.984 (2026-09-21) — Movimientos de caja: mostrar nombre del cliente en ventas y devoluciones
@@ -21532,6 +21533,206 @@ const armarInformeCierrePDF = (data, caja, contado) => {
   return { titulo: "Cierre de caja " + fechaHoraLargaISO(ahoraISO), estilos, cuerpo };
 };
 
+// v9.987 — PDF consolidado de múltiples cierres de caja seleccionados.
+// Suma ventas, medios de pago, movimientos, pagos CC de todos los cierres
+// y genera un informe profesional listo para compartir por WhatsApp.
+const armarInformeCierresConsolidadoPDF = (data, cierresArr) => {
+  const esc = escaparHTML;
+  const num = (n) => "<td class='num'>" + money(n) + "</td>";
+  const seccion = (titulo, contenido, vacio) =>
+    "<h2>" + esc(titulo) + "</h2>" + (contenido || "<p class='vacio'>" + esc(vacio) + "</p>");
+  const tabla = (encabezados, filas) =>
+    !filas.length ? "" :
+    "<table><thead><tr>" + encabezados.map((h) => "<th" + (h.num ? " class='num'" : "") + ">" + esc(h.t || h) + "</th>").join("") +
+    "</tr></thead><tbody>" + filas.join("") + "</tbody></table>";
+
+  const negocio = negocioActivo(data);
+  const ahora = new Date();
+  const ahoraISO = ahora.toISOString();
+
+  // Ordenar cierres cronológicamente
+  const cierres = [...cierresArr].sort((a, b) => (a.abiertaEn || "").localeCompare(b.abiertaEn || ""));
+  const desde = cierres[0].abiertaEn;
+  const hasta = cierres[cierres.length - 1].cerradaEn || cierres[cierres.length - 1].abiertaEn;
+
+  // --- Acumular datos de todos los cierres ---
+  let todasVentas = [];
+  let todasDev = [];
+  let todosMovs = [];
+  let todosPagosCC = [];
+  const porMetodoGlobal = {};
+  let totalIniciales = 0;
+  let totalContados = 0;
+  let totalDiferencias = 0;
+
+  cierres.forEach((c) => {
+    // Ventas del turno de este cierre
+    const desdeTS = new Date(c.abiertaEn).getTime();
+    const hastaTS = c.cerradaEn ? new Date(c.cerradaEn).getTime() : Infinity;
+    const ventasC = (data.ventas || []).filter((v) => {
+      if (v.anulada || v.eliminada) return false;
+      if (esDevolucion(v)) return false;
+      const ts = v.creadaEn ? new Date(v.creadaEn).getTime() : 0;
+      return ts >= desdeTS && ts <= hastaTS;
+    });
+    const devC = (data.ventas || []).filter((v) => {
+      if (!esDevolucion(v)) return false;
+      const ts = v.creadaEn ? new Date(v.creadaEn).getTime() : 0;
+      return ts >= desdeTS && ts <= hastaTS;
+    });
+    todasVentas = todasVentas.concat(ventasC);
+    todasDev = todasDev.concat(devC);
+
+    // Movimientos de caja
+    todosMovs = todosMovs.concat((c.movimientos || []).map((m) => ({ ...m, _cierre: c })));
+
+    // Medios de pago
+    ventasC.forEach((v) => {
+      const partes = (v.pagos && v.pagos.length) ? v.pagos : [{ metodo: v.metodoPago, monto: v.total }];
+      partes.forEach((p) => {
+        const k = p.metodo || "otro";
+        porMetodoGlobal[k] = (porMetodoGlobal[k] || 0) + (Number(p.monto) || 0);
+      });
+    });
+
+    // Pagos CC del turno
+    const pagosC = (data.movimientosCC || []).filter((m) =>
+      m.tipo !== "cargo" && !esAjusteDeSaldo(m) &&
+      new Date(m.fecha).getTime() >= desdeTS &&
+      new Date(m.fecha).getTime() <= hastaTS
+    );
+    todosPagosCC = todosPagosCC.concat(pagosC);
+
+    totalIniciales += Number(c.montoInicial) || 0;
+    totalContados += Number(c.efectivoContado) || 0;
+    totalDiferencias += Number(c.diferencia) || 0;
+  });
+
+  const totalVentas = todasVentas.reduce((a, v) => a + v.total, 0);
+  const totalDev = todasDev.reduce((a, v) => a + Math.abs(v.total), 0);
+  const unidades = todasVentas.reduce((a, v) => a + (v.items || []).reduce((s, it) => s + it.cantidad, 0), 0);
+
+  // --- Encabezado resumen ---
+  const cabecera =
+    "<div class='cajas'>" +
+    [["Cierres incluidos", String(cierres.length)],
+     ["Operaciones", String(todasVentas.length)],
+     ["Unidades vendidas", String(unidades)],
+     ["Total facturado", money(totalVentas)],
+     ["Devoluciones", money(totalDev)],
+     ["Efectivo inicial (suma)", money(totalIniciales)],
+     ["Efectivo contado (suma)", money(totalContados)],
+     ["Diferencia total", (totalDiferencias > 0 ? "+" : "") + money(totalDiferencias)]
+    ].map(([t, v]) => "<div class='caja'><span>" + esc(t) + "</span><strong>" + esc(v) + "</strong></div>").join("") +
+    "</div>";
+
+  // --- Resumen por cierre ---
+  const filasCierres = cierres.map((c) => {
+    const dif = Number(c.diferencia) || 0;
+    return "<tr><td>" + esc(c.abiertaEn ? fechaConAnio(c.abiertaEn) : "—") + " " + (c.abiertaEn ? hora24(c.abiertaEn) : "") + "</td>" +
+      "<td>" + esc(c.cerradaEn ? fechaConAnio(c.cerradaEn) : "—") + " " + (c.cerradaEn ? hora24(c.cerradaEn) : "") + "</td>" +
+      "<td>" + esc(c.usuarioNombre || "—") + "</td>" +
+      num(c.montoInicial) + num(c.efectivoContado) +
+      "<td class='num' style='color:" + (dif === 0 ? "#666" : dif > 0 ? "#27ae60" : "#c0392b") + "'>" + (dif > 0 ? "+" : "") + money(dif) + "</td></tr>";
+  });
+  filasCierres.push("<tr style='border-top:2px solid #111'><td colspan='3'><strong>Totales</strong></td>" +
+    num(totalIniciales) + num(totalContados) +
+    "<td class='num' style='font-weight:700;color:" + (totalDiferencias === 0 ? "#666" : totalDiferencias > 0 ? "#27ae60" : "#c0392b") + "'>" +
+    (totalDiferencias > 0 ? "+" : "") + money(totalDiferencias) + "</td></tr>");
+
+  // --- Detalle de ventas ---
+  const filasV = [...todasVentas, ...todasDev].sort((a, b) => (a.creadaEn || a.fecha || "").localeCompare(b.creadaEn || b.fecha || "")).map((v) => {
+    const items = (v.items || []).map((it) => it.cantidad + "× " + esc(it.nombre)).join("<br>");
+    const fh = v.creadaEn ? fechaConAnio(v.creadaEn) + " " + horaCorta(v.creadaEn) : (v.horaTexto || "");
+    const comps = (v.comprobantes || []).filter((c) => c && c.numero);
+    const compTxt = comps.map((c) => [c.numero, c.banco, c.monto != null && c.monto !== "" ? money(c.monto) : "", c.de, c.para].filter(Boolean).join(" · ")).join("<br>");
+    return "<tr><td class='chico'>" + fh + "</td>" +
+      "<td>" + esc(v.clienteNombre || "Consumidor final") + "</td>" +
+      "<td class='chico'>" + items + "</td>" +
+      "<td>" + esc(esDevolucion(v) ? "Devolución" : (METODO_LABELS[v.metodoPago] || v.metodoPago || "—")) + "</td>" +
+      num(esDevolucion(v) ? -Math.abs(v.total) : v.total) +
+      "<td class='chico'>" + (compTxt || "—") + "</td></tr>";
+  });
+
+  // --- Medios de pago ---
+  const totalMedios = Object.values(porMetodoGlobal).reduce((a, m) => a + m, 0);
+  const filasM = Object.entries(porMetodoGlobal).sort((a, b) => b[1] - a[1])
+    .map(([k, m]) => "<tr><td>" + esc(METODO_LABELS[k] || k) + "</td>" + num(m) + "</tr>");
+  if (filasM.length) filasM.push("<tr style='border-top:2px solid #111'><td><strong>Total</strong></td>" + num(totalMedios) + "</tr>");
+
+  // --- Movimientos de caja ---
+  const filasC = todosMovs.sort((a, b) => (a.fecha || "").localeCompare(b.fecha || "")).map((m) => {
+    const salida = m.tipo === "retiro" || m.tipo === "devolucion";
+    return "<tr><td class='chico'>" + (m.fecha ? fechaConAnio(m.fecha) + " " + horaCorta(m.fecha) : "—") + "</td>" +
+      "<td>" + esc(TIPO_MOV_LABEL[m.tipo] || m.tipo) + "</td>" +
+      "<td>" + esc(m.concepto || "—") + "</td>" +
+      "<td class='num' style='color:" + (salida ? "#c0392b" : "#27ae60") + "'>" + (salida ? "− " : "+ ") + money(m.monto) + "</td></tr>";
+  });
+
+  // --- Pagos CC ---
+  const filasP = todosPagosCC.sort((a, b) => (a.fecha || "").localeCompare(b.fecha || "")).map((m) => {
+    const cli = (data.clientes || []).find((c) => c.id === m.clienteId);
+    return "<tr><td class='chico'>" + (m.fecha ? fechaConAnio(m.fecha) + " " + horaCorta(m.fecha) : "—") + "</td>" +
+      "<td>" + esc(cli ? cli.nombre : "—") + "</td>" +
+      "<td>" + esc(conceptoLimpio(m) || "Pago") + "</td>" +
+      "<td>" + esc(METODO_LABELS[m.metodo] || m.metodo || "Efectivo") + "</td>" +
+      num(m.monto) + "</tr>";
+  });
+  const totalPagosCC = todosPagosCC.reduce((a, m) => a + (m.monto || 0), 0);
+  if (filasP.length) filasP.push("<tr style='border-top:2px solid #111'><td colspan='4'><strong>Total cobrado</strong></td>" + num(totalPagosCC) + "</tr>");
+
+  // --- Saldos pendientes ---
+  const filasS = (data.clientes || []).map((c) => ({ c, saldo: saldoDeCliente(data, c.id) }))
+    .filter((x) => x.saldo > 0).sort((a, b) => b.saldo - a.saldo)
+    .map((x) => "<tr><td>" + esc(x.c.nombre) + "</td>" +
+      "<td>" + esc(x.c.telefono || "—") + "</td>" + num(x.saldo) + "</tr>");
+  const totalDeuda = (data.clientes || []).reduce((a, c) => a + saldoDeCliente(data, c.id), 0);
+
+  const estilos =
+    "h1{font-size:17pt;margin:0 0 1mm}" +
+    ".sub{font-size:9pt;color:#555;margin-bottom:7mm}" +
+    "h2{font-size:11.5pt;margin:8mm 0 2.5mm;padding-bottom:1.5mm;border-bottom:1.5px solid #111;page-break-after:avoid}" +
+    "table{width:100%;border-collapse:collapse;margin-bottom:2mm}" +
+    "th{text-align:left;font-size:7.5pt;text-transform:uppercase;letter-spacing:.06em;color:#666;border-bottom:1px solid #999;padding:2mm 1.5mm}" +
+    "td{font-size:9pt;border-bottom:1px solid #e4e4e4;padding:2mm 1.5mm;vertical-align:top}" +
+    ".num{font-family:'IBM Plex Mono',monospace;text-align:right;white-space:nowrap}" +
+    ".chico{font-size:8pt;color:#444}" +
+    ".vacio{font-size:9pt;color:#888;margin:2mm 0 0}" +
+    ".cajas{display:flex;flex-wrap:wrap;gap:3mm}" +
+    ".caja{border:1px solid #ccc;border-radius:2mm;padding:3mm 4mm;min-width:34mm}" +
+    ".caja span{display:block;font-size:7.5pt;text-transform:uppercase;letter-spacing:.06em;color:#666}" +
+    ".caja strong{display:block;font-size:13pt;margin-top:1mm}" +
+    ".pie{font-size:8pt;color:#888;margin-top:10mm;border-top:1px solid #ccc;padding-top:3mm}" +
+    "tr{page-break-inside:avoid}";
+
+  const operador = usuarioActivo(data) || "—";
+  const cuerpo =
+    "<h1>" + esc(negocio.nombre || "Mi negocio") + " — Informe consolidado</h1>" +
+    "<div class='sub'>Período: " + fechaHoraLargaISO(desde) + " a " + fechaHoraLargaISO(hasta) +
+      " · " + cierres.length + " cierre" + (cierres.length !== 1 ? "s" : "") +
+      " · Generado por: " + esc(operador) + "</div>" +
+    seccion("Resumen general", cabecera) +
+    seccion("Detalle por cierre",
+      tabla(["Apertura", "Cierre", "Operador", { t: "Inicial", num: true }, { t: "Contado", num: true }, { t: "Diferencia", num: true }], filasCierres),
+      "Sin cierres.") +
+    seccion("Detalle de ventas",
+      tabla(["Fecha/Hora", "Cliente", "Detalle", "Método", { t: "Total", num: true }, "Comprobante"], filasV),
+      "Sin ventas en el período.") +
+    seccion("Totales por medio de pago",
+      tabla(["Medio", { t: "Total", num: true }], filasM), "Sin cobros registrados.") +
+    seccion("Movimientos de caja",
+      tabla(["Fecha/Hora", "Tipo", "Concepto", { t: "Monto", num: true }], filasC), "Sin movimientos de caja.") +
+    seccion("Pagos de clientes recibidos",
+      tabla(["Fecha/Hora", "Cliente", "Concepto", "Método", { t: "Monto", num: true }], filasP), "Sin pagos de clientes.") +
+    seccion("Saldos pendientes de clientes",
+      tabla(["Cliente", "Teléfono", { t: "Debe", num: true }], filasS) +
+      (filasS.length ? "<p class='vacio'>Total adeudado: " + money(totalDeuda) + "</p>" : ""),
+      "Ningún cliente tiene saldo pendiente.") +
+    "<div class='pie'>Generado: " + fechaHoraLargaISO(ahoraISO) + " · Enviado por: " + esc(operador) + "</div>";
+
+  return { titulo: "Informe consolidado " + fechaConAnio(desde) + " - " + fechaConAnio(hasta), estilos, cuerpo };
+};
+
 function CerrarCajaModal({ data, caja, onCerrar, onClose }) {
   const esperado = efectivoEnCaja(caja);
   const [impMensaje, setImpMensaje] = useState("");
@@ -21886,6 +22087,8 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
   const [ampliada, setAmpliada] = useState(null);
   const [ticket, setTicket] = useState(null);
   const [impMerc, setImpMerc] = useState("");
+  const [seleccion, setSeleccion] = useState(new Set()); // v9.987 — cierres seleccionados para PDF consolidado
+  const [estadoPDFC, setEstadoPDFC] = useState(""); // v9.987
   const movs = caja.movimientos || [];
 
   // Eliminar un renglón de efectivo cargado por error.
@@ -22363,7 +22566,17 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
                 React.createElement("thead", null, React.createElement(
                   "tr",
                   null,
-                  React.createElement("th", { style: { paddingLeft: 15 } }, "Apertura"),
+                  React.createElement("th", { style: { paddingLeft: 8, width: 32, textAlign: "center" } },
+                    React.createElement("input", {
+                      type: "checkbox",
+                      checked: cierres.length > 0 && seleccion.size === cierres.length,
+                      onChange: () => {
+                        if (seleccion.size === cierres.length) setSeleccion(new Set());
+                        else setSeleccion(new Set(cierres.map((x) => x.id)));
+                      },
+                      style: { cursor: "pointer", accentColor: "var(--denim)" }
+                    })),
+                  React.createElement("th", { style: { paddingLeft: 8 } }, "Apertura"),
                   React.createElement("th", null, "Usuario"),
                   React.createElement("th", null, "Cierre"),
                   React.createElement("th", { style: { textAlign: "right" } }, "Inicial"),
@@ -22383,9 +22596,21 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
                       style: { cursor: "pointer" },
                       title: "Ver el detalle del cierre"
                     },
+                    React.createElement("td", { style: { paddingLeft: 8, textAlign: "center", verticalAlign: "middle" },
+                      onClick: function(e) { e.stopPropagation(); } },
+                      React.createElement("input", {
+                        type: "checkbox",
+                        checked: seleccion.has(c.id),
+                        onChange: function() {
+                          var n = new Set(seleccion);
+                          if (n.has(c.id)) n.delete(c.id); else n.add(c.id);
+                          setSeleccion(n);
+                        },
+                        style: { cursor: "pointer", accentColor: "var(--denim)" }
+                      })),
                     React.createElement(
                       "td",
-                      { style: { paddingLeft: 15, whiteSpace: "nowrap" } },
+                      { style: { paddingLeft: 8, whiteSpace: "nowrap" } },
                       React.createElement("div", { style: { fontSize: 13 } }, c.abiertaEn ? fechaConAnio(c.abiertaEn) : "\u2014"),
                       c.abiertaEn && React.createElement("div", { style: { fontSize: 11, color: "var(--muted)", marginTop: 2, fontFamily: "'IBM Plex Mono', monospace" } }, hora24(c.abiertaEn)),
                       // Quién cerró: con varios empleados es el dato que importa
@@ -22423,6 +22648,36 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
                 }))
               )
             )),
+
+    // v9.987 — Botón PDF consolidado (visible cuando hay cierres seleccionados)
+    pestana === "cierres" && seleccion.size > 0 && React.createElement(
+      "div",
+      { style: { marginTop: 10, display: "flex", flexDirection: "column", gap: 6, alignItems: "center" } },
+      React.createElement("div", { style: { fontSize: 12, color: "var(--muted)" } },
+        seleccion.size + " cierre" + (seleccion.size !== 1 ? "s" : "") + " seleccionado" + (seleccion.size !== 1 ? "s" : "")),
+      React.createElement(Button, {
+        tone: "ghost",
+        disabled: !!estadoPDFC,
+        onClick: async () => {
+          try {
+            const sel = cierres.filter((x) => seleccion.has(x.id));
+            if (!sel.length) return;
+            const doc = armarInformeCierresConsolidadoPDF(data, sel);
+            setEstadoPDFC("Preparando el PDF…");
+            const r = await compartirComoPDF(doc.titulo, doc.estilos, doc.cuerpo, setEstadoPDFC);
+            setEstadoPDFC("");
+            if (r === "descargado") avisar("El informe se descargó", { tono: "info" });
+          } catch (e) {
+            setEstadoPDFC("");
+            const m = String((e && e.message) || e);
+            if (!/abort|cancel/i.test(m)) avisar("No se pudo armar el PDF. " + m, { tono: "error" });
+          }
+        },
+        style: { width: "100%", justifyContent: "center" }
+      },
+        React.createElement(FileText, { size: 14 }),
+        estadoPDFC || " Enviar informe consolidado (PDF)")
+    ),
 
     detalle && React.createElement(DetalleCierreModal, { cierre: detalle, data, persist, onClose: () => setDetalle(null) }),
 
