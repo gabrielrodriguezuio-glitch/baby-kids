@@ -21544,8 +21544,10 @@ const armarInformeCajaPDF = (data, cierresArr) => {
   const filasVentas = (r) => [...r.ventas, ...r.devoluciones]
     .sort((a, b) => (momentoVentaInforme(a) || 0) - (momentoVentaInforme(b) || 0))
     .map((v) => {
-      const items = (v.items || []).map((it) => (Number(it.cantidad) || 0) + "× " + esc(it.nombre) +
-        (it.talla || it.color ? " <span class='gris'>(" + esc([it.talla && "T. " + it.talla, it.color].filter(Boolean).join(" ")) + ")</span>" : "")).join("<br>");
+      // Sólo la cantidad de unidades: el detalle artículo por artículo hacía
+      // el informe larguísimo. La línea de "Saldo pendiente" no es mercadería.
+      const unidades = (v.items || []).filter((it) => it.productoId || !/^Saldo pendiente de /i.test(String(it.nombre || "")))
+        .reduce((a, it) => a + Math.abs(Number(it.cantidad) || 0), 0);
       const t = momentoVentaInforme(v);
       const hora = t != null ? hora24(new Date(t).toISOString()) : (v.horaTexto || "");
       const dev = esDevolucion(v);
@@ -21555,7 +21557,7 @@ const armarInformeCajaPDF = (data, cierresArr) => {
       const comp = textoComprobantes(v);
       return "<tr><td class='mono'>" + (varios && v.fecha ? esc(fechaNumerica(String(v.fecha).slice(0, 10))) + " " : "") + esc(hora) + "</td>" +
         "<td>" + esc(v.clienteNombre || "Consumidor final") + (v.usuarioNombre ? "<div class='gris'>" + esc(v.usuarioNombre) + "</div>" : "") + "</td>" +
-        "<td class='chico'>" + (items || "—") + "</td>" +
+        "<td class='num'>" + unidades + "</td>" +
         "<td class='chico'>" + (dev ? "Devolución" : metodo) + "</td>" +
         num(dev ? -Math.abs(v.total || 0) : (v.total || 0), dev ? "color:#c0392b" : "") +
         "<td class='chico'>" + (comp || "—") + "</td></tr>";
@@ -21608,7 +21610,7 @@ const armarInformeCajaPDF = (data, cierresArr) => {
 
   const seccionesDeCierre = (r, prefijo) => {
     h2(prefijo + "Detalle de ventas");
-    tabla([{ t: "Hora", ancho: varios ? "98px" : "46px" }, { t: "Cliente", ancho: "116px" }, "Artículos", { t: "Medio de pago", ancho: "92px" }, { t: "Total", num: true, ancho: "76px" }, { t: "Comprobante", ancho: "188px" }], filasVentas(r), "Sin ventas en el turno.");
+    tabla([{ t: "Hora", ancho: varios ? "98px" : "46px" }, { t: "Cliente", ancho: "150px" }, { t: "Unid.", num: true, ancho: "44px" }, { t: "Medio de pago", ancho: "120px" }, { t: "Total", num: true, ancho: "80px" }, "Comprobante"], filasVentas(r), "Sin ventas en el turno.");
     h2(prefijo + "Clientes que pagaron");
     tabla([{ t: "Cliente", ancho: "150px" }, { t: "Pagó", num: true, ancho: "80px" }, "Cómo pagó / comprobante", { t: "Saldo que le queda", num: true, ancho: "110px" }],
       filasClientes(r.pagos, r.hastaTS, false), "Ningún cliente pagó su cuenta en este turno.");
