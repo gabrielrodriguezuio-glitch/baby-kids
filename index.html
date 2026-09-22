@@ -10954,12 +10954,15 @@ const cerrarAviso = (id) => {
   notificarOyentes();
 };
 // tono: "ok" | "error" | "info". `deshacer` agrega un botón para revertir.
+// v9.988 — `accion: { texto, fn }` agrega un botón cualquiera, y `fijo: true`
+// deja el aviso hasta que se lo toque o cierre (para el PDF listo, que
+// necesita un toque del usuario para abrir el menú de compartir).
 const avisar = (texto, opciones) => {
   const o = opciones || {};
   const id = ++bandejaAvisos.contador;
-  bandejaAvisos.lista = [...bandejaAvisos.lista, { id, texto, tono: o.tono || "ok", deshacer: o.deshacer }];
+  bandejaAvisos.lista = [...bandejaAvisos.lista, { id, texto, tono: o.tono || "ok", deshacer: o.deshacer, accion: o.accion }];
   notificarOyentes();
-  const duracion = o.deshacer ? 7000 : 3600;
+  const duracion = o.fijo ? 120000 : o.deshacer || o.accion ? 7000 : 3600;
   if (typeof setTimeout === "function") setTimeout(() => cerrarAviso(id), duracion);
   return id;
 };
@@ -11006,6 +11009,14 @@ function Avisos() {
             style: { background: "none", border: "none", cursor: "pointer", color: "var(--denim-light)", fontSize: 13.5, fontWeight: 650, fontFamily: "'Inter', sans-serif", padding: "2px 4px" }
           },
           "Deshacer"
+        ),
+        a.accion && React.createElement(
+          "button",
+          {
+            onClick: () => { cerrarAviso(a.id); a.accion.fn(); },
+            style: { background: "var(--denim)", color: "#fff", border: "none", cursor: "pointer", borderRadius: 8, fontSize: 13, fontWeight: 700, fontFamily: "'Inter', sans-serif", padding: "7px 12px", whiteSpace: "nowrap" }
+          },
+          a.accion.texto
         ),
         React.createElement(
           "button",
@@ -21717,6 +21728,22 @@ const enviarInformeCajaPDF = async (data, cierres, estado) => {
     const r = await compartirInformePaginadoPDF(informe, estado);
     estado("");
     if (r === "descargado") avisar("El informe se descargó", { tono: "info" });
+    if (r && r.pendiente) {
+      const archivo = r.pendiente;
+      const compartir = async () => {
+        try { await navigator.share({ files: [archivo], title: r.titulo }); }
+        catch (e) {
+          const m = String((e && e.message) || e);
+          if (/abort|cancel/i.test(m)) return;
+          // Sin menú de compartir: se descarga
+          const url = URL.createObjectURL(archivo);
+          const a = document.createElement("a"); a.href = url; a.download = archivo.name; document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 30000);
+          avisar("El informe se descargó", { tono: "info" });
+        }
+      };
+      avisar("PDF listo", { tono: "info", fijo: true, accion: { texto: "Compartir", fn: compartir } });
+    }
   } catch (e) {
     estado("");
     const m = String((e && e.message) || e);
@@ -26873,10 +26900,20 @@ async function compartirInformePaginadoPDF(informe, avisar2) {
     }
     const nombre = String(informe.archivo || informe.titulo || "Informe").replace(/[\\/:*?"<>|]+/g, "-").trim() + ".pdf";
     const archivo = new File([pdf.output("blob")], nombre, { type: "application/pdf" });
-    if (avisar2) avisar2("Abriendo para compartir…");
     if (navigator.canShare && navigator.canShare({ files: [archivo] })) {
-      await navigator.share({ files: [archivo], title: informe.titulo });
-      return "compartido";
+      // El menú de compartir sólo se abre dentro de un toque del usuario, y
+      // armar las hojas tarda más de lo que ese permiso dura. Se intenta
+      // igual (a veces alcanza) y si no, se devuelve el archivo para que el
+      // botón "Compartir" del aviso lo abra con un toque nuevo.
+      if (avisar2) avisar2("Abriendo para compartir…");
+      try {
+        await navigator.share({ files: [archivo], title: informe.titulo });
+        return "compartido";
+      } catch (e) {
+        const m = String((e && e.message) || e);
+        if (/abort|cancel/i.test(m)) return "cancelado";
+        return { pendiente: archivo, titulo: informe.titulo };
+      }
     }
     pdf.save(archivo.name);
     return "descargado";
