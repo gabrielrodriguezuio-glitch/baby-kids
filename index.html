@@ -129,7 +129,10 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.983";
+const VERSION_APP = "9.986";
+// v9.986 (2026-09-21) — Cierre de caja: botón para enviar informe detallado en PDF (ventas, clientes, medios de pago, saldos, comprobantes)
+// v9.985 (2026-09-21) — Fix: tombstone para movimientos CC eliminados (evita que reaparezcan tras sincronización)
+// v9.984 (2026-09-21) — Movimientos de caja: mostrar nombre del cliente en ventas y devoluciones
 // v9.983 (2026-09-21) — Transferencias: quitar toggle confirmación recepción; "sin control" activo por defecto
 // v9.982 (2026-09-21) — Resumen pre-cierre: quitar ingresos por ventas y por método de pago
 // v9.981 (2026-09-21) — POS: aviso de caja cerrada + bloquear +/- en línea de deuda
@@ -1767,7 +1770,7 @@ const nube = createClient(NUBE_URL, NUBE_KEY, {
 });
 import { createPortal } from "react-dom";
 import { Tag, Package, ShoppingBag, Users, Wallet, Plus, Trash2, X, AlertTriangle, Search, Pencil, TrendingUp, TrendingDown, Minus, CreditCard, Banknote, ArrowRightLeft, Check, ShoppingCart, Share2, UserCog, BarChart3, MessageCircle, ArrowDownCircle, ArrowUpCircle, Truck, QrCode, ScanBarcode, Receipt, DollarSign, ChevronDown, ChevronLeft, ChevronRight, Lock, Unlock, Calculator, SlidersHorizontal, LayoutGrid, Archive, MoreHorizontal, Sparkles, Clock3, Boxes, Tags, Sun, Moon, Crown, UserPlus, Mail,
-  Menu, Image as ImageIcon
+  Menu, Image as ImageIcon, FileText
 } from "lucide-react";
 const STORAGE_KEY = "control-tienda-ropa-v1";
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -1861,6 +1864,27 @@ const todayISO = () => isoLocal(/* @__PURE__ */ new Date());
 // más cortos: mandarlos hace que rechace la consulta entera.
 const esIdDeLaBase = (x) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(x || ""));
+
+// v9.985 — Tombstone para movimientos de CC borrados. Si la app elimina
+// un movimiento y el DELETE a la nube falla (RLS, red, Supabase que
+// devuelve ok sin borrar), el sync lo traía de vuelta. Con este set en
+// localStorage, el sync descarta cualquier movimiento que la app ya borró.
+const CT_MOVS_BORRADOS_KEY = "ct-movs-borrados";
+const _movsBorradosCache = new Set();
+try {
+  const raw = JSON.parse(localStorage.getItem(CT_MOVS_BORRADOS_KEY) || "[]");
+  if (Array.isArray(raw)) raw.forEach((x) => _movsBorradosCache.add(x));
+} catch (e) {}
+const marcarMovBorrado = (id) => {
+  _movsBorradosCache.add(id);
+  try { localStorage.setItem(CT_MOVS_BORRADOS_KEY, JSON.stringify([..._movsBorradosCache])); } catch (e) {}
+};
+const desmarcarMovBorrado = (id) => {
+  _movsBorradosCache.delete(id);
+  try { localStorage.setItem(CT_MOVS_BORRADOS_KEY, JSON.stringify([..._movsBorradosCache])); } catch (e) {}
+};
+const esMovBorrado = (id) => _movsBorradosCache.has(id);
+const filtrarMovsBorrados = (movs) => movs.filter((m) => !esMovBorrado(m.id));
 
 // La fecha de hace N meses, para no traer el historial entero cada vez
 const haceMeses = (n) => {
@@ -2969,7 +2993,7 @@ const registrarDevolucion = (data, venta, seleccion, motivo, reintegro) => {
     caja = {
       ...caja,
       movimientos: [
-        { id: uid(), tipo: "devolucion", monto: montoDevuelto, concepto: `Devolución venta #${venta.id.slice(-6)}` + (caja.abierta ? "" : " (caja cerrada)"), fecha: new Date().toISOString(), fueraDeCaja: !caja.abierta },
+        { id: uid(), tipo: "devolucion", monto: montoDevuelto, concepto: `Devolución venta #${venta.id.slice(-6)}` + (venta.clienteNombre && venta.clienteNombre !== "Consumidor final" ? ` · ${venta.clienteNombre}` : "") + (caja.abierta ? "" : " (caja cerrada)"), fecha: new Date().toISOString(), fueraDeCaja: !caja.abierta },
         ...(caja.movimientos || [])
       ]
     };
@@ -3520,7 +3544,7 @@ function ControlTienda() {
         // Los duplicados de cuenta corriente que hayan quedado guardados en
         // la copia del dispositivo se descartan acá, antes de mostrar nada.
         if (copiaEnMano && copiaEnMano.movimientosCC) {
-          copiaEnMano = { ...copiaEnMano, movimientosCC: sinMovimientosDuplicados(copiaEnMano.movimientosCC) };
+          copiaEnMano = { ...copiaEnMano, movimientosCC: filtrarMovsBorrados(sinMovimientosDuplicados(copiaEnMano.movimientosCC)) };
         }
         setData(copiaEnMano);
         setLoading(false);
@@ -7881,6 +7905,7 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
     try {
       const { error } = await nube.from("movimientos_cc").delete().eq("id", m.id);
       if (error) throw new Error(error.message);
+      desmarcarMovBorrado(m.id); // v9.985 — tombstone ya no hace falta si la nube lo borró
     } catch (e) {
       if (avisarProblema) avisarProblema("No se pudo borrar un pago de la nube: " + String((e && e.message) || e));
     }
@@ -8880,13 +8905,13 @@ async function traerParcial(tablas, quienEntro, actual) {
     });
     const delta = await traerDelta("movimientos_cc", "movimientos_cc");
     if (delta && actual.movimientosCC && actual.movimientosCC.length) {
-      salida.movimientosCC = sinMovimientosDuplicados(fusionarPorId(actual.movimientosCC, delta.map(mapa)));
+      salida.movimientosCC = filtrarMovsBorrados(sinMovimientosDuplicados(fusionarPorId(actual.movimientosCC, delta.map(mapa))));
       const ts = tsMaximo(delta);
       if (ts) tsSet("movimientos_cc", ts);
       deltaAnotar("movimientos_cc", delta.length, "delta");
     } else {
       const filas = await traerTodo("movimientos_cc");
-      salida.movimientosCC = filas.map(mapa);
+      salida.movimientosCC = filtrarMovsBorrados(filas.map(mapa));
       const ts = tsMaximo(filas);
       if (ts) tsSet("movimientos_cc", ts);
       deltaAnotar("movimientos_cc", filas.length, "completa");
@@ -15995,7 +16020,7 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
       cajaActualizada = {
         ...cajaPropia,
         movimientos: [
-          { id: uid(), tipo: "venta", monto: montoEfectivo, concepto: `Venta en efectivo \xB7 ${totalUnidades} u.` + (cajaPropia.abierta ? "" : " (caja cerrada)"), fecha: (/* @__PURE__ */ new Date()).toISOString(), usuario: usuarioActivo(data), fueraDeCaja: !cajaPropia.abierta },
+          { id: uid(), tipo: "venta", monto: montoEfectivo, concepto: `Venta en efectivo \xB7 ${totalUnidades} u.` + (clienteDelCarrito ? ` \xB7 ${clienteDelCarrito.nombre}` : "") + (cajaPropia.abierta ? "" : " (caja cerrada)"), fecha: (/* @__PURE__ */ new Date()).toISOString(), usuario: usuarioActivo(data), fueraDeCaja: !cajaPropia.abierta },
           ...(cajaPropia.movimientos || [])
         ]
       };
@@ -20741,9 +20766,10 @@ function ClienteFichaModal({ data, persist, cliente, onClose }) {
       "Se puede deshacer."
     )) return;
     const anterior = data;
+    marcarMovBorrado(id);
     persist({ ...data, movimientosCC: (data.movimientosCC || []).filter((x) => x.id !== id) });
     avisar((ajuste ? "Ajuste eliminado" : esCargo ? "Fiado eliminado" : "Pago eliminado") +
-      " \u00B7 deuda " + money(saldoDespues), { deshacer: () => persist(anterior) });
+      " \u00B7 deuda " + money(saldoDespues), { deshacer: () => { desmarcarMovBorrado(id); persist(anterior); } });
   };
 
   // Eliminar una venta entera. Devuelve el stock al local donde se hizo (por
@@ -20832,14 +20858,21 @@ function ClienteFichaModal({ data, persist, cliente, onClose }) {
     // al final del concepto, y fecha + monto para los movimientos viejos),
     // así lo que se borra es exactamente lo que el cartel dijo que se iba.
     const idsAnexos = {};
-    anexos.forEach((m) => { idsAnexos[m.id] = true; });
+    anexos.forEach((m) => { idsAnexos[m.id] = true; marcarMovBorrado(m.id); });
+    // Tambi\u00E9n los que usen el campo legacy ventaId
+    (salida.movimientosCC || []).forEach((m) => {
+      if (m.ventaId && m.ventaId === venta.id) marcarMovBorrado(m.id);
+    });
     salida.movimientosCC = (salida.movimientosCC || []).filter((m) =>
       !idsAnexos[m.id] && !(m.ventaId && m.ventaId === venta.id));
 
     persist(salida);
     avisar("Venta eliminada" + (enEfectivo > 0 ? " \u00B7 " + money(enEfectivo) + " fuera de caja" : "") +
            (unidades > 0 ? " \u00B7 stock devuelto" : ""),
-      { deshacer: () => persist(anterior) });
+      { deshacer: () => {
+        anexos.forEach((m) => desmarcarMovBorrado(m.id));
+        persist(anterior);
+      } });
   };
 
 
@@ -21349,10 +21382,161 @@ const sugerirBilletes = (monto) => {
 const totalBilletes = (conteo) =>
   DENOMINACIONES.reduce((a, d) => a + d * (Number(conteo[d]) || 0), 0);
 
+// v9.986 — Informe PDF detallado del cierre de caja
+// Junta ventas, clientes, comprobantes, medios de pago, saldos pendientes,
+// pagos de clientes con datos de transferencia, fecha, hora, quién envía/recibe.
+const armarInformeCierrePDF = (data, caja, contado) => {
+  const esc = escaparHTML;
+  const fmtF = (iso) => fechaNumerica(iso);
+  const num = (n) => "<td class='num'>" + money(n) + "</td>";
+  const seccion = (titulo, contenido, vacio) =>
+    "<h2>" + esc(titulo) + "</h2>" + (contenido || "<p class='vacio'>" + esc(vacio) + "</p>");
+  const tabla = (encabezados, filas) =>
+    !filas.length ? "" :
+    "<table><thead><tr>" + encabezados.map((h) => "<th" + (h.num ? " class='num'" : "") + ">" + esc(h.t || h) + "</th>").join("") +
+    "</tr></thead><tbody>" + filas.join("") + "</tbody></table>";
+
+  const negocio = negocioActivo(data);
+  const negId = negocio.id;
+  const ahora = new Date();
+  const ahoraISO = ahora.toISOString();
+  const esperado = efectivoEnCaja(caja);
+  const diferencia = contado != null ? contado - esperado : null;
+
+  // Ventas del turno
+  const ventas = ventasDelTurno(data, caja);
+  const devoluciones = (data.ventas || []).filter((v) => {
+    if (!esDevolucion(v)) return false;
+    const desde = new Date(caja.abiertaEn).getTime();
+    if (v.creadaEn) return new Date(v.creadaEn).getTime() >= desde;
+    return v.fecha >= caja.abiertaEn.slice(0, 10);
+  });
+
+  const totalVentas = ventas.reduce((a, v) => a + v.total, 0);
+  const totalDev = devoluciones.reduce((a, v) => a + Math.abs(v.total), 0);
+  const unidades = ventas.reduce((a, v) => a + (v.items || []).reduce((s, it) => s + it.cantidad, 0), 0);
+
+  // --- Encabezado ---
+  const cabecera =
+    "<div class='cajas'>" +
+    [["Operaciones", String(ventas.length)], ["Unidades vendidas", String(unidades)],
+     ["Total facturado", money(totalVentas)], ["Devoluciones", money(totalDev)],
+     ["Efectivo esperado", money(esperado)],
+     contado != null ? ["Efectivo contado", money(contado)] : null,
+     diferencia != null ? ["Diferencia", (diferencia > 0 ? "+" : "") + money(diferencia)] : null
+    ].filter(Boolean)
+    .map(([t, v]) => "<div class='caja'><span>" + esc(t) + "</span><strong>" + esc(v) + "</strong></div>").join("") +
+    "</div>";
+
+  // --- Detalle de ventas ---
+  const filasV = [...ventas, ...devoluciones].sort((a, b) => (a.creadaEn || a.fecha || "").localeCompare(b.creadaEn || b.fecha || "")).map((v) => {
+    const items = (v.items || []).map((it) => it.cantidad + "× " + esc(it.nombre)).join("<br>");
+    const hora = v.creadaEn ? horaCorta(v.creadaEn) : (v.horaTexto || "");
+    // Comprobantes de la venta
+    const comps = (v.comprobantes || []).filter((c) => c && c.numero);
+    const compTxt = comps.map((c) => [c.numero, c.banco, c.monto != null && c.monto !== "" ? money(c.monto) : "", c.de, c.para].filter(Boolean).join(" · ")).join("<br>");
+    return "<tr><td>" + hora + "</td>" +
+      "<td>" + esc(v.clienteNombre || "Consumidor final") + "</td>" +
+      "<td class='chico'>" + items + "</td>" +
+      "<td>" + esc(esDevolucion(v) ? "Devolución" : (METODO_LABELS[v.metodoPago] || v.metodoPago || "—")) + "</td>" +
+      num(esDevolucion(v) ? -Math.abs(v.total) : v.total) +
+      "<td class='chico'>" + (compTxt || "—") + "</td></tr>";
+  });
+
+  // --- Medios de pago ---
+  const porMetodo = {};
+  ventas.forEach((v) => {
+    const partes = (v.pagos && v.pagos.length) ? v.pagos : [{ metodo: v.metodoPago, monto: v.total }];
+    partes.forEach((p) => {
+      const k = p.metodo || "otro";
+      porMetodo[k] = (porMetodo[k] || 0) + (Number(p.monto) || 0);
+    });
+  });
+  const totalMedios = Object.values(porMetodo).reduce((a, m) => a + m, 0);
+  const filasM = Object.entries(porMetodo).sort((a, b) => b[1] - a[1])
+    .map(([k, m]) => "<tr><td>" + esc(METODO_LABELS[k] || k) + "</td>" + num(m) + "</tr>");
+  if (filasM.length) filasM.push("<tr style='border-top:2px solid #111'><td><strong>Total</strong></td>" + num(totalMedios) + "</tr>");
+
+  // --- Movimientos de caja ---
+  const movs = caja.movimientos || [];
+  const filasC = movs.map((m) => {
+    const salida = m.tipo === "retiro" || m.tipo === "devolucion";
+    return "<tr><td>" + horaCorta(m.fecha) + "</td>" +
+      "<td>" + esc(TIPO_MOV_LABEL[m.tipo] || m.tipo) + "</td>" +
+      "<td>" + esc(m.concepto || "—") + "</td>" +
+      "<td class='num' style='color:" + (salida ? "#c0392b" : "#27ae60") + "'>" + (salida ? "− " : "+ ") + money(m.monto) + "</td></tr>";
+  });
+
+  // --- Saldos pendientes de clientes ---
+  const filasS = (data.clientes || []).map((c) => ({ c, saldo: saldoDeCliente(data, c.id) }))
+    .filter((x) => x.saldo > 0).sort((a, b) => b.saldo - a.saldo)
+    .map((x) => "<tr><td>" + esc(x.c.nombre) + "</td>" +
+      "<td>" + esc(x.c.telefono || "—") + "</td>" + num(x.saldo) + "</tr>");
+  const totalDeuda = (data.clientes || []).reduce((a, c) => a + saldoDeCliente(data, c.id), 0);
+
+  // --- Pagos de clientes con datos de transferencia ---
+  const desdeTS = new Date(caja.abiertaEn).getTime();
+  const pagosCC = (data.movimientosCC || []).filter((m) =>
+    m.tipo !== "cargo" && !esAjusteDeSaldo(m) &&
+    new Date(m.fecha).getTime() >= desdeTS
+  );
+  const filasP = pagosCC.map((m) => {
+    const cli = (data.clientes || []).find((c) => c.id === m.clienteId);
+    return "<tr><td>" + horaCorta(m.fecha) + "</td>" +
+      "<td>" + esc(cli ? cli.nombre : "—") + "</td>" +
+      "<td>" + esc(conceptoLimpio(m) || "Pago") + "</td>" +
+      "<td>" + esc(METODO_LABELS[m.metodo] || m.metodo || "Efectivo") + "</td>" +
+      num(m.monto) + "</tr>";
+  });
+  const totalPagosCC = pagosCC.reduce((a, m) => a + (m.monto || 0), 0);
+  if (filasP.length) filasP.push("<tr style='border-top:2px solid #111'><td colspan='4'><strong>Total cobrado</strong></td>" + num(totalPagosCC) + "</tr>");
+
+  const estilos =
+    "h1{font-size:17pt;margin:0 0 1mm}" +
+    ".sub{font-size:9pt;color:#555;margin-bottom:7mm}" +
+    "h2{font-size:11.5pt;margin:8mm 0 2.5mm;padding-bottom:1.5mm;border-bottom:1.5px solid #111;page-break-after:avoid}" +
+    "table{width:100%;border-collapse:collapse;margin-bottom:2mm}" +
+    "th{text-align:left;font-size:7.5pt;text-transform:uppercase;letter-spacing:.06em;color:#666;border-bottom:1px solid #999;padding:2mm 1.5mm}" +
+    "td{font-size:9pt;border-bottom:1px solid #e4e4e4;padding:2mm 1.5mm;vertical-align:top}" +
+    ".num{font-family:'IBM Plex Mono',monospace;text-align:right;white-space:nowrap}" +
+    ".chico{font-size:8pt;color:#444}" +
+    ".vacio{font-size:9pt;color:#888;margin:2mm 0 0}" +
+    ".cajas{display:flex;flex-wrap:wrap;gap:3mm}" +
+    ".caja{border:1px solid #ccc;border-radius:2mm;padding:3mm 4mm;min-width:34mm}" +
+    ".caja span{display:block;font-size:7.5pt;text-transform:uppercase;letter-spacing:.06em;color:#666}" +
+    ".caja strong{display:block;font-size:13pt;margin-top:1mm}" +
+    ".pie{font-size:8pt;color:#888;margin-top:10mm;border-top:1px solid #ccc;padding-top:3mm}" +
+    "tr{page-break-inside:avoid}";
+
+  const operador = caja.abiertaPor || usuarioActivo(data) || "—";
+  const cuerpo =
+    "<h1>" + esc(negocio.nombre || "Mi negocio") + " — Cierre de caja</h1>" +
+    "<div class='sub'>Desde " + fechaHoraLargaISO(caja.abiertaEn) + " hasta " + fechaHoraLargaISO(ahoraISO) +
+      " · Operador: " + esc(operador) + "</div>" +
+    seccion("Resumen", cabecera) +
+    seccion("Detalle de ventas",
+      tabla(["Hora", "Cliente", "Detalle", "Método", { t: "Total", num: true }, "Comprobante"], filasV),
+      "Sin ventas en el turno.") +
+    seccion("Totales por medio de pago",
+      tabla(["Medio", { t: "Total", num: true }], filasM), "Sin cobros registrados.") +
+    seccion("Movimientos de caja",
+      tabla(["Hora", "Tipo", "Concepto", { t: "Monto", num: true }], filasC), "Sin movimientos de caja.") +
+    seccion("Pagos de clientes recibidos",
+      tabla(["Hora", "Cliente", "Concepto", "Método", { t: "Monto", num: true }], filasP), "Sin pagos de clientes en el turno.") +
+    seccion("Saldos pendientes de clientes",
+      tabla(["Cliente", "Teléfono", { t: "Debe", num: true }], filasS) +
+      (filasS.length ? "<p class='vacio'>Total adeudado: " + money(totalDeuda) + "</p>" : ""),
+      "Ningún cliente tiene saldo pendiente.") +
+    "<div class='pie'>Generado: " + fechaHoraLargaISO(ahoraISO) + " · Enviado por: " + esc(operador) + "</div>";
+
+  return { titulo: "Cierre de caja " + fechaHoraLargaISO(ahoraISO), estilos, cuerpo };
+};
+
 function CerrarCajaModal({ data, caja, onCerrar, onClose }) {
   const esperado = efectivoEnCaja(caja);
   const [impMensaje, setImpMensaje] = useState("");
   const [impEstado, setImpEstado] = useState("idle");
+  const [estadoPDF, setEstadoPDF] = useState("");
   // Se escribe el total contado: la planilla de billetes agregaba pasos y en
   // el mostrador se cuenta con la mano, no con el teléfono.
   const [modo, setModo] = useState("manual");
@@ -21524,7 +21708,29 @@ function CerrarCajaModal({ data, caja, onCerrar, onClose }) {
       impEstado === "conectando" ? "Conectando\u2026" : impEstado === "imprimiendo" ? "Imprimiendo\u2026" : "Imprimir arqueo por Bluetooth"),
     impMensaje && React.createElement("p", {
       style: { fontSize: 12, marginTop: 8, textAlign: "center", color: impEstado === "error" ? "var(--rose)" : "var(--muted)" }
-    }, impMensaje)
+    }, impMensaje),
+
+    // v9.986 — Informe detallado PDF
+    React.createElement(Button, {
+      tone: "ghost",
+      disabled: !!estadoPDF,
+      onClick: async () => {
+        try {
+          const doc = armarInformeCierrePDF(data, caja, contado);
+          setEstadoPDF("Preparando el PDF…");
+          const r = await compartirComoPDF(doc.titulo, doc.estilos, doc.cuerpo, setEstadoPDF);
+          setEstadoPDF("");
+          if (r === "descargado") avisar("El informe se descargó", { tono: "info" });
+        } catch (e) {
+          setEstadoPDF("");
+          const m = String((e && e.message) || e);
+          if (!/abort|cancel/i.test(m)) avisar("No se pudo armar el PDF. " + m, { tono: "error" });
+        }
+      },
+      style: { width: "100%", justifyContent: "center", marginTop: 6 }
+    },
+      React.createElement(FileText, { size: 14 }),
+      estadoPDF || "Enviar informe detallado (PDF)"),
   );
 }
 // Ventas que entran dentro del turno de caja abierto
