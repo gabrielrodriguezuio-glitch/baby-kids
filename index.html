@@ -26793,7 +26793,18 @@ const ESTILOS_INFORME_PDF =
   ".hoja-cuerpo .caja{flex:1 1 120px;border:1px solid #d5d5d5;border-radius:7px;padding:8px 10px;min-width:120px}" +
   ".hoja-cuerpo .caja span{display:block;font-size:8.5px;text-transform:uppercase;letter-spacing:.06em;color:#666}" +
   ".hoja-cuerpo .caja strong{display:block;font-size:14px;margin-top:3px;font-family:'IBM Plex Mono',monospace;color:#111;white-space:nowrap}" +
-  ".hoja-cuerpo .continua{font-size:9px;color:#888;font-style:italic;margin:0 0 3px}";
+  ".hoja-cuerpo .continua{font-size:9px;color:#888;font-style:italic;margin:0 0 3px}" +
+  // Estilo elegido por Gabriel: compacto con membrete y encabezados azules
+  ".hoja{font-size:10px}" +
+  ".hoja-cab{border-bottom:none;background:#1f3a5f;color:#fff;margin:-34px -38px 10px;padding:16px 38px 12px}" +
+  ".hoja-cab .neg,.hoja-cab .tit,.hoja-cab .sub,.hoja-cab .der{color:#fff}.hoja-cab .sub,.hoja-cab .der{opacity:.8}.hoja-cab .neg{font-size:13px}" +
+  ".hoja-cuerpo h1{background:#e8eef6;border-left:4px solid #1f3a5f;color:#1f3a5f;font-size:12px;margin:10px 0 3px;padding:6px 8px}" +
+  ".hoja-cuerpo h2{font-size:9.5px;margin:9px 0 3px;border-bottom:none;background:#e8eef6;color:#1f3a5f;padding:4px 8px;border-radius:3px}" +
+  ".hoja-cuerpo th{background:#1f3a5f;color:#fff;border-bottom:none;font-size:7.5px;padding:3px 4px}" +
+  ".hoja-cuerpo td{font-size:9.5px;padding:2px 4px;line-height:1.25}.hoja-cuerpo tbody tr:nth-child(even) td{background:#f5f8fc}" +
+  ".hoja-cuerpo .chico{font-size:9px}.hoja-cuerpo .gris{font-size:8.5px}" +
+  ".hoja-cuerpo .cajas{gap:5px}.hoja-cuerpo .caja{padding:5px 8px;min-width:100px;border-radius:4px;background:#f5f8fc;border-color:#c9d6e6}.hoja-cuerpo .caja strong{font-size:12px;color:#1f3a5f}" +
+  ".hoja-cuerpo tr.total td{background:#e8eef6;border-top:2px solid #1f3a5f}";
 
 // Reparte los átomos en hojas dentro de `raiz` y devuelve las hojas.
 const armarHojasInforme = (raiz, informe) => {
