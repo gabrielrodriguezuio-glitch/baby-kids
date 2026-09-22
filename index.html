@@ -129,7 +129,8 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.987";
+const VERSION_APP = "9.988";
+// v9.988 (2026-09-22) — Informe PDF de caja: un solo motor para el cierre en curso, un cierre del historial y varios juntos; "Clientes que pagaron" (pagó, cómo, saldo que le queda) en vez de la lista de todos los clientes; PDF paginado en hojas A4 sin cortar renglones; botones en Detalle del cierre y en Reportes > Historial de Caja (casillas + "Enviar PDF")
 // v9.987 (2026-09-21) — PDF consolidado: seleccionar múltiples cierres de caja y generar un informe PDF detallado para compartir por WhatsApp
 // v9.986 (2026-09-21) — Cierre de caja: botón para enviar informe detallado en PDF (ventas, clientes, medios de pago, saldos, comprobantes)
 // v9.985 (2026-09-21) — Fix: tombstone para movimientos CC eliminados (evita que reaparezcan tras sincronización)
@@ -21383,68 +21384,96 @@ const sugerirBilletes = (monto) => {
 const totalBilletes = (conteo) =>
   DENOMINACIONES.reduce((a, d) => a + d * (Number(conteo[d]) || 0), 0);
 
-// v9.986 — Informe PDF detallado del cierre de caja
-// Junta ventas, clientes, comprobantes, medios de pago, saldos pendientes,
-// pagos de clientes con datos de transferencia, fecha, hora, quién envía/recibe.
-const armarInformeCierrePDF = (data, caja, contado) => {
+// ===== INFORME DE CAJA EN PDF (v9.988) ==================================
+// Un solo motor para el cierre que se está haciendo, para un cierre del
+// historial y para varios cierres juntos. Devuelve el informe en "átomos"
+// (títulos, tarjetas, filas de tabla) que compartirInformePaginadoPDF
+// reparte en hojas A4 sin cortar renglones.
+//
+// Ventas de cada cierre: mismo criterio que el detalle del cierre (local,
+// entre apertura y cierre, con un minuto de tolerancia; las viejas sin hora
+// se acotan por día). Si la venta trae creadaEn (la hora exacta que pone la
+// nube) se usa esa, que es más precisa que la del ticket.
+//
+// Clientes que pagaron: los movimientos de cuenta guardan sólo el DÍA, no la
+// hora, así que un pago se atribuye al cierre por la venta que lo cobró
+// (desde la v9.974 el concepto lleva "#ref" de la venta). Los que no vienen
+// de una venta van por día, y si el movimiento anota quién lo cargó, tiene
+// que ser el mismo que cerró la caja. Los ajustes a mano no son pagos.
+const tsDeMarca = (marca) => {
+  if (!marca) return null;
+  const t = new Date(String(marca).replace(/([+-]\d{2})$/, "$1:00")).getTime();
+  return isNaN(t) ? null : t;
+};
+const momentoVentaInforme = (v) => {
+  const t = tsDeMarca(v.creadaEn);
+  return t != null ? t : momentoDeVenta(v);
+};
+const ventasDelCierre = (data, c) => {
+  const desde = tsDeMarca(c.abiertaEn);
+  if (desde == null) return { ventas: [], devoluciones: [] };
+  const hasta = tsDeMarca(c.cerradaEn) != null ? tsDeMarca(c.cerradaEn) : Date.now();
+  const dias = [diaLocal(c.abiertaEn), diaLocal(c.cerradaEn || new Date(hasta).toISOString())];
+  const todas = (data.ventas || []).filter((v) => {
+    if (c.negocioId && v.negocioId && v.negocioId !== c.negocioId) return false;
+    const t = momentoVentaInforme(v);
+    if (t == null) return v.fecha === dias[0] || v.fecha === dias[1];
+    return t >= desde - 60000 && t <= hasta + 60000;
+  }).sort((a, b) => (momentoVentaInforme(a) || 0) - (momentoVentaInforme(b) || 0));
+  return { ventas: todas.filter((v) => !esDevolucion(v)), devoluciones: todas.filter(esDevolucion) };
+};
+const pagosDelCierre = (data, c, ventas) => {
+  const refs = {};
+  ventas.forEach((v) => { refs[refDeVenta(v)] = v; });
+  const d1 = diaLocal(c.abiertaEn);
+  const d2 = diaLocal(c.cerradaEn || new Date().toISOString());
+  return (data.movimientosCC || []).filter((m) => {
+    if (!m || m.tipo === "cargo" || esCargoDuplicado(m) || esAjusteDeSaldo(m)) return false;
+    if (/^Devoluci/i.test(conceptoLimpio(m))) return false; // crédito por devolución: no es plata que entró
+    const ref = refEnConcepto(m);
+    if (ref) return !!refs[ref];
+    const dia = String(m.fecha || "").slice(0, 10);
+    if (!dia || dia < d1 || dia > d2) return false;
+    if (c.usuarioNombre && m.usuario && m.usuario !== c.usuarioNombre) return false;
+    return true;
+  }).map((m) => ({ ...m, venta: refs[refEnConcepto(m)] || null }));
+};
+// Saldo del cliente tal como quedó en un momento dado (el cierre): la misma
+// cuenta que saldoDeCliente, sin lo que pasó después.
+const saldoClienteHasta = (data, clienteId, hastaTS) => {
+  if (!clienteId) return 0;
+  const diaTope = diaLocal(new Date(hastaTS).toISOString());
+  const ventas = (data.ventas || []).filter((v) => {
+    if (v.clienteId !== clienteId || esDevolucion(v) || v.metodoPago !== "cuenta_corriente") return false;
+    const t = momentoVentaInforme(v);
+    return t == null ? String(v.fecha || "") <= diaTope : t <= hastaTS + 60000;
+  }).reduce((a, v) => a + (v.total || 0), 0);
+  const movs = (data.movimientosCC || []).filter((m) =>
+    m.clienteId === clienteId && !esCargoDuplicado(m) && String(m.fecha || "").slice(0, 10) <= diaTope);
+  const cargos = movs.filter((m) => m.tipo === "cargo").reduce((a, m) => a + (m.monto || 0), 0);
+  const pagos = movs.filter((m) => m.tipo !== "cargo").reduce((a, m) => a + (m.monto || 0), 0);
+  return Math.max(0, ventas + cargos - pagos);
+};
+// Los datos de una transferencia, en un renglón: número, banco, quién la
+// mandó, quién la recibió, monto y fecha.
+const textoComprobantes = (v) => {
   const esc = escaparHTML;
-  const fmtF = (iso) => fechaNumerica(iso);
-  const num = (n) => "<td class='num'>" + money(n) + "</td>";
-  const seccion = (titulo, contenido, vacio) =>
-    "<h2>" + esc(titulo) + "</h2>" + (contenido || "<p class='vacio'>" + esc(vacio) + "</p>");
-  const tabla = (encabezados, filas) =>
-    !filas.length ? "" :
-    "<table><thead><tr>" + encabezados.map((h) => "<th" + (h.num ? " class='num'" : "") + ">" + esc(h.t || h) + "</th>").join("") +
-    "</tr></thead><tbody>" + filas.join("") + "</tbody></table>";
+  const lista = (v && v.comprobantes && v.comprobantes.length)
+    ? v.comprobantes
+    : (v && v.numeroOperacion ? [{ numero: v.numeroOperacion }] : []);
+  return lista.filter((c) => c && (c.numero || c.banco || c.de || c.para || c.monto)).map((c) => [
+    c.numero ? "N° " + esc(c.numero) : "",
+    c.banco ? esc(c.banco) : "",
+    c.de ? "de " + esc(c.de) : "",
+    c.para ? "a " + esc(c.para) : "",
+    c.monto != null && c.monto !== "" && Number(c.monto) ? money(c.monto) : "",
+    c.fecha ? esc(c.fecha) : ""
+  ].filter(Boolean).join(" · ")).join("<br>");
+};
 
-  const negocio = negocioActivo(data);
-  const negId = negocio.id;
-  const ahora = new Date();
-  const ahoraISO = ahora.toISOString();
-  const esperado = efectivoEnCaja(caja);
-  const diferencia = contado != null ? contado - esperado : null;
-
-  // Ventas del turno
-  const ventas = ventasDelTurno(data, caja);
-  const devoluciones = (data.ventas || []).filter((v) => {
-    if (!esDevolucion(v)) return false;
-    const desde = new Date(caja.abiertaEn).getTime();
-    if (v.creadaEn) return new Date(v.creadaEn).getTime() >= desde;
-    return v.fecha >= caja.abiertaEn.slice(0, 10);
-  });
-
-  const totalVentas = ventas.reduce((a, v) => a + v.total, 0);
-  const totalDev = devoluciones.reduce((a, v) => a + Math.abs(v.total), 0);
-  const unidades = ventas.reduce((a, v) => a + (v.items || []).reduce((s, it) => s + it.cantidad, 0), 0);
-
-  // --- Encabezado ---
-  const cabecera =
-    "<div class='cajas'>" +
-    [["Operaciones", String(ventas.length)], ["Unidades vendidas", String(unidades)],
-     ["Total facturado", money(totalVentas)], ["Devoluciones", money(totalDev)],
-     ["Efectivo esperado", money(esperado)],
-     contado != null ? ["Efectivo contado", money(contado)] : null,
-     diferencia != null ? ["Diferencia", (diferencia > 0 ? "+" : "") + money(diferencia)] : null
-    ].filter(Boolean)
-    .map(([t, v]) => "<div class='caja'><span>" + esc(t) + "</span><strong>" + esc(v) + "</strong></div>").join("") +
-    "</div>";
-
-  // --- Detalle de ventas ---
-  const filasV = [...ventas, ...devoluciones].sort((a, b) => (a.creadaEn || a.fecha || "").localeCompare(b.creadaEn || b.fecha || "")).map((v) => {
-    const items = (v.items || []).map((it) => it.cantidad + "× " + esc(it.nombre)).join("<br>");
-    const hora = v.creadaEn ? horaCorta(v.creadaEn) : (v.horaTexto || "");
-    // Comprobantes de la venta
-    const comps = (v.comprobantes || []).filter((c) => c && c.numero);
-    const compTxt = comps.map((c) => [c.numero, c.banco, c.monto != null && c.monto !== "" ? money(c.monto) : "", c.de, c.para].filter(Boolean).join(" · ")).join("<br>");
-    return "<tr><td>" + hora + "</td>" +
-      "<td>" + esc(v.clienteNombre || "Consumidor final") + "</td>" +
-      "<td class='chico'>" + items + "</td>" +
-      "<td>" + esc(esDevolucion(v) ? "Devolución" : (METODO_LABELS[v.metodoPago] || v.metodoPago || "—")) + "</td>" +
-      num(esDevolucion(v) ? -Math.abs(v.total) : v.total) +
-      "<td class='chico'>" + (compTxt || "—") + "</td></tr>";
-  });
-
-  // --- Medios de pago ---
+// Todo lo que hay que saber de un cierre para el informe
+const resumenDeCierre = (data, c) => {
+  const { ventas, devoluciones } = ventasDelCierre(data, c);
   const porMetodo = {};
   ventas.forEach((v) => {
     const partes = (v.pagos && v.pagos.length) ? v.pagos : [{ metodo: v.metodoPago, monto: v.total }];
@@ -21453,284 +21482,246 @@ const armarInformeCierrePDF = (data, caja, contado) => {
       porMetodo[k] = (porMetodo[k] || 0) + (Number(p.monto) || 0);
     });
   });
-  const totalMedios = Object.values(porMetodo).reduce((a, m) => a + m, 0);
-  const filasM = Object.entries(porMetodo).sort((a, b) => b[1] - a[1])
-    .map(([k, m]) => "<tr><td>" + esc(METODO_LABELS[k] || k) + "</td>" + num(m) + "</tr>");
-  if (filasM.length) filasM.push("<tr style='border-top:2px solid #111'><td><strong>Total</strong></td>" + num(totalMedios) + "</tr>");
-
-  // --- Movimientos de caja ---
-  const movs = caja.movimientos || [];
-  const filasC = movs.map((m) => {
-    const salida = m.tipo === "retiro" || m.tipo === "devolucion";
-    return "<tr><td>" + horaCorta(m.fecha) + "</td>" +
-      "<td>" + esc(TIPO_MOV_LABEL[m.tipo] || m.tipo) + "</td>" +
-      "<td>" + esc(m.concepto || "—") + "</td>" +
-      "<td class='num' style='color:" + (salida ? "#c0392b" : "#27ae60") + "'>" + (salida ? "− " : "+ ") + money(m.monto) + "</td></tr>";
-  });
-
-  // --- Saldos pendientes de clientes ---
-  const filasS = (data.clientes || []).map((c) => ({ c, saldo: saldoDeCliente(data, c.id) }))
-    .filter((x) => x.saldo > 0).sort((a, b) => b.saldo - a.saldo)
-    .map((x) => "<tr><td>" + esc(x.c.nombre) + "</td>" +
-      "<td>" + esc(x.c.telefono || "—") + "</td>" + num(x.saldo) + "</tr>");
-  const totalDeuda = (data.clientes || []).reduce((a, c) => a + saldoDeCliente(data, c.id), 0);
-
-  // --- Pagos de clientes con datos de transferencia ---
-  const desdeTS = new Date(caja.abiertaEn).getTime();
-  const pagosCC = (data.movimientosCC || []).filter((m) =>
-    m.tipo !== "cargo" && !esAjusteDeSaldo(m) &&
-    new Date(m.fecha).getTime() >= desdeTS
-  );
-  const filasP = pagosCC.map((m) => {
-    const cli = (data.clientes || []).find((c) => c.id === m.clienteId);
-    return "<tr><td>" + horaCorta(m.fecha) + "</td>" +
-      "<td>" + esc(cli ? cli.nombre : "—") + "</td>" +
-      "<td>" + esc(conceptoLimpio(m) || "Pago") + "</td>" +
-      "<td>" + esc(METODO_LABELS[m.metodo] || m.metodo || "Efectivo") + "</td>" +
-      num(m.monto) + "</tr>";
-  });
-  const totalPagosCC = pagosCC.reduce((a, m) => a + (m.monto || 0), 0);
-  if (filasP.length) filasP.push("<tr style='border-top:2px solid #111'><td colspan='4'><strong>Total cobrado</strong></td>" + num(totalPagosCC) + "</tr>");
-
-  const estilos =
-    "h1{font-size:17pt;margin:0 0 1mm}" +
-    ".sub{font-size:9pt;color:#555;margin-bottom:7mm}" +
-    "h2{font-size:11.5pt;margin:8mm 0 2.5mm;padding-bottom:1.5mm;border-bottom:1.5px solid #111;page-break-after:avoid}" +
-    "table{width:100%;border-collapse:collapse;margin-bottom:2mm}" +
-    "th{text-align:left;font-size:7.5pt;text-transform:uppercase;letter-spacing:.06em;color:#666;border-bottom:1px solid #999;padding:2mm 1.5mm}" +
-    "td{font-size:9pt;border-bottom:1px solid #e4e4e4;padding:2mm 1.5mm;vertical-align:top}" +
-    ".num{font-family:'IBM Plex Mono',monospace;text-align:right;white-space:nowrap}" +
-    ".chico{font-size:8pt;color:#444}" +
-    ".vacio{font-size:9pt;color:#888;margin:2mm 0 0}" +
-    ".cajas{display:flex;flex-wrap:wrap;gap:3mm}" +
-    ".caja{border:1px solid #ccc;border-radius:2mm;padding:3mm 4mm;min-width:34mm}" +
-    ".caja span{display:block;font-size:7.5pt;text-transform:uppercase;letter-spacing:.06em;color:#666}" +
-    ".caja strong{display:block;font-size:13pt;margin-top:1mm}" +
-    ".pie{font-size:8pt;color:#888;margin-top:10mm;border-top:1px solid #ccc;padding-top:3mm}" +
-    "tr{page-break-inside:avoid}";
-
-  const operador = caja.abiertaPor || usuarioActivo(data) || "—";
-  const cuerpo =
-    "<h1>" + esc(negocio.nombre || "Mi negocio") + " — Cierre de caja</h1>" +
-    "<div class='sub'>Desde " + fechaHoraLargaISO(caja.abiertaEn) + " hasta " + fechaHoraLargaISO(ahoraISO) +
-      " · Operador: " + esc(operador) + "</div>" +
-    seccion("Resumen", cabecera) +
-    seccion("Detalle de ventas",
-      tabla(["Hora", "Cliente", "Detalle", "Método", { t: "Total", num: true }, "Comprobante"], filasV),
-      "Sin ventas en el turno.") +
-    seccion("Totales por medio de pago",
-      tabla(["Medio", { t: "Total", num: true }], filasM), "Sin cobros registrados.") +
-    seccion("Movimientos de caja",
-      tabla(["Hora", "Tipo", "Concepto", { t: "Monto", num: true }], filasC), "Sin movimientos de caja.") +
-    seccion("Pagos de clientes recibidos",
-      tabla(["Hora", "Cliente", "Concepto", "Método", { t: "Monto", num: true }], filasP), "Sin pagos de clientes en el turno.") +
-    seccion("Saldos pendientes de clientes",
-      tabla(["Cliente", "Teléfono", { t: "Debe", num: true }], filasS) +
-      (filasS.length ? "<p class='vacio'>Total adeudado: " + money(totalDeuda) + "</p>" : ""),
-      "Ningún cliente tiene saldo pendiente.") +
-    "<div class='pie'>Generado: " + fechaHoraLargaISO(ahoraISO) + " · Enviado por: " + esc(operador) + "</div>";
-
-  return { titulo: "Cierre de caja " + fechaHoraLargaISO(ahoraISO), estilos, cuerpo };
+  const pagos = pagosDelCierre(data, c, ventas);
+  const hastaTS = tsDeMarca(c.cerradaEn) != null ? tsDeMarca(c.cerradaEn) : Date.now();
+  const movs = (c.movimientos || []).slice().sort((a, b) => (tsDeMarca(a.fecha) || 0) - (tsDeMarca(b.fecha) || 0));
+  const esperado = c.efectivoEsperado != null ? Number(c.efectivoEsperado) : efectivoEnCaja(c);
+  const contado = c.efectivoContado != null && c.efectivoContado !== "" ? Number(c.efectivoContado) : null;
+  return {
+    cierre: c, ventas, devoluciones, porMetodo, pagos, movs, hastaTS, esperado, contado,
+    diferencia: contado != null ? contado - esperado : null,
+    totalCobrado: Object.values(porMetodo).reduce((a, m) => a + m, 0),
+    totalDev: devoluciones.reduce((a, v) => a + Math.abs(v.total || 0), 0),
+    unidades: ventas.reduce((a, v) => a + (v.items || []).reduce((s, it) => s + (Number(it.cantidad) || 0), 0), 0),
+    totalPagos: pagos.reduce((a, m) => a + (Number(m.monto) || 0), 0)
+  };
 };
 
-// v9.987 — PDF consolidado de múltiples cierres de caja seleccionados.
-// Suma ventas, medios de pago, movimientos, pagos CC de todos los cierres
-// y genera un informe profesional listo para compartir por WhatsApp.
-const armarInformeCierresConsolidadoPDF = (data, cierresArr) => {
+// Arma el informe. `cierres` es una lista de uno o más cierres (la caja viva
+// se pasa como un cierre sin cerradaEn). Devuelve lo que necesita
+// compartirInformePaginadoPDF.
+const armarInformeCajaPDF = (data, cierresArr) => {
   const esc = escaparHTML;
-  const num = (n) => "<td class='num'>" + money(n) + "</td>";
-  const seccion = (titulo, contenido, vacio) =>
-    "<h2>" + esc(titulo) + "</h2>" + (contenido || "<p class='vacio'>" + esc(vacio) + "</p>");
-  const tabla = (encabezados, filas) =>
-    !filas.length ? "" :
-    "<table><thead><tr>" + encabezados.map((h) => "<th" + (h.num ? " class='num'" : "") + ">" + esc(h.t || h) + "</th>").join("") +
-    "</tr></thead><tbody>" + filas.join("") + "</tbody></table>";
-
+  const num = (n, extra) => "<td class='num'" + (extra ? " style='" + extra + "'" : "") + ">" + money(n) + "</td>";
+  const rojoVerde = (n) => n === 0 ? "#555" : n > 0 ? "#1e8449" : "#c0392b";
+  const fh = (iso) => iso ? fechaConAnio(iso) + " " + hora24(iso) : "—";
   const negocio = negocioActivo(data);
-  const ahora = new Date();
-  const ahoraISO = ahora.toISOString();
-
-  // Ordenar cierres cronológicamente
-  const cierres = [...cierresArr].sort((a, b) => (a.abiertaEn || "").localeCompare(b.abiertaEn || ""));
-  const desde = cierres[0].abiertaEn;
-  const hasta = cierres[cierres.length - 1].cerradaEn || cierres[cierres.length - 1].abiertaEn;
-
-  // --- Acumular datos de todos los cierres ---
-  let todasVentas = [];
-  let todasDev = [];
-  let todosMovs = [];
-  let todosPagosCC = [];
-  const porMetodoGlobal = {};
-  let totalIniciales = 0;
-  let totalContados = 0;
-  let totalDiferencias = 0;
-
-  cierres.forEach((c) => {
-    // Ventas del turno de este cierre
-    const desdeTS = new Date(c.abiertaEn).getTime();
-    const hastaTS = c.cerradaEn ? new Date(c.cerradaEn).getTime() : Infinity;
-    const ventasC = (data.ventas || []).filter((v) => {
-      if (v.anulada || v.eliminada) return false;
-      if (esDevolucion(v)) return false;
-      const ts = v.creadaEn ? new Date(v.creadaEn).getTime() : 0;
-      return ts >= desdeTS && ts <= hastaTS;
-    });
-    const devC = (data.ventas || []).filter((v) => {
-      if (!esDevolucion(v)) return false;
-      const ts = v.creadaEn ? new Date(v.creadaEn).getTime() : 0;
-      return ts >= desdeTS && ts <= hastaTS;
-    });
-    todasVentas = todasVentas.concat(ventasC);
-    todasDev = todasDev.concat(devC);
-
-    // Movimientos de caja
-    todosMovs = todosMovs.concat((c.movimientos || []).map((m) => ({ ...m, _cierre: c })));
-
-    // Medios de pago
-    ventasC.forEach((v) => {
-      const partes = (v.pagos && v.pagos.length) ? v.pagos : [{ metodo: v.metodoPago, monto: v.total }];
-      partes.forEach((p) => {
-        const k = p.metodo || "otro";
-        porMetodoGlobal[k] = (porMetodoGlobal[k] || 0) + (Number(p.monto) || 0);
-      });
-    });
-
-    // Pagos CC del turno
-    const pagosC = (data.movimientosCC || []).filter((m) =>
-      m.tipo !== "cargo" && !esAjusteDeSaldo(m) &&
-      new Date(m.fecha).getTime() >= desdeTS &&
-      new Date(m.fecha).getTime() <= hastaTS
-    );
-    todosPagosCC = todosPagosCC.concat(pagosC);
-
-    totalIniciales += Number(c.montoInicial) || 0;
-    totalContados += Number(c.efectivoContado) || 0;
-    totalDiferencias += Number(c.diferencia) || 0;
-  });
-
-  const totalVentas = todasVentas.reduce((a, v) => a + v.total, 0);
-  const totalDev = todasDev.reduce((a, v) => a + Math.abs(v.total), 0);
-  const unidades = todasVentas.reduce((a, v) => a + (v.items || []).reduce((s, it) => s + it.cantidad, 0), 0);
-
-  // --- Encabezado resumen ---
-  const cabecera =
-    "<div class='cajas'>" +
-    [["Cierres incluidos", String(cierres.length)],
-     ["Operaciones", String(todasVentas.length)],
-     ["Unidades vendidas", String(unidades)],
-     ["Total facturado", money(totalVentas)],
-     ["Devoluciones", money(totalDev)],
-     ["Efectivo inicial (suma)", money(totalIniciales)],
-     ["Efectivo contado (suma)", money(totalContados)],
-     ["Diferencia total", (totalDiferencias > 0 ? "+" : "") + money(totalDiferencias)]
-    ].map(([t, v]) => "<div class='caja'><span>" + esc(t) + "</span><strong>" + esc(v) + "</strong></div>").join("") +
-    "</div>";
-
-  // --- Resumen por cierre ---
-  const filasCierres = cierres.map((c) => {
-    const dif = Number(c.diferencia) || 0;
-    return "<tr><td>" + esc(c.abiertaEn ? fechaConAnio(c.abiertaEn) : "—") + " " + (c.abiertaEn ? hora24(c.abiertaEn) : "") + "</td>" +
-      "<td>" + esc(c.cerradaEn ? fechaConAnio(c.cerradaEn) : "—") + " " + (c.cerradaEn ? hora24(c.cerradaEn) : "") + "</td>" +
-      "<td>" + esc(c.usuarioNombre || "—") + "</td>" +
-      num(c.montoInicial) + num(c.efectivoContado) +
-      "<td class='num' style='color:" + (dif === 0 ? "#666" : dif > 0 ? "#27ae60" : "#c0392b") + "'>" + (dif > 0 ? "+" : "") + money(dif) + "</td></tr>";
-  });
-  filasCierres.push("<tr style='border-top:2px solid #111'><td colspan='3'><strong>Totales</strong></td>" +
-    num(totalIniciales) + num(totalContados) +
-    "<td class='num' style='font-weight:700;color:" + (totalDiferencias === 0 ? "#666" : totalDiferencias > 0 ? "#27ae60" : "#c0392b") + "'>" +
-    (totalDiferencias > 0 ? "+" : "") + money(totalDiferencias) + "</td></tr>");
-
-  // --- Detalle de ventas ---
-  const filasV = [...todasVentas, ...todasDev].sort((a, b) => (a.creadaEn || a.fecha || "").localeCompare(b.creadaEn || b.fecha || "")).map((v) => {
-    const items = (v.items || []).map((it) => it.cantidad + "× " + esc(it.nombre)).join("<br>");
-    const fh = v.creadaEn ? fechaConAnio(v.creadaEn) + " " + horaCorta(v.creadaEn) : (v.horaTexto || "");
-    const comps = (v.comprobantes || []).filter((c) => c && c.numero);
-    const compTxt = comps.map((c) => [c.numero, c.banco, c.monto != null && c.monto !== "" ? money(c.monto) : "", c.de, c.para].filter(Boolean).join(" · ")).join("<br>");
-    return "<tr><td class='chico'>" + fh + "</td>" +
-      "<td>" + esc(v.clienteNombre || "Consumidor final") + "</td>" +
-      "<td class='chico'>" + items + "</td>" +
-      "<td>" + esc(esDevolucion(v) ? "Devolución" : (METODO_LABELS[v.metodoPago] || v.metodoPago || "—")) + "</td>" +
-      num(esDevolucion(v) ? -Math.abs(v.total) : v.total) +
-      "<td class='chico'>" + (compTxt || "—") + "</td></tr>";
-  });
-
-  // --- Medios de pago ---
-  const totalMedios = Object.values(porMetodoGlobal).reduce((a, m) => a + m, 0);
-  const filasM = Object.entries(porMetodoGlobal).sort((a, b) => b[1] - a[1])
-    .map(([k, m]) => "<tr><td>" + esc(METODO_LABELS[k] || k) + "</td>" + num(m) + "</tr>");
-  if (filasM.length) filasM.push("<tr style='border-top:2px solid #111'><td><strong>Total</strong></td>" + num(totalMedios) + "</tr>");
-
-  // --- Movimientos de caja ---
-  const filasC = todosMovs.sort((a, b) => (a.fecha || "").localeCompare(b.fecha || "")).map((m) => {
-    const salida = m.tipo === "retiro" || m.tipo === "devolucion";
-    return "<tr><td class='chico'>" + (m.fecha ? fechaConAnio(m.fecha) + " " + horaCorta(m.fecha) : "—") + "</td>" +
-      "<td>" + esc(TIPO_MOV_LABEL[m.tipo] || m.tipo) + "</td>" +
-      "<td>" + esc(m.concepto || "—") + "</td>" +
-      "<td class='num' style='color:" + (salida ? "#c0392b" : "#27ae60") + "'>" + (salida ? "− " : "+ ") + money(m.monto) + "</td></tr>";
-  });
-
-  // --- Pagos CC ---
-  const filasP = todosPagosCC.sort((a, b) => (a.fecha || "").localeCompare(b.fecha || "")).map((m) => {
-    const cli = (data.clientes || []).find((c) => c.id === m.clienteId);
-    return "<tr><td class='chico'>" + (m.fecha ? fechaConAnio(m.fecha) + " " + horaCorta(m.fecha) : "—") + "</td>" +
-      "<td>" + esc(cli ? cli.nombre : "—") + "</td>" +
-      "<td>" + esc(conceptoLimpio(m) || "Pago") + "</td>" +
-      "<td>" + esc(METODO_LABELS[m.metodo] || m.metodo || "Efectivo") + "</td>" +
-      num(m.monto) + "</tr>";
-  });
-  const totalPagosCC = todosPagosCC.reduce((a, m) => a + (m.monto || 0), 0);
-  if (filasP.length) filasP.push("<tr style='border-top:2px solid #111'><td colspan='4'><strong>Total cobrado</strong></td>" + num(totalPagosCC) + "</tr>");
-
-  // --- Saldos pendientes ---
-  const filasS = (data.clientes || []).map((c) => ({ c, saldo: saldoDeCliente(data, c.id) }))
-    .filter((x) => x.saldo > 0).sort((a, b) => b.saldo - a.saldo)
-    .map((x) => "<tr><td>" + esc(x.c.nombre) + "</td>" +
-      "<td>" + esc(x.c.telefono || "—") + "</td>" + num(x.saldo) + "</tr>");
-  const totalDeuda = (data.clientes || []).reduce((a, c) => a + saldoDeCliente(data, c.id), 0);
-
-  const estilos =
-    "h1{font-size:17pt;margin:0 0 1mm}" +
-    ".sub{font-size:9pt;color:#555;margin-bottom:7mm}" +
-    "h2{font-size:11.5pt;margin:8mm 0 2.5mm;padding-bottom:1.5mm;border-bottom:1.5px solid #111;page-break-after:avoid}" +
-    "table{width:100%;border-collapse:collapse;margin-bottom:2mm}" +
-    "th{text-align:left;font-size:7.5pt;text-transform:uppercase;letter-spacing:.06em;color:#666;border-bottom:1px solid #999;padding:2mm 1.5mm}" +
-    "td{font-size:9pt;border-bottom:1px solid #e4e4e4;padding:2mm 1.5mm;vertical-align:top}" +
-    ".num{font-family:'IBM Plex Mono',monospace;text-align:right;white-space:nowrap}" +
-    ".chico{font-size:8pt;color:#444}" +
-    ".vacio{font-size:9pt;color:#888;margin:2mm 0 0}" +
-    ".cajas{display:flex;flex-wrap:wrap;gap:3mm}" +
-    ".caja{border:1px solid #ccc;border-radius:2mm;padding:3mm 4mm;min-width:34mm}" +
-    ".caja span{display:block;font-size:7.5pt;text-transform:uppercase;letter-spacing:.06em;color:#666}" +
-    ".caja strong{display:block;font-size:13pt;margin-top:1mm}" +
-    ".pie{font-size:8pt;color:#888;margin-top:10mm;border-top:1px solid #ccc;padding-top:3mm}" +
-    "tr{page-break-inside:avoid}";
-
+  const ahoraISO = new Date().toISOString();
   const operador = usuarioActivo(data) || "—";
-  const cuerpo =
-    "<h1>" + esc(negocio.nombre || "Mi negocio") + " — Informe consolidado</h1>" +
-    "<div class='sub'>Período: " + fechaHoraLargaISO(desde) + " a " + fechaHoraLargaISO(hasta) +
-      " · " + cierres.length + " cierre" + (cierres.length !== 1 ? "s" : "") +
-      " · Generado por: " + esc(operador) + "</div>" +
-    seccion("Resumen general", cabecera) +
-    seccion("Detalle por cierre",
-      tabla(["Apertura", "Cierre", "Operador", { t: "Inicial", num: true }, { t: "Contado", num: true }, { t: "Diferencia", num: true }], filasCierres),
-      "Sin cierres.") +
-    seccion("Detalle de ventas",
-      tabla(["Fecha/Hora", "Cliente", "Detalle", "Método", { t: "Total", num: true }, "Comprobante"], filasV),
-      "Sin ventas en el período.") +
-    seccion("Totales por medio de pago",
-      tabla(["Medio", { t: "Total", num: true }], filasM), "Sin cobros registrados.") +
-    seccion("Movimientos de caja",
-      tabla(["Fecha/Hora", "Tipo", "Concepto", { t: "Monto", num: true }], filasC), "Sin movimientos de caja.") +
-    seccion("Pagos de clientes recibidos",
-      tabla(["Fecha/Hora", "Cliente", "Concepto", "Método", { t: "Monto", num: true }], filasP), "Sin pagos de clientes.") +
-    seccion("Saldos pendientes de clientes",
-      tabla(["Cliente", "Teléfono", { t: "Debe", num: true }], filasS) +
-      (filasS.length ? "<p class='vacio'>Total adeudado: " + money(totalDeuda) + "</p>" : ""),
-      "Ningún cliente tiene saldo pendiente.") +
-    "<div class='pie'>Generado: " + fechaHoraLargaISO(ahoraISO) + " · Enviado por: " + esc(operador) + "</div>";
 
-  return { titulo: "Informe consolidado " + fechaConAnio(desde) + " - " + fechaConAnio(hasta), estilos, cuerpo };
+  const cierres = cierresArr.slice().sort((a, b) => (tsDeMarca(a.abiertaEn) || 0) - (tsDeMarca(b.abiertaEn) || 0));
+  const R = cierres.map((c) => resumenDeCierre(data, c));
+  const varios = R.length > 1;
+  const primero = cierres[0];
+  const ultimo = cierres[cierres.length - 1];
+  const hastaGlobal = R[R.length - 1].hastaTS;
+
+  const atomos = [];
+  const h2 = (t) => atomos.push({ html: "<h2 data-pegado='1'>" + esc(t) + "</h2>" });
+  const p = (t, clase) => atomos.push({ html: "<p class='" + (clase || "nota") + "'>" + t + "</p>" });
+  const tabla = (encabezados, filas, vacio) => {
+    if (!filas.length) { if (vacio) p(esc(vacio), "vacio"); return; }
+    atomos.push({ tabla: {
+      cabecera: "<tr>" + encabezados.map((h) => "<th" + (h.num ? " class='num'" : "") + (h.ancho ? " style='width:" + h.ancho + "'" : "") + ">" + esc(h.t != null ? h.t : h) + "</th>").join("") + "</tr>",
+      filas
+    } });
+  };
+  const tarjetas = (pares) => atomos.push({ html: "<div class='cajas'>" + pares.filter(Boolean)
+    .map(([t, v, color]) => "<div class='caja'><span>" + esc(t) + "</span><strong" + (color ? " style='color:" + color + "'" : "") + ">" + esc(v) + "</strong></div>").join("") + "</div>" });
+
+  // --- Filas que se repiten por cierre ---
+  const filasVentas = (r) => [...r.ventas, ...r.devoluciones]
+    .sort((a, b) => (momentoVentaInforme(a) || 0) - (momentoVentaInforme(b) || 0))
+    .map((v) => {
+      const items = (v.items || []).map((it) => (Number(it.cantidad) || 0) + "× " + esc(it.nombre) +
+        (it.talla || it.color ? " <span class='gris'>(" + esc([it.talla && "T. " + it.talla, it.color].filter(Boolean).join(" ")) + ")</span>" : "")).join("<br>");
+      const t = momentoVentaInforme(v);
+      const hora = t != null ? hora24(new Date(t).toISOString()) : (v.horaTexto || "");
+      const dev = esDevolucion(v);
+      const metodo = dev ? "Devolución" : (v.pagos && v.pagos.length > 1)
+        ? v.pagos.map((pg) => (METODO_LABELS[pg.metodo] || pg.metodo) + " " + money(pg.monto)).join("<br>")
+        : (METODO_LABELS[v.metodoPago] || v.metodoPago || "—");
+      const comp = textoComprobantes(v);
+      return "<tr><td class='mono'>" + (varios && v.fecha ? esc(fechaNumerica(String(v.fecha).slice(0, 10))) + " " : "") + esc(hora) + "</td>" +
+        "<td>" + esc(v.clienteNombre || "Consumidor final") + (v.usuarioNombre ? "<div class='gris'>" + esc(v.usuarioNombre) + "</div>" : "") + "</td>" +
+        "<td class='chico'>" + (items || "—") + "</td>" +
+        "<td class='chico'>" + (dev ? "Devolución" : metodo) + "</td>" +
+        num(dev ? -Math.abs(v.total || 0) : (v.total || 0), dev ? "color:#c0392b" : "") +
+        "<td class='chico'>" + (comp || "—") + "</td></tr>";
+    });
+  const filasMovs = (r) => r.movs.map((m) => {
+    const salida = m.tipo === "retiro" || m.tipo === "devolucion" || m.tipo === "egreso";
+    return "<tr><td class='mono'>" + (varios && m.fecha ? esc(fechaConAnio(m.fecha)) + " " : "") + (m.fecha ? esc(hora24(m.fecha)) : "—") + "</td>" +
+      "<td>" + esc(TIPO_MOV_LABEL[m.tipo] || m.tipo) + "</td>" +
+      "<td class='chico'>" + esc(m.concepto || "—") + (m.usuario ? "<div class='gris'>" + esc(m.usuario) + "</div>" : "") + "</td>" +
+      "<td class='num' style='color:" + (salida ? "#c0392b" : "#1e8449") + "'>" + (salida ? "− " : "+ ") + money(m.monto) + "</td></tr>";
+  });
+  // Clientes que pagaron: cuánto pagó cada uno, con qué, y cuánto le queda
+  const filasClientes = (pagos, hastaTS, conFecha) => {
+    const porCliente = {};
+    pagos.forEach((m) => {
+      const k = m.clienteId || "?";
+      if (!porCliente[k]) porCliente[k] = { pagos: [], total: 0 };
+      porCliente[k].pagos.push(m);
+      porCliente[k].total += Number(m.monto) || 0;
+    });
+    const filas = Object.entries(porCliente).map(([id, x]) => {
+      const cli = (data.clientes || []).find((c) => c.id === id);
+      const saldo = saldoClienteHasta(data, id, hastaTS);
+      const detalle = x.pagos.map((m) => {
+        const metodo = m.metodo || (m.venta ? (METODO_LABELS[m.venta.metodoPago] || m.venta.metodoPago) : "") || "Efectivo";
+        const comp = m.venta ? textoComprobantes(m.venta) : "";
+        return "<div>" + (conFecha && m.fecha ? "<span class='gris'>" + esc(fechaNumerica(String(m.fecha).slice(0, 10))) + "</span> " : "") +
+          "<strong>" + money(m.monto) + "</strong> " + esc(metodo) +
+          (m.venta ? " <span class='gris'>(venta " + esc(hora24(new Date(momentoVentaInforme(m.venta) || 0).toISOString())) + ")</span>" : "") +
+          (comp ? "<div class='chico'>" + comp + "</div>" : "") + "</div>";
+      }).join("");
+      return { nombre: cli ? cli.nombre : "Cliente", tel: cli ? cli.telefono : "", total: x.total, saldo, detalle };
+    }).sort((a, b) => b.total - a.total);
+    const html = filas.map((f) => "<tr><td><strong>" + esc(f.nombre) + "</strong>" + (f.tel ? "<div class='gris'>" + esc(f.tel) + "</div>" : "") + "</td>" +
+      num(f.total, "font-weight:600") +
+      "<td class='chico'>" + f.detalle + "</td>" +
+      "<td class='num' style='color:" + (f.saldo > 0 ? "#c0392b" : "#1e8449") + "'>" + (f.saldo > 0 ? money(f.saldo) : "Sin deuda") + "</td></tr>");
+    if (html.length) html.push("<tr class='total'><td>Total cobrado a clientes</td>" + num(filas.reduce((a, f) => a + f.total, 0)) +
+      "<td></td><td class='num'>" + money(filas.reduce((a, f) => a + f.saldo, 0)) + " pendientes</td></tr>");
+    return html;
+  };
+  const filasMedios = (porMetodo) => {
+    const total = Object.values(porMetodo).reduce((a, m) => a + m, 0);
+    const filas = Object.entries(porMetodo).sort((a, b) => b[1] - a[1])
+      .map(([k, m]) => "<tr><td>" + esc(METODO_LABELS[k] || k) + "</td>" + num(m) +
+        "<td class='num gris'>" + (total ? Math.round(m * 100 / total) + " %" : "") + "</td></tr>");
+    if (filas.length) filas.push("<tr class='total'><td>Total cobrado</td>" + num(total) + "<td></td></tr>");
+    return filas;
+  };
+
+  const seccionesDeCierre = (r, prefijo) => {
+    h2(prefijo + "Detalle de ventas");
+    tabla([{ t: "Hora", ancho: varios ? "98px" : "46px" }, { t: "Cliente", ancho: "116px" }, "Artículos", { t: "Medio de pago", ancho: "92px" }, { t: "Total", num: true, ancho: "76px" }, { t: "Comprobante", ancho: "188px" }], filasVentas(r), "Sin ventas en el turno.");
+    h2(prefijo + "Clientes que pagaron");
+    tabla([{ t: "Cliente", ancho: "150px" }, { t: "Pagó", num: true, ancho: "80px" }, "Cómo pagó / comprobante", { t: "Saldo que le queda", num: true, ancho: "110px" }],
+      filasClientes(r.pagos, r.hastaTS, false), "Ningún cliente pagó su cuenta en este turno.");
+    h2(prefijo + "Movimientos de efectivo");
+    tabla([{ t: "Hora", ancho: varios ? "98px" : "46px" }, { t: "Tipo", ancho: "120px" }, "Concepto", { t: "Monto", num: true, ancho: "90px" }], filasMovs(r), "Sin movimientos de efectivo.");
+  };
+
+  // ===== UN SOLO CIERRE =====
+  if (!varios) {
+    const r = R[0];
+    const c = r.cierre;
+    tarjetas([
+      ["Ventas", String(r.ventas.length)], ["Unidades", String(r.unidades)],
+      ["Total cobrado", money(r.totalCobrado)],
+      r.totalDev ? ["Devoluciones", money(r.totalDev)] : null,
+      ["Efectivo inicial", money(c.montoInicial || 0)], ["Efectivo esperado", money(r.esperado)],
+      r.contado != null ? ["Efectivo contado", money(r.contado)] : null,
+      r.diferencia != null ? ["Diferencia", (r.diferencia > 0 ? "+" : "") + money(r.diferencia), rojoVerde(r.diferencia)] : null,
+      r.totalPagos ? ["Cobrado a clientes", money(r.totalPagos)] : null
+    ]);
+    h2("Totales por medio de pago");
+    tabla(["Medio", { t: "Total", num: true }, { t: "", num: true }], filasMedios(r.porMetodo), "Sin cobros registrados.");
+    seccionesDeCierre(r, "");
+    const titulo = "Cierre de caja — " + fh(c.abiertaEn) + " a " + fh(c.cerradaEn || ahoraISO);
+    return {
+      archivo: "Cierre de caja " + fechaConAnio(c.abiertaEn).replace(/\//g, "-") + " " + hora24(c.abiertaEn).replace(":", ""),
+      titulo, negocio: negocio.nombre || "Mi negocio",
+      subtitulo: [c.negocioNombre && c.negocioNombre !== negocio.nombre ? c.negocioNombre : "", "Operador: " + (c.usuarioNombre || c.abiertaPor || operador)].filter(Boolean).join(" · "),
+      generado: "Generado el " + fechaHoraLargaISO(ahoraISO) + " por " + operador,
+      atomos
+    };
+  }
+
+  // ===== VARIOS CIERRES =====
+  const sum = (f) => R.reduce((a, r) => a + f(r), 0);
+  const porMetodoG = {};
+  R.forEach((r) => Object.entries(r.porMetodo).forEach(([k, m]) => { porMetodoG[k] = (porMetodoG[k] || 0) + m; }));
+  const totalInicial = sum((r) => Number(r.cierre.montoInicial) || 0);
+  const totalContado = sum((r) => r.contado || 0);
+  const totalDif = sum((r) => r.diferencia || 0);
+  // Los mismos pagos no se cuentan dos veces si dos cierres del mismo día se los atribuyen
+  const vistos = {};
+  const pagosG = [];
+  R.forEach((r) => r.pagos.forEach((m) => { if (!vistos[m.id]) { vistos[m.id] = 1; pagosG.push(m); } }));
+
+  tarjetas([
+    ["Cierres", String(R.length)], ["Ventas", String(sum((r) => r.ventas.length))], ["Unidades", String(sum((r) => r.unidades))],
+    ["Total cobrado", money(sum((r) => r.totalCobrado))],
+    sum((r) => r.totalDev) ? ["Devoluciones", money(sum((r) => r.totalDev))] : null,
+    ["Efectivo inicial", money(totalInicial)], ["Efectivo contado", money(totalContado)],
+    ["Diferencia total", (totalDif > 0 ? "+" : "") + money(totalDif), rojoVerde(totalDif)],
+    pagosG.length ? ["Cobrado a clientes", money(pagosG.reduce((a, m) => a + (Number(m.monto) || 0), 0))] : null
+  ]);
+
+  h2("Resumen por cierre");
+  const filasC = R.map((r, i) => {
+    const c = r.cierre;
+    return "<tr><td class='mono'>" + (i + 1) + "</td><td class='mono'>" + esc(fh(c.abiertaEn)) + "</td><td class='mono'>" + esc(fh(c.cerradaEn)) + "</td>" +
+      "<td>" + esc(c.usuarioNombre || "—") + (c.negocioNombre ? "<div class='gris'>" + esc(c.negocioNombre) + "</div>" : "") + "</td>" +
+      "<td class='num'>" + r.ventas.length + "</td>" + num(r.totalCobrado) + num(c.montoInicial || 0) + num(r.contado != null ? r.contado : 0) +
+      "<td class='num' style='color:" + rojoVerde(r.diferencia || 0) + "'>" + ((r.diferencia || 0) > 0 ? "+" : "") + money(r.diferencia || 0) + "</td></tr>";
+  });
+  filasC.push("<tr class='total'><td colspan='4'>Totales</td><td class='num'>" + sum((r) => r.ventas.length) + "</td>" +
+    num(sum((r) => r.totalCobrado)) + num(totalInicial) + num(totalContado) +
+    "<td class='num' style='color:" + rojoVerde(totalDif) + "'>" + (totalDif > 0 ? "+" : "") + money(totalDif) + "</td></tr>");
+  tabla(["#", "Apertura", "Cierre", "Operador", { t: "Ventas", num: true }, { t: "Cobrado", num: true }, { t: "Inicial", num: true }, { t: "Contado", num: true }, { t: "Diferencia", num: true }], filasC);
+
+  h2("Totales por medio de pago (todos los cierres)");
+  tabla(["Medio", { t: "Total", num: true }, { t: "", num: true }], filasMedios(porMetodoG), "Sin cobros registrados.");
+
+  h2("Clientes que pagaron (todos los cierres)");
+  tabla([{ t: "Cliente", ancho: "150px" }, { t: "Pagó", num: true, ancho: "80px" }, "Cómo pagó / comprobante", { t: "Saldo que le queda", num: true, ancho: "110px" }],
+    filasClientes(pagosG, hastaGlobal, true), "Ningún cliente pagó su cuenta en estos cierres.");
+
+  R.forEach((r, i) => {
+    const c = r.cierre;
+    atomos.push({ html: "<h1 class='bloque' data-pegado='1'>Cierre " + (i + 1) + " de " + R.length + " — " + esc(fh(c.abiertaEn)) + " a " + esc(fh(c.cerradaEn)) +
+      "<span class='sub'>" + esc([c.usuarioNombre, c.negocioNombre].filter(Boolean).join(" · ")) +
+      " · Cobrado " + money(r.totalCobrado) + " · Efectivo esperado " + money(r.esperado) +
+      (r.contado != null ? " · contado " + money(r.contado) : "") +
+      (r.diferencia != null ? " · diferencia " + (r.diferencia > 0 ? "+" : "") + money(r.diferencia) : "") + "</span></h1>" });
+    seccionesDeCierre(r, "");
+  });
+
+  const d1 = fechaConAnio(primero.abiertaEn), d2 = fechaConAnio(ultimo.cerradaEn || ultimo.abiertaEn);
+  return {
+    archivo: "Cierres de caja " + d1.replace(/\//g, "-") + " a " + d2.replace(/\//g, "-"),
+    titulo: "Informe de " + R.length + " cierres de caja — " + d1 + " a " + d2,
+    negocio: negocio.nombre || "Mi negocio",
+    subtitulo: "Del " + fh(primero.abiertaEn) + " al " + fh(ultimo.cerradaEn || ultimo.abiertaEn),
+    generado: "Generado el " + fechaHoraLargaISO(ahoraISO) + " por " + operador,
+    atomos
+  };
+};
+
+// La caja abierta, vista como un cierre que termina ahora, con lo contado
+const cierreDeCajaViva = (data, caja, contado) => {
+  const negocio = negocioActivo(data);
+  const esperado = efectivoEnCaja(caja);
+  return {
+    ...caja,
+    negocioId: caja.negocioId || negocio.id,
+    negocioNombre: caja.negocioNombre || negocio.nombre,
+    usuarioNombre: caja.abiertaPor || usuarioActivo(data),
+    cerradaEn: new Date().toISOString(),
+    efectivoEsperado: esperado,
+    efectivoContado: contado != null ? contado : null,
+    diferencia: contado != null ? contado - esperado : null
+  };
+};
+
+// Genera el PDF de uno o varios cierres y abre el menú de compartir (WhatsApp
+// en el teléfono) o lo descarga (computadora). `estado` recibe los avisos.
+const enviarInformeCajaPDF = async (data, cierres, estado) => {
+  try {
+    const informe = armarInformeCajaPDF(data, cierres);
+    const r = await compartirInformePaginadoPDF(informe, estado);
+    estado("");
+    if (r === "descargado") avisar("El informe se descargó", { tono: "info" });
+  } catch (e) {
+    estado("");
+    const m = String((e && e.message) || e);
+    if (!/abort|cancel/i.test(m)) avisar("No se pudo armar el PDF. " + m, { tono: "error" });
+  }
 };
 
 function CerrarCajaModal({ data, caja, onCerrar, onClose }) {
@@ -21911,23 +21902,12 @@ function CerrarCajaModal({ data, caja, onCerrar, onClose }) {
       style: { fontSize: 12, marginTop: 8, textAlign: "center", color: impEstado === "error" ? "var(--rose)" : "var(--muted)" }
     }, impMensaje),
 
-    // v9.986 — Informe detallado PDF
+    // v9.986 — Informe detallado PDF (v9.988: mismo motor que el historial,
+    // con la caja viva como un cierre que termina ahora y lo contado)
     React.createElement(Button, {
       tone: "ghost",
       disabled: !!estadoPDF,
-      onClick: async () => {
-        try {
-          const doc = armarInformeCierrePDF(data, caja, contado);
-          setEstadoPDF("Preparando el PDF…");
-          const r = await compartirComoPDF(doc.titulo, doc.estilos, doc.cuerpo, setEstadoPDF);
-          setEstadoPDF("");
-          if (r === "descargado") avisar("El informe se descargó", { tono: "info" });
-        } catch (e) {
-          setEstadoPDF("");
-          const m = String((e && e.message) || e);
-          if (!/abort|cancel/i.test(m)) avisar("No se pudo armar el PDF. " + m, { tono: "error" });
-        }
-      },
+      onClick: () => enviarInformeCajaPDF(data, [cierreDeCajaViva(data, caja, contado)], setEstadoPDF),
       style: { width: "100%", justifyContent: "center", marginTop: 6 }
     },
       React.createElement(FileText, { size: 14 }),
@@ -22649,7 +22629,8 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
               )
             )),
 
-    // v9.987 — Botón PDF consolidado (visible cuando hay cierres seleccionados)
+    // v9.987 — Botón PDF de los cierres marcados (uno solo o varios juntos).
+    // v9.988: usa el motor único, paginado.
     pestana === "cierres" && seleccion.size > 0 && React.createElement(
       "div",
       { style: { marginTop: 10, display: "flex", flexDirection: "column", gap: 6, alignItems: "center" } },
@@ -22658,25 +22639,14 @@ function HistorialCajaModal({ data, persist, caja, cierres, onVolver, onClose })
       React.createElement(Button, {
         tone: "ghost",
         disabled: !!estadoPDFC,
-        onClick: async () => {
-          try {
-            const sel = cierres.filter((x) => seleccion.has(x.id));
-            if (!sel.length) return;
-            const doc = armarInformeCierresConsolidadoPDF(data, sel);
-            setEstadoPDFC("Preparando el PDF…");
-            const r = await compartirComoPDF(doc.titulo, doc.estilos, doc.cuerpo, setEstadoPDFC);
-            setEstadoPDFC("");
-            if (r === "descargado") avisar("El informe se descargó", { tono: "info" });
-          } catch (e) {
-            setEstadoPDFC("");
-            const m = String((e && e.message) || e);
-            if (!/abort|cancel/i.test(m)) avisar("No se pudo armar el PDF. " + m, { tono: "error" });
-          }
+        onClick: () => {
+          const sel = cierres.filter((x) => seleccion.has(x.id));
+          if (sel.length) enviarInformeCajaPDF(data, sel, setEstadoPDFC);
         },
         style: { width: "100%", justifyContent: "center" }
       },
         React.createElement(FileText, { size: 14 }),
-        estadoPDFC || " Enviar informe consolidado (PDF)")
+        estadoPDFC || (seleccion.size === 1 ? " Enviar PDF del cierre" : " Enviar PDF de los " + seleccion.size + " cierres"))
     ),
 
     detalle && React.createElement(DetalleCierreModal, { cierre: detalle, data, persist, onClose: () => setDetalle(null) }),
@@ -26755,6 +26725,163 @@ async function compartirComoPDF(titulo, estilos, cuerpo, avisar2) {
     return "descargado";
   } finally {
     document.body.removeChild(caja);
+  }
+}
+
+// ===== Informe en PDF, hoja por hoja (v9.988) =====
+// compartirComoPDF dibuja el documento entero en una imagen larga y la corta
+// cada 297 mm: los renglones que caen en el corte quedan partidos entre dos
+// hojas. Acá el informe llega en "átomos" (un título, las tarjetas, cada fila
+// de una tabla) y se van acomodando en hojas A4 de verdad: cuando un renglón
+// no entra pasa entero a la hoja siguiente, la tabla repite su encabezado y
+// un título nunca queda solo al pie. Cada hoja lleva membrete y numeración.
+// Se captura una hoja por vez, que en el teléfono pesa mucho menos que un
+// lienzo de varios metros.
+const ESTILOS_INFORME_PDF =
+  ".hoja{width:794px;height:1123px;padding:34px 38px 30px;box-sizing:border-box;position:relative;overflow:hidden;background:#fff;color:#111;font-family:Inter,system-ui,sans-serif;font-size:11.5px;line-height:1.35}" +
+  ".hoja *{box-sizing:border-box}" +
+  ".hoja-cab{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;border-bottom:2px solid #111;padding-bottom:7px;margin-bottom:12px}" +
+  ".hoja-cab .neg{font-size:15px;font-weight:700;letter-spacing:-.01em;color:#111}" +
+  ".hoja-cab .tit{font-size:11px;color:#333;margin-top:2px}" +
+  ".hoja-cab .sub{font-size:10px;color:#666;margin-top:1px}" +
+  ".hoja-cab .der{text-align:right;font-size:9.5px;color:#666;white-space:nowrap}" +
+  ".hoja-pie{position:absolute;left:38px;right:38px;bottom:12px;display:flex;justify-content:space-between;font-size:9px;color:#888;border-top:1px solid #ddd;padding-top:5px}" +
+  ".hoja-cuerpo h1{font-size:13px;margin:14px 0 4px;padding:8px 10px;background:#f1f3f6;border-left:4px solid #111;border-radius:0 6px 6px 0;color:#111;letter-spacing:-.01em;font-family:Inter,system-ui,sans-serif}" +
+  ".hoja-cuerpo h1 .sub{display:block;font-size:10px;font-weight:500;color:#555;margin-top:2px}" +
+  ".hoja-cuerpo h2{font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin:14px 0 5px;padding-bottom:3px;border-bottom:1px solid #111;color:#111;font-family:Inter,system-ui,sans-serif}" +
+  ".hoja-cuerpo table{width:100%;border-collapse:collapse;margin:0 0 4px;table-layout:auto}" +
+  ".hoja-cuerpo th{text-align:left;font-size:8.5px;text-transform:uppercase;letter-spacing:.06em;color:#666;font-weight:600;border-bottom:1px solid #999;padding:4px 5px;white-space:nowrap;background:#fff}" +
+  ".hoja-cuerpo td{font-size:10.5px;color:#111;border-bottom:1px solid #e6e6e6;padding:4px 5px;vertical-align:top;line-height:1.3;overflow-wrap:anywhere}" +
+  ".hoja-cuerpo tr.total td{border-top:2px solid #111;border-bottom:none;font-weight:700;background:#fafafa}" +
+  ".hoja-cuerpo table.sigue tbody tr:last-child td{border-bottom:1px dashed #bbb}" +
+  ".hoja-cuerpo .num{font-family:'IBM Plex Mono',monospace;text-align:right;white-space:nowrap}" +
+  ".hoja-cuerpo .mono{font-family:'IBM Plex Mono',monospace;white-space:nowrap}" +
+  ".hoja-cuerpo .chico{font-size:9.5px;color:#333}" +
+  ".hoja-cuerpo .gris{font-size:9px;color:#777}" +
+  ".hoja-cuerpo .vacio{font-size:10px;color:#888;margin:2px 0 6px;font-style:italic}" +
+  ".hoja-cuerpo .nota{font-size:10px;color:#555;margin:2px 0 6px}" +
+  ".hoja-cuerpo .cajas{display:flex;flex-wrap:wrap;gap:8px;margin:2px 0 6px}" +
+  ".hoja-cuerpo .caja{flex:1 1 120px;border:1px solid #d5d5d5;border-radius:7px;padding:8px 10px;min-width:120px}" +
+  ".hoja-cuerpo .caja span{display:block;font-size:8.5px;text-transform:uppercase;letter-spacing:.06em;color:#666}" +
+  ".hoja-cuerpo .caja strong{display:block;font-size:14px;margin-top:3px;font-family:'IBM Plex Mono',monospace;color:#111;white-space:nowrap}" +
+  ".hoja-cuerpo .continua{font-size:9px;color:#888;font-style:italic;margin:0 0 3px}";
+
+// Reparte los átomos en hojas dentro de `raiz` y devuelve las hojas.
+const armarHojasInforme = (raiz, informe) => {
+  const ALTO = 1123, ABAJO = 30, PIE = 22;
+  const tope = ALTO - ABAJO - PIE;
+  const esc = escaparHTML;
+  const hojas = [];
+  let hoja = null, cuerpo = null;
+  const nuevaHoja = () => {
+    hoja = document.createElement("div");
+    hoja.className = "hoja";
+    hoja.innerHTML =
+      "<div class='hoja-cab'><div><div class='neg'>" + esc(informe.negocio) + "</div>" +
+      "<div class='tit'>" + esc(informe.titulo) + "</div>" +
+      (informe.subtitulo ? "<div class='sub'>" + esc(informe.subtitulo) + "</div>" : "") + "</div>" +
+      "<div class='der'>" + esc(informe.generado || "") + "</div></div>" +
+      "<div class='hoja-cuerpo'></div><div class='hoja-pie'></div>";
+    raiz.appendChild(hoja);
+    cuerpo = hoja.querySelector(".hoja-cuerpo");
+    hojas.push(hoja);
+  };
+  const desborda = () => (cuerpo.getBoundingClientRect().bottom - hoja.getBoundingClientRect().top) > tope;
+  const nodo = (html) => { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; };
+  // Pasa a la hoja siguiente. Si lo último de la hoja era un título, se lo
+  // lleva, para que no quede solo abajo de todo.
+  const pasarDeHoja = () => {
+    const ultimo = cuerpo.lastElementChild;
+    const arrastra = ultimo && ultimo.dataset && ultimo.dataset.pegado && cuerpo.children.length > 1 ? ultimo : null;
+    if (arrastra) cuerpo.removeChild(arrastra);
+    nuevaHoja();
+    if (arrastra) cuerpo.appendChild(arrastra);
+  };
+  const abrirTabla = (cabecera, sigue) => {
+    if (sigue) cuerpo.appendChild(nodo("<p class='continua'>(continúa)</p>"));
+    const t = nodo("<table><thead>" + cabecera + "</thead><tbody></tbody></table>");
+    cuerpo.appendChild(t);
+    return t;
+  };
+  nuevaHoja();
+  (informe.atomos || []).forEach((a) => {
+    if (a.html) {
+      const n = nodo(a.html);
+      cuerpo.appendChild(n);
+      if (desborda() && cuerpo.children.length > 1) { cuerpo.removeChild(n); pasarDeHoja(); cuerpo.appendChild(n); }
+      return;
+    }
+    if (!a.tabla) return;
+    let t = abrirTabla(a.tabla.cabecera, false);
+    if (desborda() && cuerpo.children.length > 1) { cuerpo.removeChild(t); pasarDeHoja(); t = abrirTabla(a.tabla.cabecera, false); }
+    let tb = t.querySelector("tbody");
+    let emitidas = 0;
+    a.tabla.filas.forEach((fila) => {
+      let tr = nodo(fila);
+      tb.appendChild(tr);
+      if (!desborda()) { emitidas++; return; }
+      // No entra: fuera de esta hoja y a la siguiente, con el encabezado de nuevo
+      tb.removeChild(tr);
+      if (!tb.children.length) {
+        // La tabla quedó vacía en esta hoja: se saca entera (y el título se viene)
+        cuerpo.removeChild(t);
+        if (cuerpo.lastElementChild && cuerpo.lastElementChild.className === "continua") cuerpo.removeChild(cuerpo.lastElementChild);
+        if (cuerpo.children.length) pasarDeHoja();
+      } else {
+        t.classList.add("sigue");
+        nuevaHoja();
+      }
+      t = abrirTabla(a.tabla.cabecera, emitidas > 0);
+      tb = t.querySelector("tbody");
+      tr = nodo(fila);
+      tb.appendChild(tr);
+      emitidas++;
+    });
+  });
+  hojas.forEach((h, i) => {
+    h.querySelector(".hoja-pie").innerHTML =
+      "<span>" + esc(informe.negocio) + " · " + esc(informe.titulo) + "</span>" +
+      "<span>Página " + (i + 1) + " de " + hojas.length + "</span>";
+  });
+  return hojas;
+};
+
+async function compartirInformePaginadoPDF(informe, avisar2) {
+  const bajar = (url) => new Promise((ok, mal) => {
+    const s = document.createElement("script");
+    s.src = url; s.onload = ok; s.onerror = () => mal(new Error("sin internet"));
+    document.head.appendChild(s);
+  });
+  if (avisar2) avisar2("Preparando el PDF…");
+  if (!window.html2canvas) await bajar("https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js");
+  if (!window.jspdf) await bajar("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js");
+
+  const raiz = document.createElement("div");
+  raiz.style.cssText = "position:fixed;left:-10000px;top:0;width:794px;background:#fff;color:#111";
+  raiz.innerHTML = "<style>" + ESTILOS_INFORME_PDF + (informe.estilos || "") + "</style>";
+  document.body.appendChild(raiz);
+  try {
+    const hojas = armarHojasInforme(raiz, informe);
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ unit: "mm", format: "a4" });
+    for (let i = 0; i < hojas.length; i++) {
+      if (avisar2) avisar2("Armando hoja " + (i + 1) + " de " + hojas.length + "…");
+      hojas.forEach((h) => { h.style.display = h === hojas[i] ? "" : "none"; });
+      const lienzo = await window.html2canvas(hojas[i], { scale: 2, backgroundColor: "#ffffff", useCORS: true, logging: false });
+      if (i > 0) pdf.addPage();
+      pdf.addImage(lienzo.toDataURL("image/jpeg", 0.9), "JPEG", 0, 0, 210, 297);
+    }
+    const nombre = String(informe.archivo || informe.titulo || "Informe").replace(/[\\/:*?"<>|]+/g, "-").trim() + ".pdf";
+    const archivo = new File([pdf.output("blob")], nombre, { type: "application/pdf" });
+    if (avisar2) avisar2("Abriendo para compartir…");
+    if (navigator.canShare && navigator.canShare({ files: [archivo] })) {
+      await navigator.share({ files: [archivo], title: informe.titulo });
+      return "compartido";
+    }
+    pdf.save(archivo.name);
+    return "descargado";
+  } finally {
+    document.body.removeChild(raiz);
   }
 }
 
@@ -35790,6 +35917,11 @@ function CajaReportes({ data, rango, persist, dataReal }) {
   const [menu, setMenu] = useState(null);
   const [detalle, setDetalle] = useState(null);
   const [forzando, setForzando] = useState(null);
+  // v9.988 — Cierres marcados para mandar un solo PDF con todos
+  const [seleccion, setSeleccion] = useState(new Set());
+  const [estadoPDF, setEstadoPDF] = useState("");
+  const alternarSel = (id) => setSeleccion((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const cierresMarcados = () => (real.cajasCerradas || []).filter((c) => seleccion.has(c.id));
   // Los datos completos, sin los filtros de la vista: el cierre forzado se
   // guarda sobre éstos para no pisar ventas que el filtro dejó afuera.
   const real = dataReal || data;
@@ -36029,7 +36161,15 @@ function CajaReportes({ data, rango, persist, dataReal }) {
               React.createElement("thead", null, React.createElement(
                 "tr",
                 null,
-                React.createElement("th", { style: { paddingLeft: 20 } }, "Fecha de apertura"),
+                React.createElement("th", { style: { paddingLeft: 16, paddingRight: 0, width: 34 } },
+                  React.createElement("input", {
+                    type: "checkbox",
+                    title: "Marcar todos los cierres de la lista",
+                    checked: cierres.length > 0 && cierres.every((c) => seleccion.has(c.id)),
+                    onChange: () => setSeleccion(cierres.every((c) => seleccion.has(c.id)) ? new Set() : new Set(cierres.map((c) => c.id))),
+                    style: { cursor: "pointer", accentColor: "var(--denim)", width: 16, height: 16 }
+                  })),
+                React.createElement("th", { style: { paddingLeft: 8 } }, "Fecha de apertura"),
                 React.createElement("th", null, "Usuario"),
                 React.createElement("th", null, "Fecha de cierre"),
                 React.createElement("th", { style: { textAlign: "right" } }, "Monto inicial"),
@@ -36044,11 +36184,18 @@ function CajaReportes({ data, rango, persist, dataReal }) {
                 const IconoDif = dif > 0 ? TrendingUp : TrendingDown;
                 return React.createElement(
                   "tr",
-                  { key: c.id },
+                  { key: c.id, style: seleccion.has(c.id) ? { background: "var(--denim-soft)" } : undefined },
+                  React.createElement("td", { style: { paddingLeft: 16, paddingRight: 0, width: 34 } },
+                    React.createElement("input", {
+                      type: "checkbox",
+                      checked: seleccion.has(c.id),
+                      onChange: () => alternarSel(c.id),
+                      style: { cursor: "pointer", accentColor: "var(--denim)", width: 16, height: 16 }
+                    })),
                   // Fecha arriba, hora abajo: se escanea más rápido
                   React.createElement(
                     "td",
-                    { style: { paddingLeft: 20, whiteSpace: "nowrap" } },
+                    { style: { paddingLeft: 8, whiteSpace: "nowrap" } },
                     React.createElement("div", { style: { fontSize: 13.5 } }, c.abiertaEn ? fechaConAnio(c.abiertaEn) : "\u2014"),
                     c.abiertaEn && React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 2, fontFamily: "'IBM Plex Mono', monospace" } }, hora24(c.abiertaEn))
                   ),
@@ -36096,6 +36243,7 @@ function CajaReportes({ data, rango, persist, dataReal }) {
                       { ancla: menu.rect, onClose: () => setMenu(null) },
                       [
                         ["Ver el detalle", () => { setDetalle(c); setMenu(null); }, Search],
+                        ["Enviar PDF del cierre", () => { setMenu(null); enviarInformeCajaPDF(real, [c], setEstadoPDF); }, FileText],
                         ["Imprimir el cierre", () => { imprimirCierre(c, data); setMenu(null); }, Receipt],
                         // S\u00F3lo el due\u00F1o puede borrar un cierre (uno duplicado, de prueba o mal hecho)
                         ...(persist && esPropietario(real) ? [["Eliminar cierre", () => { setMenu(null); eliminarCierre(c); }, Trash2, true]] : [])
@@ -36109,7 +36257,26 @@ function CajaReportes({ data, rango, persist, dataReal }) {
                 );
               }))
             )
-          )
+          ),
+
+      // v9.988 — Con cierres marcados: un solo PDF que los suma y detalla
+      (seleccion.size > 0 || estadoPDF) && React.createElement(
+        "div",
+        { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "12px 20px", borderTop: "1px solid var(--line)", background: "var(--surface-2)" } },
+        React.createElement("div", { style: { fontSize: 13, color: "var(--muted)" } },
+          React.createElement("strong", { style: { color: "var(--ink)" } }, seleccion.size),
+          seleccion.size === 1 ? " cierre marcado" : " cierres marcados",
+          seleccion.size > 0 && React.createElement("button", {
+            onClick: () => setSeleccion(new Set()),
+            style: { background: "none", border: "none", cursor: "pointer", color: "var(--denim-light)", fontSize: 12.5, fontWeight: 600, fontFamily: "'Inter', sans-serif", marginLeft: 8 }
+          }, "Desmarcar")),
+        React.createElement(Button, {
+          disabled: !!estadoPDF || seleccion.size === 0,
+          onClick: () => { const sel = cierresMarcados(); if (sel.length) enviarInformeCajaPDF(real, sel, setEstadoPDF); },
+          style: { padding: "10px 16px" }
+        }, React.createElement(FileText, { size: 14 }), " ",
+          estadoPDF || (seleccion.size === 1 ? "Enviar PDF del cierre" : "Enviar PDF de los " + seleccion.size + " cierres"))
+      )
     ),
 
     detalle && React.createElement(DetalleCierreModal, { cierre: detalle, data, persist, datos: real, onClose: () => setDetalle(null) }),
@@ -36215,6 +36382,7 @@ function DetalleCierreModal({ cierre: cierreAbierto, onClose, data, persist, dat
   const [ampliado, setAmpliado] = useState(null);
   const [verTodo, setVerTodo] = useState(false);
   const [impMerc, setImpMerc] = useState("");
+  const [estadoPDF, setEstadoPDF] = useState(""); // v9.988 — informe PDF del cierre
 
   // v9.979 — Eliminar un renglón de efectivo de un cierre YA CERRADO.
   // Es del propietario. Al sacarlo se recalculan el efectivo esperado y la
@@ -36585,7 +36753,10 @@ function DetalleCierreModal({ cierre: cierreAbierto, onClose, data, persist, dat
     // para imprimir había que arrastrar la pantalla entera.
     React.createElement(
       "div",
-      { className: "ct-pie-fijo", style: { display: "flex", justifyContent: "flex-end", gap: 10 } },
+      { className: "ct-pie-fijo", style: { display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" } },
+      // v9.988 — El mismo informe detallado del cierre de caja, para WhatsApp
+      React.createElement(Button, { tone: "ghost", disabled: !!estadoPDF, onClick: () => enviarInformeCajaPDF(real, [cierre], setEstadoPDF), style: { padding: "12px 16px" } },
+        React.createElement(FileText, { size: 15 }), " ", estadoPDF || "PDF"),
       React.createElement(Button, { tone: "ghost", onClick: () => imprimirCierre(cierre, data), style: { padding: "12px 20px" } },
         React.createElement(Receipt, { size: 15 }), " Imprimir"),
       React.createElement(Button, { onClick: onClose, style: { padding: "12px 24px" } }, "Cerrar")
