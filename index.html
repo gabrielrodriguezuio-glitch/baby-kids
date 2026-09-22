@@ -129,7 +129,9 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.988";
+const VERSION_APP = "9.990";
+// v9.990 (2026-09-22) — Productos: se guarda fecha Y hora de carga (antes sólo el día, y los del mismo día quedaban en orden al azar). Lo recién cargado queda siempre en la última página, sin importar categoría; al crear uno la lista salta sola a esa página.
+// v9.989 (2026-09-22) — Fix: el dispositivo del Punto de Venta (buscador del escáner siempre enfocado) no recibía productos nuevos ni cambios: el refresco y el pulso se posponían para siempre. Ahora sólo esperan si se está tecleando.
 // v9.988 (2026-09-22) — Informe PDF de caja: un solo motor para el cierre en curso, un cierre del historial y varios juntos; "Clientes que pagaron" (pagó, cómo, saldo que le queda) en vez de la lista de todos los clientes; PDF paginado en hojas A4 sin cortar renglones; botones en Detalle del cierre y en Reportes > Historial de Caja (casillas + "Enviar PDF")
 // v9.987 (2026-09-21) — PDF consolidado: seleccionar múltiples cierres de caja y generar un informe PDF detallado para compartir por WhatsApp
 // v9.986 (2026-09-21) — Cierre de caja: botón para enviar informe detallado en PDF (ventas, clientes, medios de pago, saldos, comprobantes)
@@ -1822,18 +1824,33 @@ const claveCronologica = (f) => {
 // Lo que no tiene ninguna fecha (importaciones viejas) queda al principio,
 // que es lo correcto: son los más antiguos. Y lo recién cargado en el
 // teléfono, que todavía no tiene hora de la nube, queda al final de su día.
+//
+// v9.990 — Hasta acá la app guardaba sólo el DÍA de carga ("2026-09-22") y la
+// nube lo devolvía como medianoche: todos los productos de un mismo día
+// empataban y quedaban en orden al azar, así que el recién cargado podía
+// caer en cualquier página. Ahora se guarda fecha y hora exactas y se ordena
+// por el momento real. Los viejos que sólo tienen el día van al principio de
+// ese día, así cualquier producto nuevo queda siempre después de ellos.
+const esSoloDia = (f) => f.length <= 10 || /T00:00(:00(\.0+)?)?(Z|[+-]00(:?00)?)?$/.test(f);
+const momentoDeCarga = (p) => {
+  const f = String((p && (p.creadoEn || p.fechaAlta)) || "");
+  if (!f) return null;
+  const t = esSoloDia(f)
+    ? new Date(f.slice(0, 10) + "T00:00:00").getTime()
+    : new Date(f.replace(/([+-]\d{2})$/, "$1:00")).getTime();
+  return isNaN(t) ? null : t;
+};
 const claveDeCarga = (p) => {
-  const f = (p && (p.creadoEn || p.fechaAlta)) || "";
-  const dia = f ? f.slice(0, 10) : "0000-00-00";
-  const hora = (f && f.length > 10) ? f.slice(11, 19) : "99:99:99";
-  return dia + " " + hora + " " + ((p && p.id) || "");
+  const t = momentoDeCarga(p);
+  // Largo fijo: así comparar el texto es lo mismo que comparar el tiempo
+  return (t == null ? "0" : String(t)).padStart(15, "0") + " " + ((p && p.id) || "");
 };
 // El día en que se cargó, para mostrar en la lista. Vacío si no se sabe.
 const diaDeCarga = (p) => {
-  const f = (p && (p.creadoEn || p.fechaAlta)) || "";
-  if (!f) return "";
-  const [a, m, d] = f.slice(0, 10).split("-");
-  return (a && m && d) ? d + "/" + m + "/" + a.slice(2) : "";
+  const t = momentoDeCarga(p);
+  if (t == null) return "";
+  const d = new Date(t);
+  return String(d.getDate()).padStart(2, "0") + "/" + String(d.getMonth() + 1).padStart(2, "0") + "/" + String(d.getFullYear()).slice(2);
 };
 // Id definitivo con formato de la base (UUID). Se usa para las ventas: así el
 // id que se les pone en la app es el MISMO que queda en la nube, y nada que
@@ -3736,12 +3753,12 @@ function ControlTienda() {
         // setData en pleno tipeo le roba el foco al campo y desordena las
         // letras (en el celular sobre todo). Se reintenta en 1 segundo, y
         // así hasta que suelte el teclado.
-        const escribiendo = document.activeElement && (
-          document.activeElement.tagName === "INPUT" ||
-          document.activeElement.tagName === "TEXTAREA" ||
-          document.activeElement.isContentEditable
-        );
-        if (escribiendo) { pendiente = setTimeout(() => refrescar(), 1000); return; }
+        // v9.989 — Antes bastaba con que un campo tuviera el foco. En el
+        // Punto de Venta el buscador del escáner queda enfocado TODO el día,
+        // así que ese dispositivo (el que imprime los tickets) posponía el
+        // refresco para siempre y nunca le llegaban los productos nuevos.
+        // Ahora sólo se espera si de verdad se está tecleando.
+        if (estaEscribiendo()) { pendiente = setTimeout(() => refrescar(), 1000); return; }
         const cuales = new Set(tocadas);
         tocadas = new Set();
         const marca = consumo.total;
@@ -3839,12 +3856,9 @@ function ControlTienda() {
       if (document.hidden || guardando.current > 0) return;
       // No consultar novedades mientras se escribe: si detecta un cambio,
       // dispararía un refresco que roba el foco del campo.
-      const esc = document.activeElement && (
-        document.activeElement.tagName === "INPUT" ||
-        document.activeElement.tagName === "TEXTAREA" ||
-        document.activeElement.isContentEditable
-      );
-      if (esc) return;
+      // v9.989 — Mismo arreglo que en refrescar: con el buscador del Punto
+      // de Venta siempre enfocado, el pulso no corría nunca en ese equipo.
+      if (estaEscribiendo()) return;
       try {
         const { data: filas, error } = await nube.from("pulso").select("*").limit(1);
         if (error) { MONITOR.error("pulso", error); return; }
@@ -8400,6 +8414,21 @@ if (typeof window !== "undefined") window.ctCola = COLA;
 // próxima consulta traiga sólo lo que cambió desde entonces, en vez de
 // bajar la tabla entera de nuevo. La base marca actualizado_en en cada
 // insert/update con un trigger, así el filtro es exacto.
+// v9.989 — ¿El usuario está tecleando AHORA? Tener el foco en un campo no
+// alcanza: el buscador del Punto de Venta queda enfocado todo el día para el
+// escáner. Se considera que escribe si el foco está en un campo y hubo una
+// tecla en los últimos 2,5 segundos.
+let ultimaTecla = 0;
+if (typeof document !== "undefined") {
+  const marcar = () => { ultimaTecla = Date.now(); };
+  document.addEventListener("keydown", marcar, true);
+  document.addEventListener("input", marcar, true);
+}
+const estaEscribiendo = () => {
+  const el = typeof document !== "undefined" && document.activeElement;
+  const enCampo = !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+  return enCampo && Date.now() - ultimaTecla < 2500;
+};
 const SYNC_TS_KEY = "ct-sync-ts-v1";
 // Cuántas filas trajo la última sincronización, tabla por tabla. Lo llena
 // traerParcial y lo lee el monitor: es la diferencia entre "bajó algo" y
@@ -13083,6 +13112,10 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
   // Al buscar o filtrar se vuelve a la primera página: si no, se puede quedar
   // en la página 12 de un resultado que ahora tiene una sola.
   useEffect(() => { setPagina(1); }, [query, filtros, orden]);
+  // v9.990 — Al cargar un producto nuevo se salta a la última página, que es
+  // donde queda (orden de carga). Se pide acá y se aplica cuando la lista ya
+  // lo incluye, más abajo.
+  const [irAlFinal, setIrAlFinal] = useState(false);
   const [seleccion, setSeleccion] = useState([]);
   const [abrirAcciones, setAbrirAcciones] = useState(false);
   const [gestion, setGestion] = useState(null);
@@ -13148,7 +13181,8 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
       const i = productos.findIndex((p) =>
         (r.codigoBarras && p.codigoBarras === r.codigoBarras) ||
         (!r.codigoBarras && (p.nombre || "").toLowerCase() === r.nombre.toLowerCase()));
-      const base = i >= 0 ? productos[i] : { id: uid(), porNegocio: {}, activo: true };
+      const base = i >= 0 ? productos[i] : { id: uid(), porNegocio: {}, activo: true,
+        creadoPor: usuarioActivo(data), creadoEn: new Date(Date.now() + creados).toISOString() };
       // Se actualizan también los datos del producto, no sólo el stock: el
       // archivo del local trae los precios al día.
       const camposFinales = campos;
@@ -13218,6 +13252,15 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
   const paginaSegura = Math.min(pagina, paginas);
   const desde = (paginaSegura - 1) * porPagina;
   const enPantalla = productos.slice(desde, desde + porPagina);
+  useEffect(() => {
+    if (!irAlFinal) return;
+    // Se espera a que el nuevo ya esté en la lista (el guardado puede llegar
+    // un render después). Si un filtro lo oculta, a los 3 s se desiste.
+    const i = productos.findIndex((p) => p.id === irAlFinal);
+    if (i >= 0) { setIrAlFinal(false); setPagina(Math.floor(i / porPagina) + 1); return; }
+    const t = setTimeout(() => setIrAlFinal(false), 3000);
+    return () => clearTimeout(t);
+  }, [irAlFinal, productos, porPagina]);
 
   // Se define después del filtrado, para poder imprimir lo que está en pantalla
   const manejarOpcion = (accion) => {
@@ -13231,11 +13274,16 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
     // Queda anotado quién lo cargó y cuándo, para el control de actividad
     const guardado = prod.id
       ? { ...prod, editadoPor: usuarioActivo(data), editadoEn: todayISO() }
-      : { ...prod, id: uid(), creadoPor: usuarioActivo(data), creadoEn: todayISO() };
+      : { ...prod, id: uid(), creadoPor: usuarioActivo(data), creadoEn: new Date().toISOString() };
     const next = prod.id
       ? { ...data, productos: data.productos.map((p) => p.id === prod.id ? { ...p, ...guardado } : p) }
       : { ...data, productos: [...data.productos, guardado] };
     persist(next);
+    // v9.990 — Uno nuevo: orden de carga y a la última página, donde quedó
+    if (!prod.id) {
+      if (orden.campo !== "carga" || !orden.asc) setOrden({ campo: "carga", asc: true });
+      setIrAlFinal(guardado.id);
+    }
     // Con "Guardar y cargar otro" el formulario queda abierto para el siguiente
     if (!seguir) {
       setShowForm(false);
@@ -13521,7 +13569,7 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
 
     gestion === "combo" && React.createElement(ComboModal, {
       data,
-      onGuardar: (combo) => { persist({ ...data, productos: [...data.productos, combo] }); setGestion(null); },
+      onGuardar: (combo) => { persist({ ...data, productos: [...data.productos, { creadoPor: usuarioActivo(data), creadoEn: new Date().toISOString(), ...combo }] }); setGestion(null); },
       onClose: () => setGestion(null)
     }),
 
@@ -31263,7 +31311,9 @@ const lineaDeTiempo = (data, negocioId) => {
   (data.productos || []).forEach((p) => {
     if (!p.creadoEn) return;
     ev.push({
-      fecha: fechaDe(p.creadoEn) || p.creadoEn, hora: horaDe(p.creadoEn), tipo: "Producto",
+      // v9.990 — creadoEn ahora trae hora exacta (en hora de Greenwich desde la nube)
+      fecha: esSoloDia(String(p.creadoEn)) ? fechaDe(p.creadoEn) : diaLocal(p.creadoEn),
+      hora: esSoloDia(String(p.creadoEn)) ? "" : hora24(momentoDeCarga(p)), tipo: "Producto",
       tono: "denim", icono: Package,
       titulo: "Carg\u00F3 " + p.nombre,
       detalle: (p.categoria || "Sin categor\u00EDa") + " \u00B7 " + money(p.precioVenta || 0),
