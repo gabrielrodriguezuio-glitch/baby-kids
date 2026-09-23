@@ -129,7 +129,24 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.994";
+const VERSION_APP = "9.995";
+// v9.995 (2026-09-23) — FIX: EL PRECIO DE UN PRODUCTO SE BORRABA SOLO
+// Causa: cuando un teléfono guardaba CUALQUIER cambio de un producto (una
+// venta, stock, un talle, el formulario de edición), subía la fila ENTERA a
+// la nube, con el precio incluido. Si ese teléfono tenía la versión vieja del
+// producto (sin precio, porque el precio lo puso otro equipo después), el
+// precio volvía a 0 para todos. Arreglos:
+// · Se sube SÓLO lo que cambió (update por columna). Una venta ya no escribe
+//   la fila del producto: el stock va por variantes, como antes.
+// · El formulario de producto, al editar, manda sólo lo que se tocó; lo demás
+//   queda como está ahora (con el precio que haya puesto otro equipo).
+// · Mis Negocios > producto: igual, sólo lo que se tocó; el precio del
+//   negocio principal se guarda como precio de venta (antes se perdía).
+// · Guardar desde una pantalla con datos de hace un rato ya no pisa en este
+//   equipo lo que llegó mientras tanto.
+// · Sincronización: un refresco por vez; una respuesta que vuelve tarde no
+//   pisa una más nueva ni lo que se editó acá mientras tanto.
+// NO REQUIERE SQL.
 // v9.994 (2026-09-23) — Fix: "Sin precio" no abría (useRef no estaba importado en este archivo; va como React.useRef)
 // v9.993 (2026-09-23) — Productos nuevos llegan antes a los otros equipos: se suben antes que sus fotos; el pulso siempre revisa productos y cada 5 s con Productos abierto; aviso "X cargó ..."; botón Actualizar en Productos.
 // v9.992 (2026-09-22) — Carga masiva: margen de 2 min en la sincronización (no se pierden productos ni talles cuando cargan varios a la vez); copia local en IndexedDB (sin el tope de ~4.800 productos de localStorage); "Carteles pendientes" de a tandas de 25.
@@ -3691,11 +3708,17 @@ function ControlTienda() {
               "pedidos", "notas_credito", "cambios", "devoluciones_reparto",
               "movimientos_stock", "gastos", "compras",
               "usuarios", "ajustes"]);
+            const tPedido = Date.now();
             const parcial = await traerParcial(todas, sesion && sesion.auth_id, copiaEnMano);
             if (parcial) {
-              const frescos = migrarCajas(migrarDatos({ ...copiaEnMano, ...parcial }));
-              setData(frescos);
-              guardarCopiaLocal(sesion.auth_id, frescos);
+              // v9.995 — La app ya está en pantalla con la copia: si alguien
+              // guardó algo mientras llegaba esto, los productos se fusionan
+              // sobre lo de ahora en vez de volver a la copia.
+              setData((actual) => {
+                const frescos = migrarCajas(migrarDatos(aplicarParcial(actual && actual.productos ? actual : copiaEnMano, parcial, tPedido)));
+                try { guardarCopiaLocal(sesion.auth_id, frescos); } catch (e) {}
+                return frescos;
+              });
               MONITOR.sync({
                 modo: "apertura-delta",
                 tablas: Object.keys(DELTA_INFO.detalle),
@@ -3761,6 +3784,8 @@ function ControlTienda() {
   useEffect(() => {
     if (!sesion || loading) return;
     let pendiente = null;
+    // v9.995 — Hay un refresco trayendo datos, y si hay que hacer otro al terminar
+    let enCurso = false, repetir = false;
     // Qué tablas avisaron desde el último refresco. Traer las 11.000 filas
     // enteras para ver una venta nueva es lo que hacía que tardara.
     let tocadas = new Set();
@@ -3852,6 +3877,13 @@ function ControlTienda() {
         // refresco para siempre y nunca le llegaban los productos nuevos.
         // Ahora sólo se espera si de verdad se está tecleando.
         if (estaEscribiendo()) { pendiente = setTimeout(() => refrescar(), 1000); return; }
+        // v9.995 — Un refresco por vez. Con dos pedidos en vuelo, si el más
+        // viejo volvía último pisaba al nuevo: el producto quedaba con el
+        // precio de antes en este equipo, y la marca de sincronización ya
+        // había avanzado, así que no se corregía solo. Si llega un aviso
+        // mientras hay uno en curso, se repite al terminar.
+        if (enCurso) { repetir = true; return; }
+        enCurso = true;
         const cuales = new Set(tocadas);
         tocadas = new Set();
         const marca = consumo.total;
@@ -3870,12 +3902,19 @@ function ControlTienda() {
             // v9.993 — Aviso cuando llega un producto que cargó otro equipo
             if (parcial.productos) { try { avisarProductosNuevos(antesDelDelta, parcial.productos); } catch (e) {} }
             setData((actual) => {
-              const nuevo = migrarCajas(migrarDatos({ ...actual, ...parcial }));
+              // v9.995 — Sobre el estado de AHORA, no sobre la copia de
+              // cuando salió el pedido
+              const nuevo = migrarCajas(migrarDatos(aplicarParcial(actual, parcial, t0)));
               // La copia se actualiza con cada cambio: así la próxima
               // apertura arranca de algo reciente y el delta trae poco.
               try { guardarCopiaLocal(sesion && sesion.auth_id, nuevo); } catch (e) {}
               return nuevo;
             });
+            // Si se salteó alguna fila porque acá se editó ese producto
+            // mientras volvía la respuesta, se pide de nuevo en un rato
+            if ((parcial.__productosFrescos || []).some((p) => editadoDespuesDe(p.id, t0))) {
+              setTimeout(() => refrescar("productos"), 1500);
+            }
           } else {
             if (DIAG) console.warn("%c↓↓ RECARGA TOTAL", "background:#dc2626;color:#fff;padding:1px 5px",
               [...cuales].join(", ") || "(reconexión)", "— esta es la cara");
@@ -3892,13 +3931,20 @@ function ControlTienda() {
             detalle: { ...DELTA_INFO.detalle }
           });
         } catch (e) {
-          MONITOR.sync({
-            modo: "error", tablas: [...cuales], filas: 0,
-            bytes: (MONITOR.totalBytes || 0) - marcaMon,
-            ms: Date.now() - t0,
-            error: (e && e.message) || String(e)
-          });
-          MONITOR.error("sincronizar", e, { tablas: [...cuales] });
+          try {
+            MONITOR.sync({
+              modo: "error", tablas: [...cuales], filas: 0,
+              bytes: (MONITOR.totalBytes || 0) - marcaMon,
+              ms: Date.now() - t0,
+              error: (e && e.message) || String(e)
+            });
+            MONITOR.error("sincronizar", e, { tablas: [...cuales] });
+          } catch (x) {}
+        } finally {
+          // Pase lo que pase se libera: si quedara trabado, este equipo no
+          // volvería a recibir nada hasta recargar.
+          enCurso = false;
+          if (repetir) { repetir = false; refrescar(); }
         }
         // El tiempo de espera lleva un desfase al azar: si los diez equipos
         // consultan en el mismo instante, diez consultas pesadas caen juntas
@@ -4071,7 +4117,12 @@ function ControlTienda() {
     const cronoGuardar = MONITOR.cronometro("guardar");
     // Se muestra el cambio enseguida y se guarda por detrás: esperar a la
     // nube para pintar la pantalla haría la app lenta en el mostrador.
-    setData(next);
+    // v9.995 — Los productos se aplican sobre el estado actual (no se
+    // reemplaza la lista por la que armó la pantalla, que puede ser de antes
+    // de que llegara un precio de otro equipo), y queda anotado qué se tocó
+    // para que la sincronización no lo pise con una fila vieja.
+    try { marcarEdicionLocal(productosTocados(anterior.productos, next.productos)); } catch (e) {}
+    setData((actual) => rebasarProductos(actual, anterior, next));
     // La copia local se escribe al instante, antes de ir a la nube
     guardarCajasLocal(next.cajas);
     try {
@@ -4148,8 +4199,10 @@ function ControlTienda() {
         return true;
       }
       try { MONITOR.guardado("cambios", false, e); cronoGuardar(); } catch (x) {}
-      // Se vuelve atrás: la pantalla no puede mostrar algo que no se guardó
-      setData(anterior);
+      // Se vuelve atrás: la pantalla no puede mostrar algo que no se guardó.
+      // v9.995 — Sólo lo que hizo este guardado; lo que llegó de otros
+      // equipos mientras tanto se queda.
+      setData((actual) => rebasarProductos(actual, next, anterior));
       const m = String((e && e.message) || e);
       // Se muestra el error real: decir siempre "se perdió la conexión" hacía
       // buscar el problema en el lugar equivocado.
@@ -7207,6 +7260,9 @@ const deLaNube = {
       stockMinimo: p.stock_minimo != null ? p.stock_minimo : STOCK_MINIMO,
       creadoPor: p.creado_por || "",
       creadoEn: p.creado_en || "",
+      // v9.995 — Cuándo cambió esta fila en la nube. La sincronización no
+      // reemplaza un producto por una fila más vieja que la que ya tiene.
+      _act: p.actualizado_en || "",
       // Total en todos los locales: sirve para avisar "hay en otro negocio"
       stock: Object.values(porNegocio).reduce((a, d) => a + (Number(d.stock) || 0), 0),
       porNegocio
@@ -7328,6 +7384,32 @@ const aLaNube = {
       editado_en: p.editadoEn || null
     };
   }
+};
+
+// v9.995 — Comparación que no depende del orden de las claves: {a:1,b:2} y
+// {b:2,a:1} son lo mismo. Sin esto, un objeto armado en otro orden (los
+// precios por lista, por ejemplo) parecía "cambiado" sin que nadie lo tocara.
+const firmaEstable = (x) => {
+  if (x === undefined) return "u";
+  if (x === null || typeof x !== "object") return JSON.stringify(x);
+  if (Array.isArray(x)) return "[" + x.map(firmaEstable).join(",") + "]";
+  return "{" + Object.keys(x).filter((k) => x[k] !== undefined).sort()
+    .map((k) => JSON.stringify(k) + ":" + firmaEstable(x[k])).join(",") + "}";
+};
+
+// v9.995 — De un producto editado, SÓLO las columnas de la nube que cambiaron.
+// Antes se subía la fila entera: si este equipo tenía una copia vieja del
+// producto (sin precio, porque el precio lo puso otro equipo hace un rato) y
+// le tocaba cualquier cosa —una venta, un talle, el stock—, el precio volvía
+// a 0 para todos. Ahora una venta no escribe nada en la fila del producto, y
+// editar el nombre sube sólo el nombre.
+const columnasQueCambiaron = (previo, actual, idMayor) => {
+  const b = aLaNube.producto(actual, idMayor);
+  if (!previo) return b;
+  const a = aLaNube.producto(previo, idMayor);
+  const salida = {};
+  Object.keys(b).forEach((k) => { if (firmaEstable(a[k]) !== firmaEstable(b[k])) salida[k] = b[k]; });
+  return salida;
 };
 
 // Qué cambió entre dos listas, comparadas por id
@@ -7818,15 +7900,35 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
     }
   }
 
+  // v9.995 — Cada producto editado sube SÓLO las columnas que cambiaron en
+  // este equipo, con update (no upsert): lo que no se tocó acá queda como está
+  // en la nube, aunque la copia de este teléfono esté atrasada. Un cambio que
+  // sólo mueve stock (una venta, una transferencia) no escribe la fila del
+  // producto: el stock va por variantes, con diferencias.
+  const previosPorId = new Map((antes.productos || []).map((x) => [x.id, x]));
+  const filasAEditar = [];
+  prods.editados.forEach((p) => {
+    const cols = columnasQueCambiaron(previosPorId.get(p.id), p, idMayor);
+    if (!Object.keys(cols).length) return;
+    // Uno que todavía no llegó a la nube no tiene fila que actualizar: se
+    // está subiendo con el alta, y el próximo guardado lo alcanza.
+    if (!esIdDeLaBase(p.id)) { console.warn("Producto sin id de la base, se saltea:", p.id); return; }
+    filasAEditar.push({ id: p.id, cols });
+  });
+  window._ctUltimaEdicionProductos = filasAEditar.map((f) => ({ id: f.id, columnas: Object.keys(f.cols) }));
+  // De a 8 a la vez: 500 productos editados juntos (un aumento masivo) no
+  // pueden ser 500 esperas en fila.
+  for (let i = 0; i < filasAEditar.length; i += 8) {
+    const resultados = await Promise.all(filasAEditar.slice(i, i + 8).map((f) =>
+      nube.from("productos").update(f.cols).eq("id", f.id)));
+    const fallo = resultados.find((r) => r && r.error);
+    if (fallo) throw new Error("Al guardar productos: " + fallo.error.message);
+  }
   for (let i = 0; i < prods.editados.length; i += TANDA) {
     const grupo = prods.editados.slice(i, i + TANDA);
-    // "upsert" con el id ya puesto actualiza las filas existentes de una
-    const { error } = await nube.from("productos")
-      .upsert(grupo.map((p) => ({ id: p.id, ...aLaNube.producto(p, idMayor) })));
-    if (error) throw new Error("Al guardar productos: " + error.message);
     await guardarVariantesEnTanda(grupo.map((p) => ({
       id: p.id,
-      previo: (antes.productos || []).find((x) => x.id === p.id),
+      previo: previosPorId.get(p.id),
       actual: p
     })));
   }
@@ -8664,6 +8766,95 @@ function sinMovimientosDuplicados(movs) {
   return limpio;
 }
 
+// v9.995 — Cuándo se editó cada producto EN ESTE EQUIPO (id -> milisegundos).
+// La sincronización lo mira para no pisar con una fila que pidió a la nube
+// ANTES de esa edición: esa fila es más vieja que lo que hay en pantalla.
+const EDICION_LOCAL = new Map();
+const marcarEdicionLocal = (ids) => { const t = Date.now(); (ids || []).forEach((id) => EDICION_LOCAL.set(id, t)); };
+const editadoDespuesDe = (id, t) => (EDICION_LOCAL.get(id) || 0) > t;
+
+// Ids de productos que un guardado agrega, cambia o saca
+function productosTocados(antes, despues) {
+  const previos = new Map((antes || []).map((p) => [p.id, p]));
+  const ids = [];
+  const vistos = new Set();
+  (despues || []).forEach((p) => {
+    vistos.add(p.id);
+    if (previos.get(p.id) !== p) ids.push(p.id);
+  });
+  previos.forEach((_, id) => { if (!vistos.has(id)) ids.push(id); });
+  return ids;
+}
+
+// v9.995 — Aplica lo que cambió un guardado (de `base` a `next`) sobre el
+// estado ACTUAL, en vez de reemplazar la lista de productos entera por `next`.
+// Si mientras la pantalla estaba abierta llegó de la nube un precio nuevo, el
+// guardado ya no lo borra: sólo pisa los campos que él mismo cambió.
+function rebasarProductos(actual, base, next) {
+  if (!actual || actual === base || !base) return next;
+  const lista = (x) => (x && x.productos) || [];
+  if (lista(actual) === lista(base)) return { ...next, productos: lista(next) };
+  const baseMap = new Map(lista(base).map((p) => [p.id, p]));
+  const nextMap = new Map(lista(next).map((p) => [p.id, p]));
+  const aplicarCambios = (actualP, baseP, nextP) => {
+    const salida = { ...actualP };
+    let cambio = false;
+    const claves = new Set([...Object.keys(baseP), ...Object.keys(nextP)]);
+    claves.forEach((k) => {
+      if (k === "porNegocio" || k === "stock") return;
+      if (firmaEstable(baseP[k]) === firmaEstable(nextP[k])) return;
+      cambio = true;
+      if (nextP[k] === undefined) delete salida[k]; else salida[k] = nextP[k];
+    });
+    // El stock, local por local: sólo los locales que este guardado movió
+    const pnB = baseP.porNegocio || {}, pnN = nextP.porNegocio || {};
+    const locales = new Set([...Object.keys(pnB), ...Object.keys(pnN)]);
+    let porNegocio = null;
+    locales.forEach((id) => {
+      if (firmaEstable(pnB[id]) === firmaEstable(pnN[id])) return;
+      porNegocio = porNegocio || { ...(actualP.porNegocio || {}) };
+      if (pnN[id] === undefined) delete porNegocio[id]; else porNegocio[id] = pnN[id];
+    });
+    if (porNegocio) { salida.porNegocio = porNegocio; salida.stock = stockTotal(salida); cambio = true; }
+    return cambio ? salida : actualP;
+  };
+  const salida = [];
+  const enActual = new Set();
+  lista(actual).forEach((p) => {
+    enActual.add(p.id);
+    const b = baseMap.get(p.id), n = nextMap.get(p.id);
+    if (!b) { salida.push(n || p); return; }          // llegó después: queda
+    if (!n) return;                                   // este guardado lo sacó
+    salida.push(n === b ? p : aplicarCambios(p, b, n));
+  });
+  // Los que este guardado agregó
+  lista(next).forEach((p) => { if (!baseMap.has(p.id) && !enActual.has(p.id)) salida.push(p); });
+  return { ...next, productos: salida };
+}
+
+// v9.995 — Aplica lo que trajo traerParcial sobre el estado ACTUAL. Los
+// productos que vinieron se fusionan por id sobre la lista de ahora, salvo los
+// que se editaron en este equipo después de hacer el pedido (`desde`): la
+// fila que vino es anterior a esa edición, y la próxima sincronización trae
+// la buena.
+function aplicarParcial(actual, parcial, desde) {
+  if (!parcial) return actual;
+  const { __productosFrescos, ...resto } = parcial;
+  if (!__productosFrescos) return { ...actual, ...resto };
+  const actuales = new Map(((actual && actual.productos) || []).map((p) => [p.id, p]));
+  const frescos = __productosFrescos.filter((p) => {
+    if (editadoDespuesDe(p.id, desde)) return false;
+    // Lo que ya hay acá vino de una fila más nueva (dos pedidos que volvieron
+    // en desorden): no se reemplaza por la vieja
+    const a = actuales.get(p.id);
+    if (a && a._act && p._act && String(a._act) > String(p._act)) return false;
+    return true;
+  });
+  const productos = fusionarPorId(actual.productos, frescos)
+    .sort((a, b) => String(a.nombre || "").localeCompare(String(b.nombre || "")));
+  return { ...actual, ...resto, productos };
+}
+
 function fusionarPorId(actual, delta) {
   if (!delta || !delta.length) return actual || [];
   if (!actual || !actual.length) return delta.slice();
@@ -8904,6 +9095,11 @@ async function traerParcial(tablas, quienEntro, actual) {
         );
         salida.productos = fusionarPorId(actual.productos, prodsRearmados)
           .sort((a, b) => String(a.nombre || "").localeCompare(String(b.nombre || "")));
+        // v9.995 — Las filas que vinieron, sueltas: quien aplica el resultado
+        // las fusiona sobre el estado de ESE momento. `salida.productos` está
+        // armado sobre la copia de cuando empezó el pedido, y aplicarlo tal
+        // cual borraba lo que se hubiera guardado mientras volvía la respuesta.
+        salida.__productosFrescos = prodsRearmados;
         // Guardar ts máximos
         const maxP = tsMaximo(pFilas);
         const maxV = tsMaximo(vFilas);
@@ -13636,11 +13832,21 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
   const saveProducto = (prod, seguir) => {
     const anterior = data;
     // Queda anotado quién lo cargó y cuándo, para el control de actividad
+    const { __parcial, ...prodLimpio } = prod;
     const guardado = prod.id
-      ? { ...prod, editadoPor: usuarioActivo(data), editadoEn: todayISO() }
-      : { ...prod, id: uid(), creadoPor: usuarioActivo(data), creadoEn: new Date().toISOString() };
+      ? { ...prodLimpio, editadoPor: usuarioActivo(data), editadoEn: todayISO() }
+      : { ...prodLimpio, id: uid(), creadoPor: usuarioActivo(data), creadoEn: new Date().toISOString() };
+    // v9.995 — Una edición trae sólo lo que se tocó: se aplica sobre el
+    // producto como está AHORA (con el precio que le haya puesto otro
+    // equipo), y el stock se reemplaza sólo en los locales que se editaron.
+    const aplicar = (p) => {
+      if (!__parcial) return { ...p, ...guardado };
+      const salida = { ...p, ...guardado };
+      if (guardado.porNegocio) salida.porNegocio = { ...(p.porNegocio || {}), ...guardado.porNegocio };
+      return { ...salida, stock: stockTotal(salida) };
+    };
     const next = prod.id
-      ? { ...data, productos: data.productos.map((p) => p.id === prod.id ? { ...p, ...guardado } : p) }
+      ? { ...data, productos: data.productos.map((p) => p.id === prod.id ? aplicar(p) : p) }
       : { ...data, productos: [...data.productos, guardado] };
     persist(next);
     // v9.990 — Uno nuevo: orden de carga y a la última página, donde quedó
@@ -14647,6 +14853,12 @@ function ProductoForm({ data, initial, onSave, onCancel, categorias, proveedores
     };
   });
 
+  // v9.995 — Cómo estaba el formulario al abrirlo. Al guardar una edición se
+  // compara contra esto y se manda SÓLO lo que la persona tocó. Antes se
+  // mandaba todo lo del formulario: si mientras estaba abierto otro equipo le
+  // puso el precio, al guardar (por un talle, por el stock) el precio volvía
+  // al que había al abrirlo, en general 0.
+  const fInicial = React.useRef(f).current;
   const [abiertas, setAbiertas] = useState({ ident: true, precios: true, negocios: true });
   const [error, setError] = useState("");
   const [aviso, setAviso] = useState("");
@@ -14858,7 +15070,7 @@ function ProductoForm({ data, initial, onSave, onCancel, categorias, proveedores
     // Si no se cargó código, se genera uno: sin él no se puede usar el lector
     // ni imprimir etiqueta, y era un paso que se olvidaba seguido.
     const codigoFinal = f.codigoBarras.trim() || generarCodigoCorto(productosExistentes);
-    onSave({
+    const completo = {
       ...(initial || {}),
       // La fecha ya no se pide: en un alta nueva es la de hoy, y al editar se
       // conserva la que tenía el producto para no falsear el historial.
@@ -14883,7 +15095,33 @@ function ProductoForm({ data, initial, onSave, onCancel, categorias, proveedores
       variantes: [],
       porNegocio,
       stock: locales.reduce((a, n) => a + porNegocio[n.id].stock, 0)
-    }, seguir);
+    };
+    if (initial && initial.id) {
+      // v9.995 — Edición: sólo lo que cambió respecto de cuando se abrió
+      const toco = (k) => firmaEstable(f[k]) !== firmaEstable(fInicial[k]);
+      const parcial = { id: f.id, __parcial: true };
+      ["nombre", "descripcion", "categoria", "unidad", "costo", "precioVenta", "precios", "proveedor", "activo", "color"]
+        .forEach((k) => { if (toco(k)) parcial[k] = completo[k]; });
+      if (toco("imagenes")) { parcial.imagenes = completo.imagenes; parcial.imagen = completo.imagen; }
+      // El código se compara contra el del producto: si no tenía, se le
+      // generó uno y ese sí hay que guardarlo.
+      if (completo.codigoBarras !== (initial.codigoBarras || "")) parcial.codigoBarras = completo.codigoBarras;
+      // Stock y talles, local por local: sólo los que se tocaron (o los que
+      // tienen un talle sin código, que es la red de seguridad de arriba).
+      // Así una venta hecha mientras el formulario estaba abierto no se
+      // deshace al guardar.
+      const negociosTocados = {};
+      locales.forEach((n) => {
+        const d = f.porNegocio[n.id] || {};
+        const tocado = firmaEstable(d) !== firmaEstable(fInicial.porNegocio[n.id]);
+        const sinCodigo = (d.variantes || []).some((v) => String(v.talle).trim() !== "" && !String(v.codigo || "").trim());
+        if (tocado || sinCodigo) negociosTocados[n.id] = porNegocio[n.id];
+      });
+      if (Object.keys(negociosTocados).length) parcial.porNegocio = negociosTocados;
+      onSave(parcial, seguir);
+    } else {
+      onSave(completo, seguir);
+    }
     // En modo "cargar otro" se limpia lo propio de este producto pero se
     // conservan los datos que suelen repetirse en una misma tanda.
     if (seguir) {
@@ -25584,19 +25822,40 @@ function ProductoNegociosModal({ producto, negocios, principalId, onGuardar, onC
     const base = filas.find((f) => f.id === principalId);
     if (base) setFilas(filas.map((f) => ({ ...f, precio: base.precio, codigo: f.codigo || base.codigo })));
   };
+  // v9.995 — Cómo estaban las filas al abrir: al guardar se aplica sólo lo
+  // que se tocó, sobre el producto como está AHORA. Antes se guardaba la
+  // copia de cuando se abrió el cartel, con el precio y el stock de ese
+  // momento, y pisaba lo que otro equipo había cambiado en el medio.
+  const filasIniciales = React.useRef(filas).current;
   const guardar = () => {
-    // Se conserva el desglose por talle de cada negocio
-    let salida = producto;
+    const cambios = [];
     filas.forEach((f) => {
-      salida = fijarEnNegocio(salida, f.id, {
-        activo: f.activo,
-        precio: f.precio === "" ? null : Number(f.precio),
-        codigo: f.codigo,
-        stock: f.stock === "" ? 0 : Number(f.stock),
-        variantes: f.variantes || []
-      });
+      const ini = filasIniciales.find((x) => x.id === f.id) || {};
+      const c = { id: f.id };
+      if (f.activo !== ini.activo) c.activo = f.activo;
+      if (String(f.precio) !== String(ini.precio)) c.precio = f.precio === "" ? null : Number(f.precio);
+      if (String(f.codigo) !== String(ini.codigo)) c.codigo = f.codigo;
+      if (!(f.variantes || []).length && String(f.stock) !== String(ini.stock)) c.stock = f.stock === "" ? 0 : Number(f.stock);
+      if (Object.keys(c).length > 1) cambios.push(c);
     });
-    onGuardar(salida);
+    onGuardar(producto.id, (actual) => {
+      let salida = actual;
+      cambios.forEach((c) => {
+        const porNegocio = { ...(salida.porNegocio || {}) };
+        const d = { ...(porNegocio[c.id] || {}) };
+        if ("activo" in c) d.activo = c.activo;
+        if ("precio" in c) d.precio = c.precio;
+        if ("codigo" in c) d.codigo = c.codigo;
+        if ("stock" in c && !(d.variantes || []).length) d.stock = c.stock;
+        porNegocio[c.id] = d;
+        salida = { ...salida, porNegocio };
+        // El precio por local no viaja a la nube: en el negocio principal
+        // se guarda como el precio de venta del producto, que sí viaja. Sin
+        // esto, el precio puesto acá desaparecía en la próxima sincronización.
+        if (c.id === principalId && "precio" in c && c.precio != null) salida.precioVenta = c.precio;
+      });
+      return { ...salida, stock: stockTotal(salida) };
+    });
   };
 
   return React.createElement(
@@ -25680,8 +25939,10 @@ function NegociosProductos({ data, persist, setTab, senalNuevo }) {
   const paginaSegura = Math.min(pagina, totalPaginas);
   const visibles = filtrados.slice((paginaSegura - 1) * POR_PAGINA, paginaSegura * POR_PAGINA);
 
-  const guardarProducto = (prod) => {
-    persist({ ...data, productos: data.productos.map((p) => p.id === prod.id ? prod : p) });
+  // v9.995 — Recibe el id y lo que hay que cambiarle, y lo aplica sobre el
+  // producto actual (no sobre la copia de cuando se abrió el cartel)
+  const guardarProducto = (id, aplicar) => {
+    persist({ ...data, productos: data.productos.map((p) => p.id === id ? aplicar(p) : p) });
     setEditando(null);
   };
   const copiarPrecioATodos = (prod) => {
