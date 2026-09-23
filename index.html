@@ -129,7 +129,8 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.992";
+const VERSION_APP = "9.993";
+// v9.993 (2026-09-23) — Productos nuevos llegan antes a los otros equipos: se suben antes que sus fotos; el pulso siempre revisa productos y cada 5 s con Productos abierto; aviso "X cargó ..."; botón Actualizar en Productos.
 // v9.992 (2026-09-22) — Carga masiva: margen de 2 min en la sincronización (no se pierden productos ni talles cuando cargan varios a la vez); copia local en IndexedDB (sin el tope de ~4.800 productos de localStorage); "Carteles pendientes" de a tandas de 25.
 // v9.991 (2026-09-22) — Productos sin precio: se pueden cargar sin precio; lista "Sin precio" para ponerlo (Enter guarda y pasa al siguiente); el Punto de Venta no deja venderlos; "Carteles pendientes" por equipo con "Imprimir todos".
 // v9.990 (2026-09-22) — Productos: se guarda fecha Y hora de carga (antes sólo el día, y los del mismo día quedaban en orden al azar). Lo recién cargado queda siempre en la última página, sin importar categoría; al crear uno la lista salta sola a esa página.
@@ -1776,7 +1777,7 @@ const nube = createClient(NUBE_URL, NUBE_KEY, {
 });
 import { createPortal } from "react-dom";
 import { Tag, Package, ShoppingBag, Users, Wallet, Plus, Trash2, X, AlertTriangle, Search, Pencil, TrendingUp, TrendingDown, Minus, CreditCard, Banknote, ArrowRightLeft, Check, ShoppingCart, Share2, UserCog, BarChart3, MessageCircle, ArrowDownCircle, ArrowUpCircle, Truck, QrCode, ScanBarcode, Receipt, DollarSign, ChevronDown, ChevronLeft, ChevronRight, Lock, Unlock, Calculator, SlidersHorizontal, LayoutGrid, Archive, MoreHorizontal, Sparkles, Clock3, Boxes, Tags, Sun, Moon, Crown, UserPlus, Mail,
-  Menu, Image as ImageIcon, FileText
+  Menu, Image as ImageIcon, FileText, RefreshCw
 } from "lucide-react";
 const STORAGE_KEY = "control-tienda-ropa-v1";
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -3862,8 +3863,11 @@ function ControlTienda() {
           // Sólo las tablas que cambiaron: una venta trae ventas, renglones y
           // el stock, no el catálogo entero. El estado actual se pasa para que
           // el delta sync sepa qué ya tenía cargado y fusione en vez de reemplazar.
+          const antesDelDelta = dataRef.current;
           const parcial = await traerParcial(cuales, sesion && sesion.auth_id, dataRef.current);
           if (parcial) {
+            // v9.993 — Aviso cuando llega un producto que cargó otro equipo
+            if (parcial.productos) { try { avisarProductosNuevos(antesDelDelta, parcial.productos); } catch (e) {} }
             setData((actual) => {
               const nuevo = migrarCajas(migrarDatos({ ...actual, ...parcial }));
               // La copia se actualiza con cada cambio: así la próxima
@@ -3966,7 +3970,10 @@ function ControlTienda() {
           const cuales = [];
           Object.keys(ahora).forEach((tabla) => {
             if (String(ahora[tabla]) === String(ultimoPulso[tabla])) return;
-            if (PORAVISO.has(tabla) && !caido) return;
+            // v9.993 — Los productos se miran SIEMPRE, no sólo con el canal
+            // caído: en el celular la conexión en vivo a veces se corta sin
+            // avisar y el producto nuevo no llegaba hasta recargar.
+            if (PORAVISO.has(tabla) && !caido && tabla !== "productos") return;
             tocado++;
             cuales.push(tabla);
             refrescar(tabla);
@@ -3983,7 +3990,16 @@ function ControlTienda() {
     // 20 segundos en vez de 60: ahora el pulso es el único aviso de catorce
     // tablas, y una transferencia que tarda un minuto en aparecer molesta.
     // El desfase evita que los diez equipos consulten al mismo tiempo.
-    const reloj = setInterval(revisar, 20000 + Math.floor(Math.random() * 8000));
+    // v9.993 — Con la pantalla de Productos abierta se revisa cada 5 s (la
+    // consulta pesa unos 300 bytes); en el resto de la app, como antes.
+    const cadaCuanto = 20000 + Math.floor(Math.random() * 8000);
+    let ultimaRevision = Date.now();
+    const reloj = setInterval(() => {
+      const rapido = (window.__ctPulsoRapido || 0) > 0;
+      if (rapido || Date.now() - ultimaRevision >= cadaCuanto) { ultimaRevision = Date.now(); revisar(); }
+    }, 5000);
+    // Botón "Actualizar" de Productos: trae ya lo nuevo, sin esperar a nadie
+    window.__ctActualizarProductos = () => { refrescar("productos"); refrescar("variantes"); };
 
     // Al volver a la pestaña también se refresca: si el aviso se perdió
     // porque el teléfono estaba dormido, así se recupera igual.
@@ -3994,6 +4010,7 @@ function ControlTienda() {
       clearTimeout(pendiente);
       clearInterval(reloj);
       document.removeEventListener("visibilitychange", alVolver);
+      window.__ctActualizarProductos = null;
       nube.removeChannel(canal);
     };
   }, [sesion, loading]);
@@ -7761,18 +7778,43 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
       }
     }
   };
-  await subirLasFotos(prods.nuevos);
+  // v9.993 — Los productos NUEVOS suben primero y sus fotos después. Antes
+  // se esperaba a subir la foto (varios segundos con datos del celular) y
+  // recién ahí el producto aparecía en los otros equipos. Ahora aparece al
+  // toque, y la foto se le agrega apenas termina de subir.
   await subirLasFotos(prods.editados);
-
+  const esFotoSinSubir = (x) => /^data:/i.test(String(x || ""));
+  const sinFotosPendientes = (p) => ({
+    ...p,
+    imagenes: (p.imagenes || []).filter((x) => !esFotoSinSubir(x)),
+    imagen: esFotoSinSubir(p.imagen) ? "" : p.imagen
+  });
+  const fotosPorSubir = [];
   for (let i = 0; i < prods.nuevos.length; i += TANDA) {
     const grupo = prods.nuevos.slice(i, i + TANDA);
     const { data: filas, error } = await nube.from("productos")
-      .insert(grupo.map((p) => aLaNube.producto(p, idMayor)))
+      .insert(grupo.map((p) => aLaNube.producto(sinFotosPendientes(p), idMayor)))
       .select("id");
     if (error) throw new Error("Al crear productos: " + error.message);
-    grupo.forEach((p, k) => cambios.push({ tipo: "producto", viejo: p.id, nuevo: filas[k].id }));
+    grupo.forEach((p, k) => {
+      cambios.push({ tipo: "producto", viejo: p.id, nuevo: filas[k].id });
+      if (imagenesDe(p).some(esFotoSinSubir)) fotosPorSubir.push({ ...p, id: filas[k].id });
+    });
     // Las variantes de toda la tanda, en una sola llamada
     await guardarVariantesEnTanda(grupo.map((p, k) => ({ id: filas[k].id, previo: null, actual: p })));
+  }
+  // Ahora sí, las fotos de los nuevos (ya con el id de la nube)
+  for (const p of fotosPorSubir) {
+    try {
+      const urls = await subirFotosDe(p);
+      if (!urls) continue;
+      const { error } = await nube.from("productos").update({ imagenes: urls, imagen: urls[0] || null }).eq("id", p.id);
+      if (error) throw new Error(error.message);
+      cambios.push({ tipo: "fotos", id: p.id, imagenes: urls });
+    } catch (e) {
+      console.error("No se pudo subir una foto", e);
+      if (avisarProblema) avisarProblema("Una foto no se pudo subir: " + String((e && e.message) || e));
+    }
   }
 
   for (let i = 0; i < prods.editados.length; i += TANDA) {
@@ -8549,6 +8591,27 @@ function tsSet(tabla, ts) {
     }
   } catch(e) {}
 }
+// v9.993 — Cuando llegan productos que cargó OTRO equipo, se avisa en
+// pantalla: así la encargada sabe que hay algo para ponerle precio o
+// imprimir sin tener que andar mirando. Se compara también por código de
+// barras, porque el propio producto vuelve de la nube con otro id.
+function avisarProductosNuevos(antes, productos) {
+  const previos = (antes && antes.productos) || [];
+  if (!previos.length) return; // primera carga: no es "nuevo"
+  const ids = new Set(previos.map((p) => p.id));
+  const codigos = new Set(previos.map((p) => p.codigoBarras).filter(Boolean));
+  const yo = usuarioActivo(antes);
+  const nuevos = (productos || []).filter((p) => !ids.has(p.id) &&
+    !(p.codigoBarras && codigos.has(p.codigoBarras)) && (!p.creadoPor || p.creadoPor !== yo));
+  if (!nuevos.length) return;
+  const p = nuevos[0];
+  const sinP = nuevos.filter((x) => !(Number(x.precioVenta) > 0)).length;
+  avisar(nuevos.length === 1
+    ? (p.creadoPor || "Otro equipo") + " carg\u00F3 \u201C" + p.nombre + "\u201D" + (sinP ? " \u00B7 sin precio" : "")
+    : nuevos.length + " productos nuevos cargados" + (sinP ? " \u00B7 " + sinP + " sin precio" : ""),
+    { tono: "info" });
+}
+
 // v9.992 — Margen de seguridad al pedir "lo que cambió desde la marca".
 // En la base, actualizado_en es la hora en que EMPIEZA una escritura, pero la
 // fila recién se ve cuando TERMINA. Si en el medio llega algo más nuevo, la
@@ -13395,6 +13458,18 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
   const [irAlFinal, setIrAlFinal] = useState(false);
   // v9.991 — Sin precio y carteles pendientes
   const [verSinPrecio, setVerSinPrecio] = useState(false);
+  // v9.993 — Con esta pantalla abierta la sincronización revisa cada 5 s
+  useEffect(() => {
+    window.__ctPulsoRapido = (window.__ctPulsoRapido || 0) + 1;
+    return () => { window.__ctPulsoRapido = Math.max(0, (window.__ctPulsoRapido || 1) - 1); };
+  }, []);
+  const [actualizando, setActualizando] = useState(false);
+  const actualizarAhora = () => {
+    if (!window.__ctActualizarProductos) { avisar("La sincronización todavía está arrancando", { tono: "info" }); return; }
+    setActualizando(true);
+    window.__ctActualizarProductos();
+    setTimeout(() => setActualizando(false), 2500);
+  };
   const [verCarteles, setVerCarteles] = useState(false);
   const [tickCarteles, setTickCarteles] = useState(0);
   useEffect(() => {
@@ -13883,7 +13958,14 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
             "div",
             { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
             React.createElement(SectionTitle, null, "Productos"),
-            seleccion.length > 0 && React.createElement(SwingTag, { tone: "ink" }, seleccion.length, " seleccionado", seleccion.length === 1 ? "" : "s")
+            seleccion.length > 0 && React.createElement(SwingTag, { tone: "ink" }, seleccion.length, " seleccionado", seleccion.length === 1 ? "" : "s"),
+            // v9.993 — Traer ya lo que cargaron los demás
+            React.createElement("button", {
+              onClick: actualizarAhora,
+              disabled: actualizando,
+              title: "Traer ya los productos que cargaron los demás",
+              style: { display: "inline-flex", alignItems: "center", gap: 6, background: "var(--surface-2)", color: "var(--ink)", border: "none", borderRadius: 999, padding: "6px 12px", fontSize: 12.5, fontWeight: 650, cursor: actualizando ? "default" : "pointer", fontFamily: "'Inter', sans-serif", opacity: actualizando ? 0.6 : 1 }
+            }, React.createElement(RefreshCw, { size: 13 }), actualizando ? "Buscando\u2026" : "Actualizar")
           ),
           // v9.991 — Lo que falta: precio (para la encargada) y carteles (para
           // el equipo que imprime). Sólo aparecen si hay algo.
