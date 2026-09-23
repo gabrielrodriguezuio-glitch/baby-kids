@@ -129,7 +129,8 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.993";
+const VERSION_APP = "9.994";
+// v9.994 (2026-09-23) — Fix: "Sin precio" no abría (useRef no estaba importado en este archivo; va como React.useRef)
 // v9.993 (2026-09-23) — Productos nuevos llegan antes a los otros equipos: se suben antes que sus fotos; el pulso siempre revisa productos y cada 5 s con Productos abierto; aviso "X cargó ..."; botón Actualizar en Productos.
 // v9.992 (2026-09-22) — Carga masiva: margen de 2 min en la sincronización (no se pierden productos ni talles cuando cargan varios a la vez); copia local en IndexedDB (sin el tope de ~4.800 productos de localStorage); "Carteles pendientes" de a tandas de 25.
 // v9.991 (2026-09-22) — Productos sin precio: se pueden cargar sin precio; lista "Sin precio" para ponerlo (Enter guarda y pasa al siguiente); el Punto de Venta no deja venderlos; "Carteles pendientes" por equipo con "Imprimir todos".
@@ -13125,7 +13126,7 @@ function SinPrecioModal({ data, persist, onClose }) {
   const lista = (data.productos || []).filter((p) => sinPrecio(p) && p.activo !== false)
     .sort((a, b) => (claveDeCarga(a) < claveDeCarga(b) ? -1 : 1));
   const [precios, setPrecios] = useState({});
-  const campos = useRef({});
+  const campos = React.useRef({});
   const guardar = (p) => {
     const n = Number(String(precios[p.id] || "").replace(",", "."));
     if (!(n > 0)) { avisar("Escribí un precio mayor a cero", { tono: "error" }); return; }
