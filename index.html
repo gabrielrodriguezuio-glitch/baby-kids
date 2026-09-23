@@ -129,7 +129,30 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.995";
+const VERSION_APP = "9.996";
+// v9.996 (2026-09-23) — FIX GRAVE: DESAPARECÍAN VENTAS, PAGOS Y DEUDAS
+// Nada se borró de la nube: lo que fallaba era la copia que cada dispositivo
+// guarda para abrir rápido. Guardaba sólo las 200 ventas más nuevas (y 30
+// cierres de caja), y como la apertura siguiente pide "sólo lo que cambió
+// desde la última vez", las ventas más viejas NO volvían nunca. Con tres
+// locales, 200 ventas es alrededor de una semana: a los pocos días un fiado
+// se caía de la app y el cliente aparecía SIN DEUDA Y SIN COMPRAS, con la
+// venta intacta en la base. El saldo se calcula sumando esas ventas, así que
+// la deuda que mostraba la app era menor que la real.
+// Arreglos:
+// · La copia guarda TODAS las ventas de clientes, sin tope. De ellas sale la
+//   deuda y no pueden faltar nunca. Del resto, hasta 8.000 (seis meses de
+//   ventas pesan ~5 MB y en IndexedDB entran de sobra). Cierres: 500.
+// · Si algo quedó afuera, la copia queda marcada, y la apertura siguiente
+//   baja las ventas completas en vez de creerle a una lista incompleta.
+// · RECUPERACIÓN AUTOMÁTICA: al abrir por primera vez con esta versión, toda
+//   copia escrita por una versión anterior se considera incompleta y se
+//   bajan las ventas enteras una vez. Se avisa en pantalla. Sólo se rebajan
+//   las ventas; productos y stock siguen por delta, que es lo barato.
+// · La carga completa ahora trae TODAS las ventas fiadas, sin el corte de
+//   seis meses: un fiado viejo sin terminar de pagar ya no queda afuera.
+// NO REQUIERE SQL.
+//
 // v9.995 (2026-09-23) — FIX: EL PRECIO DE UN PRODUCTO SE BORRABA SOLO
 // Causa: cuando un teléfono guardaba CUALQUIER cambio de un producto (una
 // venta, stock, un talle, el formulario de edición), subía la fila ENTERA a
@@ -3399,7 +3422,11 @@ const stockCombo = (producto, productos, negocioId) => {
 // cientos de veces más. La copia se guarda con sus marcas de sincronización
 // adentro: así la copia y las marcas siempre dicen lo mismo aunque la app se
 // cierre en el medio. Si IndexedDB falla, se usa localStorage como antes.
-const COPIA_DB = "ct-local", COPIA_STORE = "kv", COPIA_KEY = "copia";
+// v9.996 — Las ventas se guardan en su propia llave, aparte del resto. Dos
+// motivos: no hay que reescribir la lista entera de ventas cada vez que
+// cambia un precio o el stock (que es casi siempre), y así la lista puede ser
+// todo lo larga que haga falta sin que la app se ponga pesada al guardar.
+const COPIA_DB = "ct-local", COPIA_STORE = "kv", COPIA_KEY = "copia", COPIA_VENTAS_KEY = "copia-ventas";
 let _copiaDB = null;
 const abrirCopiaDB = () => {
   if (_copiaDB) return _copiaDB;
@@ -3430,13 +3457,25 @@ const idbHacer = async (modo, fn) => {
 const leerCopiaLocal = async () => {
   try {
     const txt = await idbHacer("readonly", (st) => st.get(COPIA_KEY));
-    if (txt) return JSON.parse(txt);
+    if (txt) {
+      const copia = JSON.parse(txt);
+      // v9.996 — Las ventas viven aparte. Una copia de una versión anterior
+      // las trae adentro de datos: en ese caso se usan esas.
+      if (copia && copia.datos && !(copia.datos.ventas || []).length) {
+        try {
+          const vTxt = await idbHacer("readonly", (st) => st.get(COPIA_VENTAS_KEY));
+          if (vTxt) copia.datos.ventas = JSON.parse(vTxt) || [];
+        } catch (e) { copia.recortadaVentas = true; }
+      }
+      return copia;
+    }
   } catch (e) {}
   try { return JSON.parse(localStorage.getItem("ct-copia") || "null"); } catch (e) { return null; }
 };
 const borrarCopiaLocal = async () => {
   try { localStorage.removeItem("ct-copia"); } catch (e) {}
   try { await idbHacer("readwrite", (st) => st.delete(COPIA_KEY)); } catch (e) {}
+  try { await idbHacer("readwrite", (st) => st.delete(COPIA_VENTAS_KEY)); } catch (e) {}
 };
 // Se guarda con un respiro de 800 ms: una venta dispara varios cambios
 // seguidos y no tiene sentido escribir 1,5 MB cinco veces. Al salir de la
@@ -3449,22 +3488,65 @@ function guardarCopiaLocal(quien, frescos) {
   clearTimeout(_copiaReloj);
   _copiaReloj = setTimeout(escribirCopiaAhora, 800);
 }
+// v9.996 — QUÉ VENTAS GUARDA LA COPIA LOCAL
+// Hasta la v9.995 la copia guardaba sólo las 200 ventas más nuevas. Como la
+// apertura siguiente pide "sólo lo que cambió desde la última vez", las
+// ventas más viejas NO volvían nunca: se caían de la app para siempre,
+// aunque siguieran enteras en la nube. Un fiado de diez días atrás
+// desaparecía y el cliente aparecía sin deuda y sin compras.
+//
+// La regla ahora es simple: LA COPIA GUARDA LO MISMO QUE TIENE LA APP, sin
+// recortar. Eso vale ~5 MB con seis meses de ventas y en IndexedDB entra de
+// sobra; además las ventas van en su propia llave, así que sólo se
+// reescriben cuando cambian de verdad.
+// El tope de abajo es una red por si algo se descontrola: sólo se aplica si
+// se pasa, y aun así las ventas de clientes se guardan TODAS, porque de
+// ellas sale la deuda y no pueden faltar nunca.
+const TOPE_VENTAS_COPIA = 60000;
+const VERSION_COPIA = 996;
+const ventaDeCliente = (v) => !!(v && (v.clienteId || v.metodoPago === "cuenta_corriente"));
+const ordenVenta = (a, b) => (b.fecha + " " + (b.horaTexto || "")).localeCompare(a.fecha + " " + (a.horaTexto || ""));
+function ventasParaLaCopia(ventas) {
+  const todas = ventas || [];
+  if (todas.length <= TOPE_VENTAS_COPIA) return { ventas: todas, recortadas: false };
+  const deClientes = todas.filter(ventaDeCliente);
+  const resto = todas.filter((v) => !ventaDeCliente(v));
+  const lugar = Math.max(0, TOPE_VENTAS_COPIA - deClientes.length);
+  return {
+    ventas: deClientes.concat(resto.slice(0, lugar)).sort(ordenVenta),
+    recortadas: resto.length > lugar
+  };
+}
+
+// Qué lista de ventas quedó escrita: si es la misma, no se reescribe
+let _ventasEscritas = null;
 async function escribirCopiaAhora() {
   clearTimeout(_copiaReloj);
   const p = _copiaPendiente;
   _copiaPendiente = null;
   if (!p) return;
   try {
+    const v = ventasParaLaCopia(p.frescos.ventas);
     const datos = { ...p.frescos,
       movimientosStock: [], cambios: [], gastos: [], compras: [],
-      devolucionesReparto: [], cajasCerradas: (p.frescos.cajasCerradas || []).slice(0, 30),
-      ventas: (p.frescos.ventas || []).slice(0, 200)
+      // Los cierres de caja tenían el mismo problema que las ventas: se
+      // guardaban 30 y los demás no volvían. 500 es lo que trae la nube.
+      devolucionesReparto: [], cajasCerradas: (p.frescos.cajasCerradas || []).slice(0, 500),
+      ventas: []   // van aparte, en su propia llave
     };
-    const txt = JSON.stringify({ quien: p.quien, datos, marcas: p.marcas });
+    // Las ventas primero: si la app se cierra justo en el medio, es preferible
+    // que sobren ventas a que la cabecera diga que están y no estén.
+    if (p.frescos.ventas !== _ventasEscritas) {
+      await idbHacer("readwrite", (st) => st.put(JSON.stringify(v.ventas), COPIA_VENTAS_KEY));
+      _ventasEscritas = p.frescos.ventas;
+    }
+    const txt = JSON.stringify({ quien: p.quien, datos, marcas: p.marcas,
+      v: VERSION_COPIA, recortadaVentas: v.recortadas });
     await idbHacer("readwrite", (st) => st.put(txt, COPIA_KEY));
     // Ya está en IndexedDB: la vieja de localStorage sólo ocupa lugar
     try { localStorage.removeItem("ct-copia"); } catch (e) {}
   } catch (e) {
+    _ventasEscritas = null;
     guardarCopiaEnLocalStorage(p.quien, p.frescos);
   }
 }
@@ -3486,11 +3568,19 @@ function guardarCopiaEnLocalStorage(quien, frescos) {
   // En la apertura siguiente la app creía tener delta disponible, veía
   // actual.ventas vacío y se bajaba SEIS MESES de ventas enteros. Eran 53 MB
   // por apertura y por dispositivo, y no aparecía en el monitor.
+  // v9.996 — Acá el recorte es inevitable (localStorage tiene ~5 MB), así que
+  // la copia queda MARCADA como recortada: la próxima apertura baja las
+  // ventas completas en vez de creerle a esta lista.
   const escalones = [200, 120, 60, 25, 10];
   for (const cuantas of escalones) {
     try {
-      const liviano = { ...base, ventas: (frescos.ventas || []).slice(0, cuantas) };
-      localStorage.setItem("ct-copia", JSON.stringify({ quien, datos: liviano }));
+      // Las ventas de clientes van primero: si hay que recortar, que lo que
+      // se pierda sea una venta al contado y nunca un fiado.
+      const ordenadas = (frescos.ventas || []).slice().sort((a, b) =>
+        (ventaDeCliente(b) ? 1 : 0) - (ventaDeCliente(a) ? 1 : 0));
+      const liviano = { ...base, ventas: ordenadas.slice(0, cuantas).sort(ordenVenta) };
+      localStorage.setItem("ct-copia", JSON.stringify({ quien, datos: liviano,
+        v: VERSION_COPIA, recortadaVentas: (frescos.ventas || []).length > cuantas }));
       return;
     } catch (e) { /* no entró: se prueba con menos */ }
   }
@@ -3662,6 +3752,9 @@ function ControlTienda() {
 
     let mostradoDeLaCopia = false;
     let copiaEnMano = null;
+    // v9.996 — Esta apertura tiene que rearmar las ventas desde cero porque la
+    // copia de este dispositivo estaba recortada
+    let recuperandoVentas = false;
     (async () => {
     try {
       // v9.992 — La copia vive en IndexedDB (con localStorage de respaldo)
@@ -3672,6 +3765,21 @@ function ControlTienda() {
         // bajar todo), no se reponen.
         if (copia.marcas && tsDe("productos")) {
           try { localStorage.setItem(SYNC_TS_KEY, JSON.stringify(copia.marcas)); } catch (e) {}
+        }
+        // v9.996 — Si esta copia quedó con las ventas recortadas, o la escribió
+        // una versión anterior (que recortaba a 200 sin avisar), no se le puede
+        // pedir "sólo lo que cambió": faltarían para siempre las ventas viejas,
+        // y con ellas la deuda de los clientes. Se borra la marca de ventas y
+        // la apertura las baja completas, una vez. Después la copia ya queda
+        // entera y se vuelve al delta normal.
+        if (copia.recortadaVentas || copia.v !== VERSION_COPIA) {
+          recuperandoVentas = true;
+          tsBorrar("ventas");
+          tsBorrar("caja_cierres");
+          try {
+            MONITOR.alerta("copia-incompleta",
+              "La copia de este dispositivo estaba recortada: se bajan las ventas completas una vez", "alto");
+          } catch (e) {}
         }
         copiaEnMano = migrarCajas(migrarDatos(copia.datos));
         // Los duplicados de cuenta corriente que hayan quedado guardados en
@@ -3692,7 +3800,12 @@ function ControlTienda() {
         // última vez. Antes cada apertura bajaba 500 productos, 6000
         // variantes y seis meses de ventas; con diez teléfonos abriendo y
         // cerrando todo el día, eso era casi todo el consumo del mes.
-        const hayMarcas = !!tsDe("productos") && !!tsDe("ventas");
+        // v9.996 — Cuando hay que recuperar las ventas, la marca de ventas se
+        // borró a propósito: adentro de traerParcial eso hace que se bajen
+        // TODAS (seis meses + todas las fiadas). El resto —productos, stock,
+        // clientes— sigue viniendo por delta, que es lo barato. Antes, al
+        // faltar esa marca, se bajaba el catálogo entero al pedo.
+        const hayMarcas = !!tsDe("productos") && (!!tsDe("ventas") || recuperandoVentas);
         if (mostradoDeLaCopia && copiaEnMano && hayMarcas) {
           const t0 = Date.now();
           const marcaBytes = MONITOR.totalBytes || 0;
@@ -3730,6 +3843,11 @@ function ControlTienda() {
                 ms: Date.now() - t0
               });
               MONITOR.evento("arranque", "abrió con la copia local y " + DELTA_INFO.filas + " filas nuevas");
+              // v9.996 — Que se vea que se recuperó: si no, nadie sabe que la
+              // app había estado mostrando menos ventas de las que hay.
+              if (recuperandoVentas) {
+                try { avisar("Se recuperaron las ventas y los pagos anteriores de este dispositivo.", { tono: "info" }); } catch (e) {}
+              }
               setLoading(false);
               return;
             }
@@ -8763,6 +8881,18 @@ function conMargen(ts) {
 function tsReset() {
   try { localStorage.removeItem(SYNC_TS_KEY); } catch(e) {}
 }
+// v9.996 — Borra la marca de UNA tabla: la próxima consulta la baja entera en
+// vez de pedir "sólo lo que cambió". Se usa cuando la copia de este
+// dispositivo quedó incompleta y pedir el delta dejaría los huecos para
+// siempre.
+function tsBorrar(tabla) {
+  try {
+    const m = tsMapa();
+    if (!(tabla in m)) return;
+    delete m[tabla];
+    localStorage.setItem(SYNC_TS_KEY, JSON.stringify(m));
+  } catch (e) {}
+}
 // Máximo actualizado_en de un conjunto de filas: sirve para actualizar
 // el timestamp local sin perder ninguna fila por diferencias de reloj.
 function tsMaximo(filas) {
@@ -8921,7 +9051,9 @@ async function traerTodo(tabla, orden, filtro, seleccion) {
   const TAM = 1000;
   const armar = (desde) => {
     let q = nube.from(tabla).select(seleccion || "*").range(desde, desde + TAM - 1);
-    if (filtro) q = q.gte(filtro.campo, filtro.desde);
+    // v9.996 — El filtro puede ser "desde tal fecha" o "que sea igual a esto"
+    if (filtro && filtro.igual != null) q = q.eq(filtro.campo, filtro.igual);
+    else if (filtro) q = q.gte(filtro.campo, filtro.desde);
     if (orden) q = q.order(orden);
     return q;
   };
@@ -9039,9 +9171,37 @@ function FotoComprobante({ ventaId, indice, imagen, tieneFoto, tam, onAmpliar })
   }, React.createElement(Receipt, { size: Math.round(lado * 0.38), color: tieneFoto ? "var(--denim-light)" : "var(--muted)" }));
 }
 
+// v9.996 \u2014 TODAS las ventas fiadas, sin corte de fecha.
+// La carga completa trae los \u00FAltimos seis meses. Eso alcanza para el trabajo
+// del d\u00EDa, pero NO para la deuda: un fiado de hace ocho meses que el cliente
+// todav\u00EDa no termin\u00F3 de pagar quedaba afuera, y la app mostraba una deuda
+// menor que la real. Las fiadas son unas pocas al lado del total, as\u00ED que se
+// traen todas siempre.
+async function traerVentasFiadas(seleccion) {
+  try {
+    return await traerTodo("ventas", null, { campo: "metodo_pago", igual: "cuenta_corriente" }, seleccion);
+  } catch (e) {
+    console.warn("No se pudieron traer las ventas fiadas viejas:", e && e.message);
+    try { MONITOR.error("ventas-fiadas", e); } catch (x) {}
+    return [];
+  }
+}
+
+// Junta dos listas de ventas sin repetir, por id
+const unirVentas = (a, b) => {
+  const porId = new Map();
+  (a || []).forEach((v) => porId.set(v.id, v));
+  (b || []).forEach((v) => { if (!porId.has(v.id)) porId.set(v.id, v); });
+  return Array.from(porId.values());
+};
+
 async function traerVentasConRenglones(desde) {
   try {
-    const ventas = await traerTodo("ventas", null, { campo: "fecha", desde }, VENTA_LIVIANA + ", venta_items(*)");
+    const [recientes, fiadas] = await Promise.all([
+      traerTodo("ventas", null, { campo: "fecha", desde }, VENTA_LIVIANA + ", venta_items(*)"),
+      traerVentasFiadas(VENTA_LIVIANA + ", venta_items(*)")
+    ]);
+    const ventas = unirVentas(recientes, fiadas);
     if (ventas.length && !ventas.some((v) => Array.isArray(v.venta_items))) throw new Error("sin relaci\u00F3n");
     const items = [];
     ventas.forEach((v) => { (v.venta_items || []).forEach((it) => items.push(it)); delete v.venta_items; });
@@ -9056,10 +9216,12 @@ async function traerVentasConRenglones(desde) {
     const seleccion = esColumna
       ? VENTA_LIVIANA.replace(/,\s*comprobantes_livianos/, "")
       : VENTA_LIVIANA;
-    return Promise.all([
+    const [recientes, fiadas, items] = await Promise.all([
       traerTodo("ventas", null, { campo: "fecha", desde }, seleccion),
+      traerVentasFiadas(seleccion),
       traerTodo("venta_items")
     ]);
+    return [unirVentas(recientes, fiadas), items];
   }
 }
 
