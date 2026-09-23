@@ -146,6 +146,9 @@ const VERSION_APP = "9.995";
 //   equipo lo que llegó mientras tanto.
 // · Sincronización: un refresco por vez; una respuesta que vuelve tarde no
 //   pisa una más nueva ni lo que se editó acá mientras tanto.
+// · Si se edita un producto justo mientras se está creando (todavía sin id de
+//   la nube), el cambio queda anotado y se sube apenas la base le da el id.
+//   Antes ese cambio se perdía o cortaba el guardado entero.
 // NO REQUIERE SQL.
 // v9.994 (2026-09-23) — Fix: "Sin precio" no abría (useRef no estaba importado en este archivo; va como React.useRef)
 // v9.993 (2026-09-23) — Productos nuevos llegan antes a los otros equipos: se suben antes que sus fotos; el pulso siempre revisa productos y cada 5 s con Productos abierto; aviso "X cargó ..."; botón Actualizar en Productos.
@@ -4173,6 +4176,21 @@ function ControlTienda() {
           });
           return salida;
         });
+        // v9.995 — Lo que se editó MIENTRAS el producto se estaba creando no
+        // se pudo subir: en ese momento todavía tenía el id de la app y la
+        // base no lo conocía. Ahora que tiene su id de la nube, se sube.
+        const demorados = cambios.filter((c) => c.tipo === "producto" && EDICIONES_SIN_SUBIR.has(c.viejo));
+        if (demorados.length) {
+          demorados.forEach((c) => EDICIONES_SIN_SUBIR.delete(c.viejo));
+          setTimeout(() => {
+            const ahora = dataRef.current || next;
+            const mayor = listasDe(ahora).find((l) => /mayor/i.test(l.nombre));
+            demorados.forEach((c) => {
+              const p = (ahora.productos || []).find((x) => x.id === c.nuevo);
+              if (p) subirProductoDemorado(c.nuevo, p, mayor && mayor.id);
+            });
+          }, 400);
+        }
         // Si algún id de venta cambió y estaba anotado en la reposición, la
         // nube quedó con el id viejo: se sube de nuevo con el definitivo, si
         // no al reabrir la app volvería el id viejo y el producto reaparecería.
@@ -7412,6 +7430,19 @@ const columnasQueCambiaron = (previo, actual, idMayor) => {
   return salida;
 };
 
+// v9.995 — Productos que se editaron mientras se estaban creando: en ese
+// momento todavía tenían el id de la app, así que no había fila que
+// actualizar. Se anotan acá y se suben apenas la base les da su id.
+const EDICIONES_SIN_SUBIR = new Set();
+async function subirProductoDemorado(id, producto, idMayor) {
+  try {
+    const { error } = await nube.from("productos").update(aLaNube.producto(producto, idMayor)).eq("id", id);
+    if (error) throw new Error(error.message);
+  } catch (e) {
+    console.error("No se pudo subir una edición que quedó demorada", e);
+  }
+}
+
 // Qué cambió entre dos listas, comparadas por id
 const queCambio = (antes, despues) => {
   const previos = {};
@@ -7911,8 +7942,9 @@ async function guardarEnLaNube(antes, despues, avisarProblema) {
     const cols = columnasQueCambiaron(previosPorId.get(p.id), p, idMayor);
     if (!Object.keys(cols).length) return;
     // Uno que todavía no llegó a la nube no tiene fila que actualizar: se
-    // está subiendo con el alta, y el próximo guardado lo alcanza.
-    if (!esIdDeLaBase(p.id)) { console.warn("Producto sin id de la base, se saltea:", p.id); return; }
+    // está creando en este mismo momento. Queda anotado y se sube apenas la
+    // base le dé su id (si no, el cambio se perdía sin que nadie se entere).
+    if (!esIdDeLaBase(p.id)) { EDICIONES_SIN_SUBIR.add(p.id); return; }
     filasAEditar.push({ id: p.id, cols });
   });
   window._ctUltimaEdicionProductos = filasAEditar.map((f) => ({ id: f.id, columnas: Object.keys(f.cols) }));
