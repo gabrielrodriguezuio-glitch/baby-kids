@@ -129,7 +129,9 @@ import { createClient } from "@supabase/supabase-js";
 // mail y contraseña y miran el rol de cada uno.
 // Marca de versión: sirve para saber de un vistazo si el dispositivo está
 // viendo la última, sin tener que buscar qué función existe y cuál no.
-const VERSION_APP = "9.990";
+const VERSION_APP = "9.992";
+// v9.992 (2026-09-22) — Carga masiva: margen de 2 min en la sincronización (no se pierden productos ni talles cuando cargan varios a la vez); copia local en IndexedDB (sin el tope de ~4.800 productos de localStorage); "Carteles pendientes" de a tandas de 25.
+// v9.991 (2026-09-22) — Productos sin precio: se pueden cargar sin precio; lista "Sin precio" para ponerlo (Enter guarda y pasa al siguiente); el Punto de Venta no deja venderlos; "Carteles pendientes" por equipo con "Imprimir todos".
 // v9.990 (2026-09-22) — Productos: se guarda fecha Y hora de carga (antes sólo el día, y los del mismo día quedaban en orden al azar). Lo recién cargado queda siempre en la última página, sin importar categoría; al crear uno la lista salta sola a esa página.
 // v9.989 (2026-09-22) — Fix: el dispositivo del Punto de Venta (buscador del escáner siempre enfocado) no recibía productos nuevos ni cambios: el refresco y el pulso se posponían para siempre. Ahora sólo esperan si se está tecleando.
 // v9.988 (2026-09-22) — Informe PDF de caja: un solo motor para el cierre en curso, un cierre del historial y varios juntos; "Clientes que pagaron" (pagó, cómo, saldo que le queda) en vez de la lista de todos los clientes; PDF paginado en hojas A4 sin cortar renglones; botones en Detalle del cierre y en Reportes > Historial de Caja (casillas + "Enviar PDF")
@@ -3368,7 +3370,89 @@ const stockCombo = (producto, productos, negocioId) => {
 // La copia local con la que abre la app. Se guarda sin el historial pesado:
 // para abrir y vender alcanzan productos, clientes y cajas. Si no entra en
 // el disco del navegador, se recorta hasta que entre.
+// ===== Copia local en IndexedDB (v9.992) ==================================
+// El almacenamiento de siempre del navegador (localStorage) tiene un tope de
+// unos 5 millones de caracteres: alcanza para unos 4.800 productos, y cuando
+// se pasa la app baja TODO el catálogo en cada apertura. IndexedDB permite
+// cientos de veces más. La copia se guarda con sus marcas de sincronización
+// adentro: así la copia y las marcas siempre dicen lo mismo aunque la app se
+// cierre en el medio. Si IndexedDB falla, se usa localStorage como antes.
+const COPIA_DB = "ct-local", COPIA_STORE = "kv", COPIA_KEY = "copia";
+let _copiaDB = null;
+const abrirCopiaDB = () => {
+  if (_copiaDB) return _copiaDB;
+  _copiaDB = new Promise((ok, mal) => {
+    try {
+      const req = indexedDB.open(COPIA_DB, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(COPIA_STORE);
+      req.onsuccess = () => ok(req.result);
+      req.onerror = () => mal(req.error || new Error("no abre"));
+      req.onblocked = () => mal(new Error("bloqueada"));
+    } catch (e) { mal(e); }
+  });
+  _copiaDB.catch(() => { _copiaDB = null; });
+  return _copiaDB;
+};
+const idbHacer = async (modo, fn) => {
+  const db = await abrirCopiaDB();
+  return new Promise((ok, mal) => {
+    const tx = db.transaction(COPIA_STORE, modo);
+    const req = fn(tx.objectStore(COPIA_STORE));
+    tx.oncomplete = () => ok(req ? req.result : undefined);
+    tx.onerror = () => mal(tx.error);
+    tx.onabort = () => mal(tx.error || new Error("abortada"));
+  });
+};
+// Lee la copia: primero IndexedDB y, si no hay, la de localStorage (la de
+// las versiones anteriores, que se muda sola en el próximo guardado).
+const leerCopiaLocal = async () => {
+  try {
+    const txt = await idbHacer("readonly", (st) => st.get(COPIA_KEY));
+    if (txt) return JSON.parse(txt);
+  } catch (e) {}
+  try { return JSON.parse(localStorage.getItem("ct-copia") || "null"); } catch (e) { return null; }
+};
+const borrarCopiaLocal = async () => {
+  try { localStorage.removeItem("ct-copia"); } catch (e) {}
+  try { await idbHacer("readwrite", (st) => st.delete(COPIA_KEY)); } catch (e) {}
+};
+// Se guarda con un respiro de 800 ms: una venta dispara varios cambios
+// seguidos y no tiene sentido escribir 1,5 MB cinco veces. Al salir de la
+// app se escribe en el momento.
+let _copiaPendiente = null, _copiaReloj = null;
 function guardarCopiaLocal(quien, frescos) {
+  if (!quien || !frescos) return;
+  // Las marcas se toman AHORA: son las que corresponden a estos datos
+  _copiaPendiente = { quien, frescos, marcas: tsMapa() };
+  clearTimeout(_copiaReloj);
+  _copiaReloj = setTimeout(escribirCopiaAhora, 800);
+}
+async function escribirCopiaAhora() {
+  clearTimeout(_copiaReloj);
+  const p = _copiaPendiente;
+  _copiaPendiente = null;
+  if (!p) return;
+  try {
+    const datos = { ...p.frescos,
+      movimientosStock: [], cambios: [], gastos: [], compras: [],
+      devolucionesReparto: [], cajasCerradas: (p.frescos.cajasCerradas || []).slice(0, 30),
+      ventas: (p.frescos.ventas || []).slice(0, 200)
+    };
+    const txt = JSON.stringify({ quien: p.quien, datos, marcas: p.marcas });
+    await idbHacer("readwrite", (st) => st.put(txt, COPIA_KEY));
+    // Ya está en IndexedDB: la vieja de localStorage sólo ocupa lugar
+    try { localStorage.removeItem("ct-copia"); } catch (e) {}
+  } catch (e) {
+    guardarCopiaEnLocalStorage(p.quien, p.frescos);
+  }
+}
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => { if (document.hidden) escribirCopiaAhora(); });
+  window.addEventListener("pagehide", () => { escribirCopiaAhora(); });
+}
+
+// Respaldo: la copia en localStorage, como hasta la v9.991
+function guardarCopiaEnLocalStorage(quien, frescos) {
   if (!quien || !frescos) return;
   const base = { ...frescos,
     movimientosStock: [], cambios: [], gastos: [], compras: [],
@@ -3556,9 +3640,17 @@ function ControlTienda() {
 
     let mostradoDeLaCopia = false;
     let copiaEnMano = null;
+    (async () => {
     try {
-      const copia = JSON.parse(localStorage.getItem("ct-copia") || "null");
+      // v9.992 — La copia vive en IndexedDB (con localStorage de respaldo)
+      const copia = await leerCopiaLocal();
       if (copia && copia.quien === sesion.auth_id && copia.datos) {
+        // Las marcas guardadas con la copia son las que corresponden a esos
+        // datos. Si las marcas de acá no están (se borraron a propósito para
+        // bajar todo), no se reponen.
+        if (copia.marcas && tsDe("productos")) {
+          try { localStorage.setItem(SYNC_TS_KEY, JSON.stringify(copia.marcas)); } catch (e) {}
+        }
         copiaEnMano = migrarCajas(migrarDatos(copia.datos));
         // Los duplicados de cuenta corriente que hayan quedado guardados en
         // la copia del dispositivo se descartan acá, antes de mostrar nada.
@@ -3571,7 +3663,6 @@ function ControlTienda() {
       }
     } catch (e) {}
 
-    (async () => {
       setErrorNube("");
       try {
         // Si ya hay copia local y marcas de sincronización, abrir la app NO
@@ -5700,6 +5791,7 @@ function Sidebar({ tab, setTab, lowStockCount, tareasHoy, paradasHoy, mobile, da
             localStorage.removeItem("ct-copia");
             localStorage.removeItem("ct-carritos");
           } catch (e) {}
+          await borrarCopiaLocal();
           window.location.reload();
         },
         style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 7, width: "100%", background: "var(--surface-2)", border: "none", borderRadius: 9, cursor: "pointer", color: "var(--muted)", fontSize: 12.5, fontWeight: 600, padding: "9px 0", marginTop: 10, fontFamily: "'Inter', sans-serif" }
@@ -8457,6 +8549,19 @@ function tsSet(tabla, ts) {
     }
   } catch(e) {}
 }
+// v9.992 — Margen de seguridad al pedir "lo que cambió desde la marca".
+// En la base, actualizado_en es la hora en que EMPIEZA una escritura, pero la
+// fila recién se ve cuando TERMINA. Si en el medio llega algo más nuevo, la
+// marca avanza y la fila lenta no se pedía nunca: con varios empleados
+// cargando a la vez, productos que llegaban sin talles (o no llegaban) al
+// equipo de la caja. Se pide desde 2 minutos antes de la marca; lo repetido
+// se fusiona por id y no se duplica.
+const MARGEN_DELTA_MS = 120000;
+function conMargen(ts) {
+  if (!ts) return ts;
+  const t = new Date(String(ts).replace(/(\.\d{3})\d+/, "$1").replace(/([+-]\d{2})$/, "$1:00")).getTime();
+  return isNaN(t) ? ts : new Date(t - MARGEN_DELTA_MS).toISOString();
+}
 function tsReset() {
   try { localStorage.removeItem(SYNC_TS_KEY); } catch(e) {}
 }
@@ -8509,7 +8614,7 @@ function fusionarPorId(actual, delta) {
 async function traerDelta(tabla, campo, orden, seleccion) {
   const ts = tsDe(campo || tabla);
   if (!ts) return null;
-  let q = nube.from(tabla).select(seleccion || "*").gt("actualizado_en", ts);
+  let q = nube.from(tabla).select(seleccion || "*").gt("actualizado_en", conMargen(ts));
   if (orden) q = q.order(orden);
   const { data, error } = await q;
   if (error) {
@@ -8703,8 +8808,8 @@ async function traerParcial(tablas, quienEntro, actual) {
       // afectados. Antes bajaba 515 productos + 3.000 variantes por cada
       // venta ajena.
       const [pDelta, vDelta] = await Promise.all([
-        nube.from("productos").select("*").gt("actualizado_en", tsP || tsMin),
-        nube.from("variantes").select("*").gt("actualizado_en", tsV || tsMin)
+        nube.from("productos").select("*").gt("actualizado_en", conMargen(tsP || tsMin)),
+        nube.from("variantes").select("*").gt("actualizado_en", conMargen(tsV || tsMin))
       ]);
       if (pDelta.error) MONITOR.error("delta:productos", pDelta.error);
       if (vDelta.error) MONITOR.error("delta:variantes", vDelta.error);
@@ -8776,8 +8881,8 @@ async function traerParcial(tablas, quienEntro, actual) {
     const haceCargado = actual.ventas && actual.ventas.length;
     if (tsV && haceCargado) {
       const [ventasDelta, itemsDelta] = await Promise.all([
-        nube.from("ventas").select(VENTA_LIVIANA).gt("actualizado_en", tsV),
-        nube.from("venta_items").select("*").gt("actualizado_en", tsV)
+        nube.from("ventas").select(VENTA_LIVIANA).gt("actualizado_en", conMargen(tsV)),
+        nube.from("venta_items").select("*").gt("actualizado_en", conMargen(tsV))
       ]);
       const vFilas = ventasDelta.data || [];
       const iFilas = itemsDelta.data || [];
@@ -12057,6 +12162,7 @@ function EtiquetasModal({ productos, negocioNombre, negocioId, principalId, nego
   const descargar = () => {
     if (!lineas.length) return setAviso("Poné al menos una copia de algún producto.");
     imprimirCarteles(lineas, negocioNombre, f, { conNegocio, conFecha, instagram: conInstagram ? negocio.instagram : "", soloDescargar: true });
+    marcarCartelesImpresos(productos); // v9.991 — salen de "Carteles pendientes"
     onClose();
   };
 
@@ -12065,7 +12171,7 @@ function EtiquetasModal({ productos, negocioNombre, negocioId, principalId, nego
     if (lineas.length > 800) return setAviso("Son " + lineas.length + " carteles. Bajá las copias antes de imprimir.");
     const ok = imprimirCarteles(lineas, negocioNombre, f, { conNegocio, conFecha, instagram: conInstagram ? negocio.instagram : "" });
     if (!ok) setAviso("No se pudo abrir el diálogo de impresión. Probá con “Descargar hoja”: se guarda un archivo que abrís y mandás a imprimir desde el navegador.");
-    else onClose();
+    else { marcarCartelesImpresos(productos); onClose(); } // v9.991 — salen de "Carteles pendientes"
   };
 
   return React.createElement(
@@ -12909,6 +13015,177 @@ function ImportarCSVModal({ data, negocioNombre, onGuardar, onClose }) {
   );
 }
 
+// ===== PRODUCTOS SIN PRECIO Y CARTELES PENDIENTES (v9.991) ================
+// Cómo trabaja el local: llega la mercadería, los empleados la cargan SIN
+// precio, y la encargada les pone el precio e imprime los carteles.
+//  · "Sin precio" es precio de venta en 0. El Punto de Venta no deja
+//    venderlos (antes se cobraban $0).
+//  · "Carteles pendientes" se anota en CADA equipo (en el de la impresora es
+//    donde sirve): un producto con precio nuevo o cambiado cuyo cartel todavía
+//    no se imprimió ahí. No hace falta tocar la base de datos.
+const sinPrecio = (p) => !(Number(p && p.precioVenta) > 0);
+
+const CARTELES_KEY = "ct-carteles-impresos";
+// El código de barras no cambia cuando el producto sube a la nube (el id sí)
+const claveCartel = (p) => (p.codigoBarras ? "c:" + p.codigoBarras : "i:" + p.id);
+const firmaPrecio = (p) => {
+  const pr = p.precios || {};
+  return String(Number(p.precioVenta) || 0) + "|" +
+    Object.keys(pr).sort().map((k) => k + "=" + pr[k]).join(",");
+};
+const leerCartelesImpresos = () => {
+  try { return JSON.parse(localStorage.getItem(CARTELES_KEY) || "null"); } catch (e) { return null; }
+};
+const marcarCartelesImpresos = (productos) => {
+  const m = leerCartelesImpresos() || {};
+  (productos || []).forEach((p) => { if (p && !sinPrecio(p)) m[claveCartel(p)] = firmaPrecio(p); });
+  try { localStorage.setItem(CARTELES_KEY, JSON.stringify(m)); } catch (e) {}
+  try { window.dispatchEvent(new Event("ct-carteles")); } catch (e) {}
+};
+const cartelesPendientes = (productos) => {
+  const m = leerCartelesImpresos();
+  if (!m) {
+    // Primera vez en este equipo: todo lo que ya tenía precio se da por
+    // impreso, y la lista arranca con lo que se precie de acá en adelante.
+    // Con el catálogo todavía sin bajar no se anota nada: si no, al llegar
+    // los productos aparecerían todos como pendientes.
+    if (!productos || !productos.length) return [];
+    marcarCartelesImpresos(productos);
+    return [];
+  }
+  return (productos || []).filter((p) => !sinPrecio(p) && p.activo !== false && m[claveCartel(p)] !== firmaPrecio(p));
+};
+
+// Lista de productos sin precio: uno abajo del otro, se escribe el precio y
+// con Enter se guarda y se pasa al siguiente.
+function SinPrecioModal({ data, persist, onClose }) {
+  const lista = (data.productos || []).filter((p) => sinPrecio(p) && p.activo !== false)
+    .sort((a, b) => (claveDeCarga(a) < claveDeCarga(b) ? -1 : 1));
+  const [precios, setPrecios] = useState({});
+  const campos = useRef({});
+  const guardar = (p) => {
+    const n = Number(String(precios[p.id] || "").replace(",", "."));
+    if (!(n > 0)) { avisar("Escribí un precio mayor a cero", { tono: "error" }); return; }
+    persist({
+      ...data,
+      productos: data.productos.map((x) => x.id === p.id
+        ? { ...x, precioVenta: n, editadoPor: usuarioActivo(data), editadoEn: todayISO() } : x)
+    });
+    avisar(p.nombre + " · " + money(n) + " · pasa a carteles pendientes");
+    // Al siguiente de la lista
+    const i = lista.findIndex((x) => x.id === p.id);
+    const sig = lista[i + 1];
+    if (sig) setTimeout(() => { const c = campos.current[sig.id]; if (c) c.focus(); }, 60);
+  };
+  const variantesTexto = (p) => {
+    const partes = [];
+    listaNegocios(data).forEach((n) => {
+      const vs = variantesNegocio(p, n.id);
+      const st = stockNegocio(p, n.id);
+      if (!vs.length && !st) return;
+      partes.push(n.nombre + ": " + (vs.length
+        ? vs.map((v) => [v.talle, v.color].filter(Boolean).join(" ") + " (" + (Number(v.stock) || 0) + ")").join(", ")
+        : st + " u."));
+    });
+    return partes.join(" · ");
+  };
+  return React.createElement(
+    ModalOverlay,
+    { width: 620 },
+    React.createElement(ModalHeader, { icon: DollarSign, title: "Productos sin precio", onClose }),
+    React.createElement("p", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: -6, marginBottom: 14, lineHeight: 1.5 } },
+      "Los cargaron sin precio y no se pueden vender hasta que lo tengan. Escribí el precio y tocá Enter: se guarda y pasa al siguiente. Cada uno que guardes aparece en “Carteles pendientes” para imprimir."),
+    lista.length === 0
+      ? React.createElement(Empty, { icono: Check, compacto: true, text: "Todos los productos tienen precio." })
+      : React.createElement(
+          "div",
+          { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: "62vh", overflowY: "auto" } },
+          lista.map((p) => React.createElement(
+            "div",
+            { key: p.id, style: { display: "flex", alignItems: "center", gap: 10, background: "var(--surface-2)", borderRadius: 10, padding: "10px 12px", flexWrap: "wrap" } },
+            React.createElement(
+              "div",
+              { style: { flex: "1 1 220px", minWidth: 0 } },
+              React.createElement("div", { style: { fontSize: 14, fontWeight: 650 } }, p.nombre),
+              React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 2 } },
+                [p.categoria, p.codigoBarras && "Cód. " + p.codigoBarras, p.creadoPor && "cargó " + p.creadoPor, diaDeCarga(p)].filter(Boolean).join(" · ")),
+              variantesTexto(p) && React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 2 } }, variantesTexto(p))
+            ),
+            React.createElement("input", {
+              ref: (el) => { campos.current[p.id] = el; },
+              type: "number", inputMode: "decimal", placeholder: "Precio",
+              value: precios[p.id] || "",
+              onChange: (e) => setPrecios({ ...precios, [p.id]: e.target.value }),
+              onKeyDown: (e) => { if (e.key === "Enter") guardar(p); },
+              style: { width: 120, padding: "10px 11px", borderRadius: 8, border: "1px solid var(--line)", fontSize: 15, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }
+            }),
+            React.createElement(Button, { onClick: () => guardar(p), style: { padding: "10px 14px" } }, "Guardar")
+          ))
+        ),
+    React.createElement(Button, { tone: "ghost", onClick: onClose, style: { width: "100%", justifyContent: "center", marginTop: 14 } }, "Cerrar")
+  );
+}
+
+// Carteles pendientes de ESTE equipo: imprimirlos todos juntos, o sacar de la
+// lista alguno que no hace falta.
+const TANDA_CARTELES = 25;
+function CartelesPendientesModal({ pendientes, onImprimir, onClose }) {
+  return React.createElement(
+    ModalOverlay,
+    { width: 560 },
+    React.createElement(ModalHeader, { icon: ScanBarcode, title: "Carteles pendientes", onClose }),
+    React.createElement("p", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: -6, marginBottom: 14, lineHeight: 1.5 } },
+      "Productos con precio nuevo o cambiado que todavía no se imprimieron en este equipo. Al imprimirlos salen de la lista." +
+      (pendientes.length > TANDA_CARTELES ? " Son muchos: se imprimen de a " + TANDA_CARTELES + " productos por vez." : "")),
+    pendientes.length === 0
+      ? React.createElement(Empty, { icono: Check, compacto: true, text: "No hay carteles pendientes." })
+      : React.createElement(
+          "div",
+          { style: { display: "flex", flexDirection: "column", gap: 6, maxHeight: "55vh", overflowY: "auto" } },
+          pendientes.map((p) => React.createElement(
+            "div",
+            { key: p.id, style: { display: "flex", alignItems: "center", gap: 10, background: "var(--surface-2)", borderRadius: 10, padding: "9px 12px" } },
+            React.createElement(
+              "div",
+              { style: { flex: 1, minWidth: 0 } },
+              React.createElement("div", { style: { fontSize: 13.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, p.nombre),
+              React.createElement("div", { style: { fontSize: 11.5, color: "var(--muted)", marginTop: 2 } },
+                [p.categoria, p.codigoBarras && "Cód. " + p.codigoBarras].filter(Boolean).join(" · "))
+            ),
+            React.createElement("span", { style: { fontFamily: "'IBM Plex Mono', monospace", fontWeight: 650, fontSize: 13.5 } }, money(p.precioVenta)),
+            React.createElement("button", {
+              onClick: () => onImprimir([p]),
+              title: "Imprimir sólo este",
+              style: { background: "none", border: "none", cursor: "pointer", color: "var(--denim-light)", display: "flex", padding: 5 }
+            }, React.createElement(ScanBarcode, { size: 16 })),
+            React.createElement("button", {
+              onClick: () => marcarCartelesImpresos([p]),
+              title: "Sacar de la lista sin imprimir",
+              style: { background: "none", border: "none", cursor: "pointer", color: "var(--muted)", display: "flex", padding: 5 }
+            }, React.createElement(X, { size: 16 }))
+          ))
+        ),
+    React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" } },
+      React.createElement(Button, { tone: "ghost", onClick: onClose, style: { flex: 1, justifyContent: "center" } }, "Cerrar"),
+      pendientes.length > 0 && React.createElement(Button, {
+        tone: "ghost",
+        onClick: () => { if (window.confirm("¿Sacar los " + pendientes.length + " de la lista sin imprimirlos?")) marcarCartelesImpresos(pendientes); },
+        style: { flex: 1, justifyContent: "center" }
+      }, "Vaciar lista"),
+      // v9.992 — De a tandas: el armado de carteles no imprime más de 800 de
+      // una vez, y con una mercadería grande (300 productos) se pasaba. Cada
+      // tanda impresa sale de la lista y el botón ofrece la siguiente.
+      pendientes.length > 0 && React.createElement(Button, {
+        onClick: () => onImprimir(pendientes.slice(0, TANDA_CARTELES)),
+        style: { flex: 2, justifyContent: "center" }
+      }, React.createElement(ScanBarcode, { size: 15 }),
+        pendientes.length <= TANDA_CARTELES
+          ? " Imprimir todos (" + pendientes.length + ")"
+          : " Imprimir los próximos " + TANDA_CARTELES + " (quedan " + pendientes.length + ")")
+    )
+  );
+}
+
 const FILTROS_VACIOS = { categoria: "", stockBajo: false, sinVender: "", sinStock: false, recientes: false, sinFoto: false };
 const contarFiltros = (f) => (f.categoria ? 1 : 0) + (f.proveedor ? 1 : 0) + (f.tipo ? 1 : 0) + (f.unidad ? 1 : 0) + (f.stockBajo ? 1 : 0);
 
@@ -13116,6 +13393,17 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
   // donde queda (orden de carga). Se pide acá y se aplica cuando la lista ya
   // lo incluye, más abajo.
   const [irAlFinal, setIrAlFinal] = useState(false);
+  // v9.991 — Sin precio y carteles pendientes
+  const [verSinPrecio, setVerSinPrecio] = useState(false);
+  const [verCarteles, setVerCarteles] = useState(false);
+  const [tickCarteles, setTickCarteles] = useState(0);
+  useEffect(() => {
+    const f = () => setTickCarteles((n) => n + 1);
+    window.addEventListener("ct-carteles", f);
+    return () => window.removeEventListener("ct-carteles", f);
+  }, []);
+  const cantSinPrecio = useMemo(() => (data.productos || []).filter((p) => sinPrecio(p) && p.activo !== false).length, [data.productos]);
+  const pendientesCartel = useMemo(() => cartelesPendientes(data.productos || []), [data.productos, tickCarteles]);
   const [seleccion, setSeleccion] = useState([]);
   const [abrirAcciones, setAbrirAcciones] = useState(false);
   const [gestion, setGestion] = useState(null);
@@ -13506,6 +13794,13 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
       onClose: () => setParaImprimir(null)
     }),
 
+    verSinPrecio && React.createElement(SinPrecioModal, { data, persist, onClose: () => setVerSinPrecio(false) }),
+    verCarteles && React.createElement(CartelesPendientesModal, {
+      pendientes: pendientesCartel,
+      onImprimir: (lista) => { setVerCarteles(false); setParaImprimir(lista); },
+      onClose: () => setVerCarteles(false)
+    }),
+
     gestion === "importar" && React.createElement(ImportarCSVModal, {
       data,
       negocioNombre: (negocioActivo(data) || {}).nombre,
@@ -13589,6 +13884,20 @@ function Inventario({ data, persist, senalNuevo, opcionElegida, salto, onEditand
             { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
             React.createElement(SectionTitle, null, "Productos"),
             seleccion.length > 0 && React.createElement(SwingTag, { tone: "ink" }, seleccion.length, " seleccionado", seleccion.length === 1 ? "" : "s")
+          ),
+          // v9.991 — Lo que falta: precio (para la encargada) y carteles (para
+          // el equipo que imprime). Sólo aparecen si hay algo.
+          (cantSinPrecio > 0 || pendientesCartel.length > 0) && React.createElement(
+            "div",
+            { style: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 } },
+            cantSinPrecio > 0 && React.createElement("button", {
+              onClick: () => puede(data, "editarPrecios") ? setVerSinPrecio(true) : avisar("Los precios los carga quien tiene permiso para cambiar precios.", { tono: "info" }),
+              style: { display: "inline-flex", alignItems: "center", gap: 7, background: "color-mix(in srgb, var(--rose) 14%, transparent)", color: "var(--rose)", border: "1px solid color-mix(in srgb, var(--rose) 40%, transparent)", borderRadius: 999, padding: "7px 13px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }
+            }, React.createElement(DollarSign, { size: 14 }), "Sin precio (" + cantSinPrecio + ")"),
+            pendientesCartel.length > 0 && React.createElement("button", {
+              onClick: () => setVerCarteles(true),
+              style: { display: "inline-flex", alignItems: "center", gap: 7, background: "var(--denim-soft)", color: "var(--denim-light)", border: "1px solid color-mix(in srgb, var(--denim) 40%, transparent)", borderRadius: 999, padding: "7px 13px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "'Inter', sans-serif" }
+            }, React.createElement(ScanBarcode, { size: 14 }), "Carteles pendientes (" + pendientesCartel.length + ")")
           ),
           React.createElement("div", { style: { fontSize: 12.5, color: "var(--muted)", marginTop: 5 } }, "Lista de todos los productos registrados")
         ),
@@ -14411,7 +14720,11 @@ function ProductoForm({ data, initial, onSave, onCancel, categorias, proveedores
       setConfirmoRepetido(true);
       return setError("Ya existe \u201C" + nombreRepetido.nombre + "\u201D. Si igual querés crearlo, tocá guardar de nuevo.");
     }
-    if (!f.precioVenta || isNaN(Number(f.precioVenta))) return setError("Ingresá el precio de venta.");
+    // v9.991 — El precio es opcional: los empleados cargan la mercadería y el
+    // precio lo pone la encargada después, desde "Sin precio". Mientras
+    // tanto el producto no se puede vender.
+    if (String(f.precioVenta == null ? "" : f.precioVenta).trim() !== "" &&
+        (isNaN(Number(f.precioVenta)) || Number(f.precioVenta) < 0)) return setError("El precio de venta no es válido.");
     for (const n of locales) {
       const vs = (f.porNegocio[n.id].variantes || []).filter((v) => String(v.talle).trim() !== "");
       const claves = vs.map((v) => (String(v.talle).trim() + "|" + String(v.color || "").trim()).toLowerCase());
@@ -14816,7 +15129,8 @@ function ProductoForm({ data, initial, onSave, onCancel, categorias, proveedores
               value: precioMostrado(l, k),
               onChange: (e) => setPrecioLista(l, k, e.target.value),
               onBlur: salirDeLista,
-              placeholder: "0.00"
+              // v9.991 — Vacío = "sin precio": lo pone la encargada después
+              placeholder: k === 0 ? "Sin precio" : "0.00"
             })))
         )
       )
@@ -15655,6 +15969,14 @@ function PuntoDeVenta({ data, persist, cobroPendiente, onCobroTomado, onIrACambi
   // Si el producto tiene talles, primero preguntamos cuál
   const addToCart = (prod, lista = listaActual, talleForzado) => {
     const precio = precioConLista(prod, lista);
+    // v9.991 — Sin precio no se vende: antes se cobraba $0. Lo carga la
+    // encargada desde Productos > Sin precio.
+    if (!(Number(precio) > 0)) {
+      const msg = "\u201C" + prod.nombre + "\u201D todav\u00EDa no tiene precio. Hay que cargarlo en Productos \u203A Sin precio antes de venderlo.";
+      try { setBarcodeError(msg); } catch (e) {}
+      avisar(msg, { tono: "error" });
+      return;
+    }
     const vs = variantesNegocio(prod, negocioId);
     if (vs.length && !talleForzado) {
       setEligiendoTalle({ producto: prod, lista, precio });
@@ -22808,19 +23130,16 @@ function DiagnosticoCaja({ data, onClose }) {
   const clave = claveCaja(negId, mio);
 
   useEffect(() => {
-    try {
-      const cruda = localStorage.getItem("ct-copia");
-      if (!cruda) { setCopiaInfo({ activa: false }); }
-      else {
-        const copia = JSON.parse(cruda);
-        setCopiaInfo({
-          activa: true,
-          mb: cruda.length / 1048576,
-          productos: ((copia.datos && copia.datos.productos) || []).length,
-          minima: !((copia.datos && copia.datos.ventas) || []).length
-        });
-      }
-    } catch (e) { setCopiaInfo({ activa: false, error: true }); }
+    // v9.992 — La copia puede estar en IndexedDB o en localStorage
+    leerCopiaLocal().then((copia) => {
+      if (!copia) { setCopiaInfo({ activa: false }); return; }
+      setCopiaInfo({
+        activa: true,
+        mb: JSON.stringify(copia).length / 1048576,
+        productos: ((copia.datos && copia.datos.productos) || []).length,
+        minima: !((copia.datos && copia.datos.ventas) || []).length
+      });
+    }).catch(() => setCopiaInfo({ activa: false, error: true }));
 
     // Fotos guardadas por el trabajador (sw.js) en este teléfono
     (async () => {
